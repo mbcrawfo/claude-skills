@@ -28,6 +28,13 @@ class StateError(Exception):
     """A usage or state problem that should be reported as a one-line error."""
 
 
+class _Parser(argparse.ArgumentParser):
+    """ArgumentParser whose usage errors follow the one-line, exit 1 contract."""
+
+    def error(self, message):
+        raise StateError(message)
+
+
 # --- git helpers -----------------------------------------------------------
 
 
@@ -112,9 +119,12 @@ def load_state(dir: Path) -> Optional[dict]:
         return None
     try:
         with open(path, "r", encoding="utf-8") as fh:
-            return json.load(fh)
-    except json.JSONDecodeError as exc:
+            state = json.load(fh)
+    except ValueError as exc:  # JSONDecodeError and UnicodeDecodeError
         raise StateError("corrupt state file %s: %s" % (path, exc))
+    if not isinstance(state, dict):
+        raise StateError("corrupt state file %s: expected a JSON object" % path)
+    return state
 
 
 def save_state(dir: Path, state: dict) -> None:
@@ -164,7 +174,7 @@ def cmd_locate(args: argparse.Namespace) -> dict:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    common = argparse.ArgumentParser(add_help=False)
+    common = _Parser(add_help=False)
     common.add_argument(
         "--state-dir",
         default=DEFAULT_STATE_DIR,
@@ -174,7 +184,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--repo", default=".", help="repository path (default: current directory)"
     )
 
-    parser = argparse.ArgumentParser(
+    parser = _Parser(
         prog="review_state.py", description="branch-review state helper"
     )
     sub = parser.add_subparsers(dest="command", metavar="<command>")
@@ -190,8 +200,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[List[str]] = None) -> int:
     parser = _build_parser()
-    args = parser.parse_args(argv)
     try:
+        args = parser.parse_args(argv)
         result = args.func(args)
     except subprocess.CalledProcessError as exc:
         detail = (exc.stderr or "").strip().splitlines()
