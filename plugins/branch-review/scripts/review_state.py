@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -347,6 +348,351 @@ def cmd_begin_round(args: argparse.Namespace) -> dict:
     return result
 
 
+# --- findings ledger -------------------------------------------------------
+
+STATUSES = ("open", "fixed", "still-open", "verified", "invalid", "escalated", "deferred")
+SEVERITIES = ("critical", "major", "minor")
+CATEGORIES = (
+    "logic",
+    "sibling-path",
+    "security",
+    "tests",
+    "intent",
+    "conventions",
+    "docs",
+    "build-ci",
+)
+RISK_LEVELS = ("minimal", "low", "moderate", "high")
+REACHABLE = ("yes", "no", "unclear")
+EFFORTS = ("quick", "heavy")
+VERDICT_STATUSES = ("verified", "still-open")
+FINDING_REQUIRED = (
+    "severity",
+    "category",
+    "file",
+    "lines",
+    "title",
+    "trigger",
+    "consequence",
+    "reachable_now",
+    "fix",
+)
+FINDING_OPTIONAL = ("reachable_note", "evidence", "test", "source")
+MAX_ROUNDS = 6
+_JSON_BLOCK = re.compile(r"^```json[ \t]*\n(.*?)^```[ \t]*$", re.DOTALL | re.MULTILINE)
+
+
+def extract_json_block(text: str) -> dict:
+    """Parse the last fenced ```json block in a reviewer report."""
+    blocks = _JSON_BLOCK.findall(text)
+    if not blocks:
+        raise ValueError("no json block")
+    try:
+        return json.loads(blocks[-1])
+    except ValueError as exc:
+        raise ValueError("json parse error: %s" % exc)
+
+
+def _bad(message: str) -> StateError:
+    return StateError("invalid reviewer output: %s" % message)
+
+
+def _require_str(obj: dict, key: str, where: str) -> str:
+    if key not in obj:
+        raise _bad("%s is missing %s" % (where, key))
+    if not isinstance(obj[key], str):
+        raise _bad("%s.%s must be a string" % (where, key))
+    return obj[key]
+
+
+def _require_enum(obj: dict, key: str, allowed: Tuple[str, ...], where: str) -> str:
+    value = _require_str(obj, key, where)
+    if value not in allowed:
+        raise _bad(
+            "%s.%s must be one of %s, got %r" % (where, key, "|".join(allowed), value)
+        )
+    return value
+
+
+def _require_list(obj: dict, key: str, where: str) -> list:
+    if key not in obj:
+        raise _bad("%s is missing %s" % (where, key))
+    if not isinstance(obj[key], list):
+        raise _bad("%s.%s must be a list" % (where, key))
+    return obj[key]
+
+
+def _optional_str(obj: dict, key: str, default: str, where: str) -> str:
+    if key not in obj:
+        return default
+    if not isinstance(obj[key], str):
+        raise _bad("%s.%s must be a string" % (where, key))
+    return obj[key]
+
+
+def _validate_output(data: object, known_ids: set) -> dict:
+    """Check the reviewer block; return its verdicts, findings and outside entries."""
+    if not isinstance(data, dict):
+        raise _bad("expected a JSON object")
+    _require_str(data, "summary", "output")
+    risk = data.get("merge_risk")
+    if not isinstance(risk, dict):
+        raise _bad("output is missing merge_risk")
+    _require_enum(risk, "level", RISK_LEVELS, "merge_risk")
+    _require_str(risk, "reason", "merge_risk")
+    check = data.get("intent_check")
+    if not isinstance(check, dict):
+        raise _bad("output is missing intent_check")
+    _require_list(check, "unmet_claims", "intent_check")
+    _require_list(check, "unmentioned_behavior", "intent_check")
+
+    verdicts = []
+    for i, v in enumerate(_require_list(data, "verdicts", "output")):
+        where = "verdicts[%d]" % i
+        if not isinstance(v, dict):
+            raise _bad("%s must be an object" % where)
+        vid = _require_str(v, "id", where)
+        status = _require_enum(v, "status", VERDICT_STATUSES, where)
+        if vid not in known_ids:
+            raise _bad("%s refers to unknown finding %s" % (where, vid))
+        verdicts.append(
+            {"id": vid, "status": status, "reason": _optional_str(v, "reason", "", where)}
+        )
+
+    findings = []
+    for i, f in enumerate(_require_list(data, "findings", "output")):
+        where = "findings[%d]" % i
+        if not isinstance(f, dict):
+            raise _bad("%s must be an object" % where)
+        rec = {}
+        for key in FINDING_REQUIRED:
+            if key == "severity":
+                rec[key] = _require_enum(f, key, SEVERITIES, where)
+            elif key == "category":
+                rec[key] = _require_enum(f, key, CATEGORIES, where)
+            elif key == "reachable_now":
+                rec[key] = _require_enum(f, key, REACHABLE, where)
+            else:
+                rec[key] = _require_str(f, key, where)
+        for key in FINDING_OPTIONAL:
+            rec[key] = _optional_str(f, key, "", where)
+        rec["effort"] = _require_enum(f, "effort", EFFORTS, where) if "effort" in f else "quick"
+        findings.append(rec)
+
+    outside = []
+    for i, o in enumerate(_require_list(data, "outside_change", "output")):
+        where = "outside_change[%d]" % i
+        if not isinstance(o, dict):
+            raise _bad("%s must be an object" % where)
+        rec = {
+            "severity": "minor",
+            "category": "logic",
+            "file": _require_str(o, "file", where),
+            "lines": _optional_str(o, "lines", "", where),
+            "title": _require_str(o, "title", where),
+            "detail": _optional_str(o, "detail", "", where),
+        }
+        if "severity" in o:
+            rec["severity"] = _require_enum(o, "severity", SEVERITIES, where)
+        if "category" in o:
+            rec["category"] = _require_enum(o, "category", CATEGORIES, where)
+        outside.append(rec)
+
+    return {"verdicts": verdicts, "findings": findings, "outside": outside}
+
+
+def _load_output(path: str) -> object:
+    """Parse a bare JSON file, else the last json block of a markdown report."""
+    text = Path(path).read_text(encoding="utf-8")
+    try:
+        return json.loads(text)
+    except ValueError:
+        pass
+    try:
+        return extract_json_block(text)
+    except ValueError as exc:
+        raise _bad(str(exc))
+
+
+def _ledger_state(args: argparse.Namespace) -> Tuple[Path, dict]:
+    """Load the branch's state, which must exist and hold at least one round."""
+    directory = state_path(Path(args.state_dir).expanduser(), Path(args.repo))
+    state = load_state(directory)
+    if state is None or not state.get("rounds"):
+        raise StateError("no review round in progress; run begin-round first")
+    state.setdefault("findings", [])
+    return directory, state
+
+
+def _find(state: dict, finding_id: str) -> dict:
+    for f in state["findings"]:
+        if f.get("id") == finding_id:
+            return f
+    raise StateError("unknown finding id %s" % finding_id)
+
+
+def cmd_record_findings(args: argparse.Namespace) -> dict:
+    directory, state = _ledger_state(args)
+    rnd = state["rounds"][-1]
+    number = rnd["number"]
+    if "added" in rnd:
+        raise StateError("round %d already has recorded findings" % number)
+    known = {f.get("id") for f in state["findings"]}
+    data = _load_output(args.file)
+    checked = _validate_output(data, known)
+
+    for v in checked["verdicts"]:
+        f = _find(state, v["id"])
+        f["status"] = v["status"]
+        if v["status"] == "verified":
+            f["round_closed"] = number
+        if v["reason"]:
+            f["discussion"].append(
+                {"from": "reviewer", "text": v["reason"], "round": number}
+            )
+
+    new: List[dict] = []
+    for rec in checked["findings"]:
+        new.append(
+            {
+                "id": "R%d-F%d" % (number, len(new) + 1),
+                "status": "open",
+                "scope": "change",
+                "round_opened": number,
+                "round_closed": None,
+                **rec,
+                "resolution": None,
+                "discussion": [],
+            }
+        )
+    added = len(new)
+    for rec in checked["outside"]:
+        new.append(
+            {
+                "id": "R%d-F%d" % (number, len(new) + 1),
+                "status": "deferred",
+                "scope": "outside",
+                "round_opened": number,
+                "round_closed": None,
+                **rec,
+                "resolution": {
+                    "status": "deferred",
+                    "note": "outside the change set",
+                    "commit": "",
+                    "by": "reviewer",
+                    "round": number,
+                },
+                "discussion": [],
+            }
+        )
+    state["findings"].extend(new)
+
+    rnd["summary"] = data["summary"]
+    rnd["merge_risk"] = data["merge_risk"]
+    rnd["intent_check"] = data["intent_check"]
+    rnd["added"] = added
+
+    save_state(directory, state)
+    if args.report:
+        rounds_dir = directory / "rounds"
+        rounds_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(args.file, str(rounds_dir / ("%d.md" % number)))
+    return {
+        "round": number,
+        "added": added,
+        "outside": len(new) - added,
+        "ids": [f["id"] for f in new],
+        "verdicts": len(checked["verdicts"]),
+    }
+
+
+def cmd_set_status(args: argparse.Namespace) -> dict:
+    directory, state = _ledger_state(args)
+    finding = _find(state, args.id)
+    note = args.note or ""
+    commit = args.commit or ""
+    if args.status == "fixed" and not (commit or note):
+        raise StateError("fixed requires --commit or --note")
+    if args.status in ("invalid", "escalated") and not note:
+        raise StateError("%s requires --note" % args.status)
+    number = state["rounds"][-1]["number"]
+    finding["status"] = args.status
+    finding["resolution"] = {
+        "status": args.status,
+        "note": note,
+        "commit": commit,
+        "by": "orchestrator",
+        "round": number,
+    }
+    finding["round_closed"] = number if args.status in ("invalid", "escalated") else None
+    save_state(directory, state)
+    return {
+        "id": finding["id"],
+        "status": finding["status"],
+        "round_closed": finding["round_closed"],
+    }
+
+
+def cmd_discuss(args: argparse.Namespace) -> dict:
+    directory, state = _ledger_state(args)
+    finding = _find(state, args.id)
+    number = state["rounds"][-1]["number"]
+    finding["discussion"].append({"from": args.source, "text": args.text, "round": number})
+    save_state(directory, state)
+    return {"id": finding["id"], "discussion": len(finding["discussion"])}
+
+
+def cmd_resolve(args: argparse.Namespace) -> dict:
+    directory, state = _ledger_state(args)
+    finding = _find(state, args.id)
+    if finding["status"] != "escalated":
+        raise StateError("%s is %s, not escalated" % (finding["id"], finding["status"]))
+    number = state["rounds"][-1]["number"]
+    finding["status"] = "open" if args.decision == "fix" else "deferred"
+    finding["resolution"] = {
+        "status": finding["status"],
+        "note": args.note,
+        "commit": "",
+        "by": "developer",
+        "round": number,
+    }
+    finding["round_closed"] = number if args.decision == "defer" else None
+    save_state(directory, state)
+    return {
+        "id": finding["id"],
+        "status": finding["status"],
+        "round_closed": finding["round_closed"],
+    }
+
+
+def cmd_status(args: argparse.Namespace) -> dict:
+    state = load_state(state_path(Path(args.state_dir).expanduser(), Path(args.repo)))
+    if state is None or not state.get("rounds"):
+        raise StateError("no review rounds recorded for this branch")
+    rounds = state["rounds"]
+    counts = {s: 0 for s in STATUSES}
+    for f in state.get("findings", []):
+        counts[f.get("status")] = counts.get(f.get("status"), 0) + 1
+
+    if len(rounds) >= MAX_ROUNDS:
+        cont, reason = False, "max-rounds"
+    elif counts["open"] or counts["still-open"]:
+        cont, reason = True, "open-findings"
+    elif counts["fixed"]:
+        cont, reason = True, "unverified-fixes"
+    elif rounds[-1].get("added", 0) > 0:
+        cont, reason = True, "new-findings"
+    else:
+        cont, reason = False, "converged"
+    return {
+        "rounds": len(rounds),
+        "last_mode": rounds[-1]["mode"],
+        "counts": counts,
+        "continue": cont,
+        "reason": reason,
+    }
+
+
 # --- CLI -------------------------------------------------------------------
 
 
@@ -392,6 +738,39 @@ def _build_parser() -> argparse.ArgumentParser:
         "--paths", nargs="+", help="glob patterns restricting the reviewed files"
     )
     begin.set_defaults(func=cmd_begin_round)
+
+    rec = sub.add_parser(
+        "record-findings", parents=[common], help="record a reviewer report into the ledger"
+    )
+    rec.add_argument("--file", required=True, help="reviewer report (markdown) or bare JSON")
+    rec.add_argument("--report", action="store_true", help="keep a copy as rounds/<N>.md")
+    rec.set_defaults(func=cmd_record_findings)
+
+    setst = sub.add_parser("set-status", parents=[common], help="update a finding's status")
+    setst.add_argument("--id", required=True)
+    setst.add_argument(
+        "--status", required=True, choices=("fixed", "invalid", "escalated", "open")
+    )
+    setst.add_argument("--commit", help="commit that fixes the finding")
+    setst.add_argument("--note", help="explanation")
+    setst.set_defaults(func=cmd_set_status)
+
+    disc = sub.add_parser("discuss", parents=[common], help="append a discussion entry")
+    disc.add_argument("--id", required=True)
+    disc.add_argument(
+        "--from", dest="source", required=True, choices=("orchestrator", "reviewer")
+    )
+    disc.add_argument("--text", required=True)
+    disc.set_defaults(func=cmd_discuss)
+
+    res = sub.add_parser("resolve", parents=[common], help="record the developer's decision")
+    res.add_argument("--id", required=True)
+    res.add_argument("--decision", required=True, choices=("fix", "defer"))
+    res.add_argument("--note", required=True, help="the decision, in the developer's words")
+    res.set_defaults(func=cmd_resolve)
+
+    stat = sub.add_parser("status", parents=[common], help="counts and whether to continue")
+    stat.set_defaults(func=cmd_status)
     return parser
 
 
