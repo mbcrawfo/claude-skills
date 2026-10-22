@@ -1,5 +1,6 @@
 ---
 type: llm
+focus: trace
 ---
 
 Pass only if every one of these holds in the transcript:

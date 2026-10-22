@@ -366,6 +366,16 @@ class LedgerTest(unittest.TestCase):
         self.assertFalse(result["continue"])
         self.assertEqual(result["reason"], "max-rounds")
 
+    def test_status_max_rounds_counts_rounds_after_since_round(self):
+        for _ in range(7):
+            self.begin()
+        result = self.cli("status", "--since-round", "3")
+        self.assertEqual(result["rounds"], 7)
+        self.assertNotEqual(result["reason"], "max-rounds")
+        result = self.cli("status", "--since-round", "0")
+        self.assertFalse(result["continue"])
+        self.assertEqual(result["reason"], "max-rounds")
+
     def test_status_without_state_is_an_error(self):
         self.assert_error("status")
 

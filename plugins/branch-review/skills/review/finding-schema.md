@@ -99,4 +99,4 @@ Transitions:
 
 `invalid` and `escalated` set `round_closed` in `set-status`; `fixed` and `open` leave it null.
 
-`status` reports `continue: true` while any finding is `open`, `fixed` or `still-open` (`open-findings`, or `unverified-fixes` when only `fixed` remain) or when the last round added findings (`new-findings`). It reports `continue: false` with `converged` otherwise, and with `max-rounds` once there are six rounds.
+`status` reports `continue: true` while any finding is `open`, `fixed` or `still-open` (`open-findings`, or `unverified-fixes` when only `fixed` remain) or when the last round added findings (`new-findings`). It reports `continue: false` with `converged` otherwise, and with `max-rounds` once there are six rounds numbered above `--since-round N` (default 0, so every round counts).

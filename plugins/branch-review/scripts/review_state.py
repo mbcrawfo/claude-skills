@@ -674,7 +674,8 @@ def cmd_status(args: argparse.Namespace) -> dict:
     for f in state.get("findings", []):
         counts[f.get("status")] = counts.get(f.get("status"), 0) + 1
 
-    if len(rounds) >= MAX_ROUNDS:
+    run_rounds = [r for r in rounds if r.get("number", 0) > args.since_round]
+    if len(run_rounds) >= MAX_ROUNDS:
         cont, reason = False, "max-rounds"
     elif counts["open"] or counts["still-open"]:
         cont, reason = True, "open-findings"
@@ -1033,6 +1034,13 @@ def _build_parser() -> argparse.ArgumentParser:
     res.set_defaults(func=cmd_resolve)
 
     stat = sub.add_parser("status", parents=[common], help="counts and whether to continue")
+    stat.add_argument(
+        "--since-round",
+        type=int,
+        default=0,
+        metavar="N",
+        help="count only rounds numbered above N toward the round cap (default: 0)",
+    )
     stat.set_defaults(func=cmd_status)
 
     summ = sub.add_parser(
