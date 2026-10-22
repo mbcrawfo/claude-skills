@@ -1022,10 +1022,23 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _check_state_dir(value: str) -> None:
+    """Reject an empty, blank or relative `--state-dir` before any command runs.
+
+    `prune` and `cleanup` delete directories under the state dir, so a value
+    that resolves against the current directory must never reach them.
+    """
+    if not value or not value.strip():
+        raise StateError("--state-dir must not be empty")
+    if not Path(value).expanduser().is_absolute():
+        raise StateError(f"--state-dir must be an absolute path, got {value!r}")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     try:
         args = parser.parse_args(argv)
+        _check_state_dir(args.state_dir)
         result = args.func(args)
     except subprocess.CalledProcessError as exc:
         detail = (exc.stderr or "").strip().splitlines()
