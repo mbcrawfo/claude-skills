@@ -16,5 +16,8 @@ This repo is a Claude Code plugin marketplace (`mbcrawfo-skills`). See README.md
 - Run `claude plugin validate .` and `claude plugin validate plugins/<name>` before committing.
 - Plugin scripts are Python 3.9+, standard library only, invoked through `python3`.
 - Tests go in `plugins/<name>/tests/` and run with `python3 -m unittest discover -s plugins/<name>/tests`.
+- Python is linted and formatted with ruff, configured in the root `pyproject.toml`. Run `ruff check .` and `ruff format .` before committing Python.
+- `.editorconfig` mirrors the ruff settings (line length, quote style). Change both together.
+- `.python-version` pins the interpreter for local use and CI.
 - Skills ship an eval case under `plugins/<name>/evals/`. Test with `claude plugin eval` before release.
 - Plugin agents are dispatched as `<plugin>:<agent>`.

@@ -10,18 +10,17 @@ errors exit 1 with a one-line message on stderr.
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timedelta, timezone
 import fnmatch
 import hashlib
 import json
 import os
+from pathlib import Path
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from typing import List, Optional, Tuple
 
 DEFAULT_STATE_DIR = "~/.claude/plugins/data/branch-review"
 STATE_FILE = "review.json"
@@ -55,7 +54,7 @@ def _git(repo: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
-def _git_try(repo: Path, *args: str) -> Optional[str]:
+def _git_try(repo: Path, *args: str) -> str | None:
     """Run git, returning None instead of raising when it exits non-zero."""
     try:
         return _git(repo, *args)
@@ -66,7 +65,7 @@ def _git_try(repo: Path, *args: str) -> Optional[str]:
 # --- keys ------------------------------------------------------------------
 
 
-def _owner_repo_from_url(url: str) -> Optional[str]:
+def _owner_repo_from_url(url: str) -> str | None:
     """Extract `owner/repo` from an ssh or https remote URL, lowercased."""
     url = url.strip().rstrip("/")
     if url.endswith(".git"):
@@ -80,7 +79,7 @@ def _owner_repo_from_url(url: str) -> Optional[str]:
     parts = [p for p in path.split("/") if p]
     if len(parts) < 2:
         return None
-    return "%s/%s" % (parts[-2].lower(), parts[-1].lower())
+    return f"{parts[-2].lower()}/{parts[-1].lower()}"
 
 
 def repo_key(repo: Path) -> str:
@@ -96,7 +95,7 @@ def repo_key(repo: Path) -> str:
     return "local-" + digest[:12]
 
 
-def branch_key(repo: Path) -> Tuple[str, str]:
+def branch_key(repo: Path) -> tuple[str, str]:
     """`(branch_name, key)`; detached HEAD gives `("HEAD", "detached-<sha7>")`."""
     name = _git_try(repo, "symbolic-ref", "--short", "-q", "HEAD")
     if name:
@@ -119,17 +118,17 @@ def state_path(state_dir: Path, repo: Path) -> Path:
     return Path(state_dir) / repo_key(repo) / bkey
 
 
-def load_state(dir: Path) -> Optional[dict]:
+def load_state(dir: Path) -> dict | None:
     path = Path(dir) / STATE_FILE
     if not path.exists():
         return None
     try:
-        with open(path, "r", encoding="utf-8") as fh:
+        with open(path, encoding="utf-8") as fh:
             state = json.load(fh)
     except ValueError as exc:  # JSONDecodeError and UnicodeDecodeError
-        raise StateError("corrupt state file %s: %s" % (path, exc))
+        raise StateError(f"corrupt state file {path}: {exc}") from exc
     if not isinstance(state, dict):
-        raise StateError("corrupt state file %s: expected a JSON object" % path)
+        raise StateError(f"corrupt state file {path}: expected a JSON object")
     return state
 
 
@@ -152,7 +151,7 @@ def save_state(dir: Path, state: dict) -> None:
 # --- snapshots -------------------------------------------------------------
 
 
-def make_snapshot(repo: Path) -> Tuple[str, bool]:
+def make_snapshot(repo: Path) -> tuple[str, bool]:
     """Return `(sha, dirty)` for a commit holding the working tree's content.
 
     Uses a temporary index so the real index, working tree and refs are never
@@ -206,7 +205,7 @@ def _object_exists(repo: Path, sha: str) -> bool:
     return _git_try(repo, "cat-file", "-e", sha + "^{commit}") is not None
 
 
-def choose_mode(repo: Path, state: Optional[dict]) -> Tuple[str, str]:
+def choose_mode(repo: Path, state: dict | None) -> tuple[str, str]:
     """`(mode, reason)` for the next round on this branch."""
     if state is None:
         return "deep", "no-state"
@@ -231,13 +230,11 @@ def cmd_locate(args: argparse.Namespace) -> dict:
     directory = state_path(state_dir, repo)
     state = load_state(directory)
 
-    open_findings: List[dict] = []
+    open_findings: list[dict] = []
     rounds = 0
     if state is not None:
         rounds = len(state.get("rounds", []))
-        open_findings = [
-            f for f in state.get("findings", []) if f.get("status") in OPEN_STATUSES
-        ]
+        open_findings = [f for f in state.get("findings", []) if f.get("status") in OPEN_STATUSES]
     mode, reason = choose_mode(repo, state)
 
     return {
@@ -259,7 +256,7 @@ def cmd_snapshot(args: argparse.Namespace) -> dict:
     return {"snapshot": sha, "head": _git(repo, "rev-parse", "HEAD"), "dirty": dirty}
 
 
-def _numstat(repo: Path, diff_from: str, diff_to: str) -> List[Tuple[str, int]]:
+def _numstat(repo: Path, diff_from: str, diff_to: str) -> list[tuple[str, int]]:
     """`(path, insertions + deletions)` per changed file; binary files count 0."""
     out = _git(repo, "diff", "--numstat", "-z", "--no-renames", diff_from, diff_to)
     entries = []
@@ -308,11 +305,7 @@ def cmd_begin_round(args: argparse.Namespace) -> dict:
 
     entries = _numstat(repo, diff_from, diff_to)
     if args.paths:
-        entries = [
-            (f, n)
-            for f, n in entries
-            if any(fnmatch.fnmatchcase(f, pat) for pat in args.paths)
-        ]
+        entries = [(f, n) for f, n in entries if any(fnmatch.fnmatchcase(f, pat) for pat in args.paths)]
     changed = [f for f, _ in entries]
     lines = sum(n for _, n in entries)
     files = len(changed)
@@ -390,35 +383,33 @@ def extract_json_block(text: str) -> dict:
     try:
         return json.loads(blocks[-1])
     except ValueError as exc:
-        raise ValueError("json parse error: %s" % exc)
+        raise ValueError(f"json parse error: {exc}") from exc
 
 
 def _bad(message: str) -> StateError:
-    return StateError("invalid reviewer output: %s" % message)
+    return StateError(f"invalid reviewer output: {message}")
 
 
 def _require_str(obj: dict, key: str, where: str) -> str:
     if key not in obj:
-        raise _bad("%s is missing %s" % (where, key))
+        raise _bad(f"{where} is missing {key}")
     if not isinstance(obj[key], str):
-        raise _bad("%s.%s must be a string" % (where, key))
+        raise _bad(f"{where}.{key} must be a string")
     return obj[key]
 
 
-def _require_enum(obj: dict, key: str, allowed: Tuple[str, ...], where: str) -> str:
+def _require_enum(obj: dict, key: str, allowed: tuple[str, ...], where: str) -> str:
     value = _require_str(obj, key, where)
     if value not in allowed:
-        raise _bad(
-            "%s.%s must be one of %s, got %r" % (where, key, "|".join(allowed), value)
-        )
+        raise _bad("{}.{} must be one of {}, got {!r}".format(where, key, "|".join(allowed), value))
     return value
 
 
 def _require_list(obj: dict, key: str, where: str) -> list:
     if key not in obj:
-        raise _bad("%s is missing %s" % (where, key))
+        raise _bad(f"{where} is missing {key}")
     if not isinstance(obj[key], list):
-        raise _bad("%s.%s must be a list" % (where, key))
+        raise _bad(f"{where}.{key} must be a list")
     return obj[key]
 
 
@@ -426,7 +417,7 @@ def _optional_str(obj: dict, key: str, default: str, where: str) -> str:
     if key not in obj:
         return default
     if not isinstance(obj[key], str):
-        raise _bad("%s.%s must be a string" % (where, key))
+        raise _bad(f"{where}.{key} must be a string")
     return obj[key]
 
 
@@ -448,22 +439,20 @@ def _validate_output(data: object, known_ids: set) -> dict:
 
     verdicts = []
     for i, v in enumerate(_require_list(data, "verdicts", "output")):
-        where = "verdicts[%d]" % i
+        where = f"verdicts[{i}]"
         if not isinstance(v, dict):
-            raise _bad("%s must be an object" % where)
+            raise _bad(f"{where} must be an object")
         vid = _require_str(v, "id", where)
         status = _require_enum(v, "status", VERDICT_STATUSES, where)
         if vid not in known_ids:
-            raise _bad("%s refers to unknown finding %s" % (where, vid))
-        verdicts.append(
-            {"id": vid, "status": status, "reason": _optional_str(v, "reason", "", where)}
-        )
+            raise _bad(f"{where} refers to unknown finding {vid}")
+        verdicts.append({"id": vid, "status": status, "reason": _optional_str(v, "reason", "", where)})
 
     findings = []
     for i, f in enumerate(_require_list(data, "findings", "output")):
-        where = "findings[%d]" % i
+        where = f"findings[{i}]"
         if not isinstance(f, dict):
-            raise _bad("%s must be an object" % where)
+            raise _bad(f"{where} must be an object")
         rec = {}
         for key in FINDING_REQUIRED:
             if key == "severity":
@@ -481,9 +470,9 @@ def _validate_output(data: object, known_ids: set) -> dict:
 
     outside = []
     for i, o in enumerate(_require_list(data, "outside_change", "output")):
-        where = "outside_change[%d]" % i
+        where = f"outside_change[{i}]"
         if not isinstance(o, dict):
-            raise _bad("%s must be an object" % where)
+            raise _bad(f"{where} must be an object")
         rec = {
             "severity": "minor",
             "category": "logic",
@@ -511,10 +500,10 @@ def _load_output(path: str) -> object:
     try:
         return extract_json_block(text)
     except ValueError as exc:
-        raise _bad(str(exc))
+        raise _bad(str(exc)) from exc
 
 
-def _ledger_state(args: argparse.Namespace) -> Tuple[Path, dict]:
+def _ledger_state(args: argparse.Namespace) -> tuple[Path, dict]:
     """Load the branch's state, which must exist and hold at least one round."""
     directory = state_path(Path(args.state_dir).expanduser(), Path(args.repo))
     state = load_state(directory)
@@ -528,7 +517,7 @@ def _find(state: dict, finding_id: str) -> dict:
     for f in state["findings"]:
         if f.get("id") == finding_id:
             return f
-    raise StateError("unknown finding id %s" % finding_id)
+    raise StateError(f"unknown finding id {finding_id}")
 
 
 def cmd_record_findings(args: argparse.Namespace) -> dict:
@@ -536,7 +525,7 @@ def cmd_record_findings(args: argparse.Namespace) -> dict:
     rnd = state["rounds"][-1]
     number = rnd["number"]
     if "added" in rnd:
-        raise StateError("round %d already has recorded findings" % number)
+        raise StateError(f"round {number} already has recorded findings")
     known = {f.get("id") for f in state["findings"]}
     data = _load_output(args.file)
     checked = _validate_output(data, known)
@@ -547,15 +536,13 @@ def cmd_record_findings(args: argparse.Namespace) -> dict:
         if v["status"] == "verified":
             f["round_closed"] = number
         if v["reason"]:
-            f["discussion"].append(
-                {"from": "reviewer", "text": v["reason"], "round": number}
-            )
+            f["discussion"].append({"from": "reviewer", "text": v["reason"], "round": number})
 
-    new: List[dict] = []
+    new: list[dict] = []
     for rec in checked["findings"]:
         new.append(
             {
-                "id": "R%d-F%d" % (number, len(new) + 1),
+                "id": f"R{number}-F{len(new) + 1}",
                 "status": "open",
                 "scope": "change",
                 "round_opened": number,
@@ -569,7 +556,7 @@ def cmd_record_findings(args: argparse.Namespace) -> dict:
     for rec in checked["outside"]:
         new.append(
             {
-                "id": "R%d-F%d" % (number, len(new) + 1),
+                "id": f"R{number}-F{len(new) + 1}",
                 "status": "deferred",
                 "scope": "outside",
                 "round_opened": number,
@@ -596,7 +583,7 @@ def cmd_record_findings(args: argparse.Namespace) -> dict:
     if args.report:
         rounds_dir = directory / "rounds"
         rounds_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(args.file, str(rounds_dir / ("%d.md" % number)))
+        shutil.copyfile(args.file, str(rounds_dir / f"{number}.md"))
     return {
         "round": number,
         "added": added,
@@ -614,7 +601,7 @@ def cmd_set_status(args: argparse.Namespace) -> dict:
     if args.status == "fixed" and not (commit or note):
         raise StateError("fixed requires --commit or --note")
     if args.status in ("invalid", "escalated") and not note:
-        raise StateError("%s requires --note" % args.status)
+        raise StateError(f"{args.status} requires --note")
     number = state["rounds"][-1]["number"]
     finding["status"] = args.status
     finding["resolution"] = {
@@ -646,7 +633,7 @@ def cmd_resolve(args: argparse.Namespace) -> dict:
     directory, state = _ledger_state(args)
     finding = _find(state, args.id)
     if finding["status"] != "escalated":
-        raise StateError("%s is %s, not escalated" % (finding["id"], finding["status"]))
+        raise StateError("{} is {}, not escalated".format(finding["id"], finding["status"]))
     number = state["rounds"][-1]["number"]
     finding["status"] = "open" if args.decision == "fix" else "deferred"
     finding["resolution"] = {
@@ -706,27 +693,24 @@ def _one_line(text: object) -> str:
 def _location(finding: dict) -> str:
     file = finding.get("file") or "?"
     lines = finding.get("lines")
-    return "%s:%s" % (file, lines) if lines else file
+    return f"{file}:{lines}" if lines else file
 
 
-def _entry(finding: dict, details: List[str]) -> List[str]:
-    out = [
-        "- **%s** %s (`%s`)"
-        % (finding.get("id"), _one_line(finding.get("title")), _location(finding))
-    ]
-    out.extend("  - %s" % d for d in details if d)
+def _entry(finding: dict, details: list[str]) -> list[str]:
+    out = ["- **{}** {} (`{}`)".format(finding.get("id"), _one_line(finding.get("title")), _location(finding))]
+    out.extend(f"  - {d}" for d in details if d)
     return out
 
 
-def _resolution_note(finding: dict) -> List[str]:
+def _resolution_note(finding: dict) -> list[str]:
     res = finding.get("resolution") or {}
     note = _one_line(res.get("note"))
     if not note:
         return []
-    return ["%s: %s" % (str(res.get("by") or "note").capitalize(), note)]
+    return ["{}: {}".format(str(res.get("by") or "note").capitalize(), note)]
 
 
-def _invalid_details(finding: dict) -> List[str]:
+def _invalid_details(finding: dict) -> list[str]:
     res = finding.get("resolution") or {}
     replies = [d for d in finding.get("discussion", []) if d.get("from") == "reviewer"]
     reply = _one_line(replies[-1].get("text")) if replies else ""
@@ -736,7 +720,7 @@ def _invalid_details(finding: dict) -> List[str]:
     ]
 
 
-def _verified_details(finding: dict) -> List[str]:
+def _verified_details(finding: dict) -> list[str]:
     res = finding.get("resolution") or {}
     return ["Commit: %s" % (res.get("commit") or "(none)")]
 
@@ -751,22 +735,18 @@ def render_summary(state: dict) -> str:
     )
     risk_text = "n/a"
     if risk:
-        risk_text = "%s (%s)" % (risk.get("level"), _one_line(risk.get("reason")))
-    header = "# Review of `%s` (%s): %d round%s, last %s with %s, merge risk %s" % (
-        state.get("branch"),
-        state.get("repo_key"),
-        len(rounds),
-        "" if len(rounds) == 1 else "s",
-        last.get("mode"),
-        last.get("model"),
-        risk_text,
+        risk_text = "{} ({})".format(risk.get("level"), _one_line(risk.get("reason")))
+    plural = "" if len(rounds) == 1 else "s"
+    header = (
+        f"# Review of `{state.get('branch')}` ({state.get('repo_key')}): {len(rounds)} round{plural}, "
+        f"last {last.get('mode')} with {last.get('model')}, merge risk {risk_text}"
     )
 
     counts = {s: 0 for s in STATUSES}
     for f in findings:
         counts[f.get("status")] = counts.get(f.get("status"), 0) + 1
     out = [header, "", "## Counts", "", "| Status | Count |", "| --- | --- |"]
-    out.extend("| %s | %d |" % (s, n) for s, n in counts.items())
+    out.extend(f"| {s} | {n} |" for s, n in counts.items())
 
     sections = (
         ("Escalated", "escalated", _resolution_note),
@@ -795,11 +775,9 @@ def cmd_summary(args: argparse.Namespace) -> dict:
     return {"path": str(path), "text": text}
 
 
-def _parse_ts(value: object) -> Optional[datetime]:
+def _parse_ts(value: object) -> datetime | None:
     try:
-        return datetime.strptime(str(value), "%Y-%m-%dT%H:%M:%SZ").replace(
-            tzinfo=timezone.utc
-        )
+        return datetime.strptime(str(value), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
     except ValueError:
         return None
 
@@ -812,7 +790,7 @@ def _older_than(updated: object, days: float) -> bool:
     return datetime.now(timezone.utc) - ts > timedelta(days=days)
 
 
-def _read_review(directory: Path) -> Tuple[Optional[dict], Optional[str]]:
+def _read_review(directory: Path) -> tuple[dict | None, str | None]:
     """`(state, error)`: state is None when missing or corrupt, error set if corrupt."""
     try:
         return load_state(directory), None
@@ -820,7 +798,7 @@ def _read_review(directory: Path) -> Tuple[Optional[dict], Optional[str]]:
         return None, str(exc)
 
 
-def _subdirs(parent: Path) -> List[Path]:
+def _subdirs(parent: Path) -> list[Path]:
     """Real (non-symlink) child directories, sorted by name."""
     if not parent.is_dir():
         return []
@@ -833,7 +811,7 @@ def _remove_dir(state_dir: Path, path: Path) -> None:
     target = Path(path)
     resolved = target.resolve()
     if target.is_symlink() or resolved == root or root not in resolved.parents:
-        raise StateError("refusing to remove %s: not inside %s" % (path, state_dir))
+        raise StateError(f"refusing to remove {path}: not inside {state_dir}")
     shutil.rmtree(str(resolved))
 
 
@@ -846,9 +824,7 @@ def _remove_if_empty(path: Path) -> None:
 
 def _live_branch_keys(repo: Path) -> set:
     """Dir keys of every local branch and `origin/` branch that exists."""
-    refs = _git_try(
-        repo, "for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes/origin"
-    )
+    refs = _git_try(repo, "for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes/origin")
     keys = set()
     for ref in (refs or "").splitlines():
         for prefix in ("refs/heads/", "refs/remotes/origin/"):
@@ -871,8 +847,8 @@ def cmd_prune(args: argparse.Namespace) -> dict:
     repo_dir = state_dir / repo_key(repo)
     live_keys = _live_branch_keys(repo)
 
-    removed: List[str] = []
-    skipped: List[str] = []
+    removed: list[str] = []
+    skipped: list[str] = []
     for bdir in _subdirs(repo_dir):
         if bdir.name == current_key:
             continue
@@ -920,9 +896,7 @@ def cmd_list(args: argparse.Namespace) -> dict:
                 entry["branch"] = state.get("branch") or entry["branch"]
                 entry["rounds"] = len(state.get("rounds", []))
                 entry["updated"] = state.get("updated")
-                entry["open"] = sum(
-                    1 for f in state.get("findings", []) if f.get("status") in OPEN_STATUSES
-                )
+                entry["open"] = sum(1 for f in state.get("findings", []) if f.get("status") in OPEN_STATUSES)
             reviews.append(entry)
     reviews.sort(key=lambda e: e["updated"] or "", reverse=True)
     return {"reviews": reviews}
@@ -941,7 +915,7 @@ def cmd_cleanup(args: argparse.Namespace) -> dict:
         if args.scope == "branch":
             only = state_path(state_dir, repo)
 
-    removed: List[str] = []
+    removed: list[str] = []
     for rdir in repo_dirs:
         candidates = [only] if only is not None else _subdirs(rdir)
         for bdir in candidates:
@@ -967,19 +941,13 @@ def _build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_STATE_DIR,
         help="root directory for review state (default: %(default)s)",
     )
-    common.add_argument(
-        "--repo", default=".", help="repository path (default: current directory)"
-    )
+    common.add_argument("--repo", default=".", help="repository path (default: current directory)")
 
-    parser = _Parser(
-        prog="review_state.py", description="branch-review state helper"
-    )
+    parser = _Parser(prog="review_state.py", description="branch-review state helper")
     sub = parser.add_subparsers(dest="command", metavar="<command>")
     sub.required = True
 
-    locate = sub.add_parser(
-        "locate", parents=[common], help="find state for the current branch"
-    )
+    locate = sub.add_parser("locate", parents=[common], help="find state for the current branch")
     locate.add_argument("--base", help="base ref (overrides the detected default)")
     locate.set_defaults(func=cmd_locate)
 
@@ -990,40 +958,30 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     snap.set_defaults(func=cmd_snapshot)
 
-    begin = sub.add_parser(
-        "begin-round", parents=[common], help="record the start of a review round"
-    )
+    begin = sub.add_parser("begin-round", parents=[common], help="record the start of a review round")
     begin.add_argument("--mode", required=True, choices=("deep", "followup"))
     begin.add_argument("--model", required=True)
     begin.add_argument("--snapshot", required=True, help="snapshot sha to review")
     begin.add_argument("--base-ref", required=True, help="ref the branch is reviewed against")
     begin.add_argument("--intent-file", help="file holding the change's stated intent")
-    begin.add_argument(
-        "--paths", nargs="+", help="glob patterns restricting the reviewed files"
-    )
+    begin.add_argument("--paths", nargs="+", help="glob patterns restricting the reviewed files")
     begin.set_defaults(func=cmd_begin_round)
 
-    rec = sub.add_parser(
-        "record-findings", parents=[common], help="record a reviewer report into the ledger"
-    )
+    rec = sub.add_parser("record-findings", parents=[common], help="record a reviewer report into the ledger")
     rec.add_argument("--file", required=True, help="reviewer report (markdown) or bare JSON")
     rec.add_argument("--report", action="store_true", help="keep a copy as rounds/<N>.md")
     rec.set_defaults(func=cmd_record_findings)
 
     setst = sub.add_parser("set-status", parents=[common], help="update a finding's status")
     setst.add_argument("--id", required=True)
-    setst.add_argument(
-        "--status", required=True, choices=("fixed", "invalid", "escalated", "open")
-    )
+    setst.add_argument("--status", required=True, choices=("fixed", "invalid", "escalated", "open"))
     setst.add_argument("--commit", help="commit that fixes the finding")
     setst.add_argument("--note", help="explanation")
     setst.set_defaults(func=cmd_set_status)
 
     disc = sub.add_parser("discuss", parents=[common], help="append a discussion entry")
     disc.add_argument("--id", required=True)
-    disc.add_argument(
-        "--from", dest="source", required=True, choices=("orchestrator", "reviewer")
-    )
+    disc.add_argument("--from", dest="source", required=True, choices=("orchestrator", "reviewer"))
     disc.add_argument("--text", required=True)
     disc.set_defaults(func=cmd_discuss)
 
@@ -1043,17 +1001,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     stat.set_defaults(func=cmd_status)
 
-    summ = sub.add_parser(
-        "summary", parents=[common], help="write and print summary.md for the branch"
-    )
+    summ = sub.add_parser("summary", parents=[common], help="write and print summary.md for the branch")
     summ.set_defaults(func=cmd_summary)
 
-    prune = sub.add_parser(
-        "prune", parents=[common], help="remove state for branches that are gone or stale"
-    )
-    prune.add_argument(
-        "--days", type=int, default=STALE_DAYS, help="age in days that counts as stale"
-    )
+    prune = sub.add_parser("prune", parents=[common], help="remove state for branches that are gone or stale")
+    prune.add_argument("--days", type=int, default=STALE_DAYS, help="age in days that counts as stale")
     prune.set_defaults(func=cmd_prune)
 
     lst = sub.add_parser("list", parents=[common], help="list every review in the state dir")
@@ -1065,25 +1017,23 @@ def _build_parser() -> argparse.ArgumentParser:
         help="delete review state for one scope (branch and repo need a git repo)",
     )
     clean.add_argument("--scope", required=True, choices=("branch", "repo", "all"))
-    clean.add_argument(
-        "--older-than", type=int, metavar="D", help="only dirs last updated more than D days ago"
-    )
+    clean.add_argument("--older-than", type=int, metavar="D", help="only dirs last updated more than D days ago")
     clean.set_defaults(func=cmd_cleanup)
     return parser
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     try:
         args = parser.parse_args(argv)
         result = args.func(args)
     except subprocess.CalledProcessError as exc:
         detail = (exc.stderr or "").strip().splitlines()
-        message = detail[-1] if detail else "git %s failed" % " ".join(exc.cmd[1:3])
-        print("error: %s" % message, file=sys.stderr)
+        message = detail[-1] if detail else "git {} failed".format(" ".join(exc.cmd[1:3]))
+        print(f"error: {message}", file=sys.stderr)
         return 1
     except (StateError, OSError) as exc:
-        print("error: %s" % exc, file=sys.stderr)
+        print(f"error: {exc}", file=sys.stderr)
         return 1
     print(json.dumps(result, indent=2))
     return 0

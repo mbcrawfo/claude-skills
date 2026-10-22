@@ -1,7 +1,7 @@
 import hashlib
+from pathlib import Path
 import tempfile
 import unittest
-from pathlib import Path
 
 from helpers import git, make_repo, run
 import review_state

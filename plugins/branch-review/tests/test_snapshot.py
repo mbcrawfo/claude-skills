@@ -2,9 +2,9 @@ import contextlib
 import io
 import json
 import os
+from pathlib import Path
 import tempfile
 import unittest
-from pathlib import Path
 
 from helpers import commit_file, git, make_repo, run
 import review_state
@@ -27,10 +27,14 @@ class SnapshotTest(unittest.TestCase):
         return run(
             self.repo,
             "begin-round",
-            "--mode", mode,
-            "--model", "test-model",
-            "--snapshot", snapshot,
-            "--base-ref", base_ref,
+            "--mode",
+            mode,
+            "--model",
+            "test-model",
+            "--snapshot",
+            snapshot,
+            "--base-ref",
+            base_ref,
             *extra,
             state_dir=self.state_dir,
         )
@@ -51,12 +55,8 @@ class SnapshotTest(unittest.TestCase):
         result = self.snapshot()
         self.assertTrue(result["dirty"])
         self.assertNotEqual(result["snapshot"], git(self.repo, "rev-parse", "HEAD"))
-        self.assertEqual(
-            git(self.repo, "show", result["snapshot"] + ":new.txt"), "fresh"
-        )
-        self.assertEqual(
-            git(self.repo, "show", result["snapshot"] + ":b.txt"), "changed"
-        )
+        self.assertEqual(git(self.repo, "show", result["snapshot"] + ":new.txt"), "fresh")
+        self.assertEqual(git(self.repo, "show", result["snapshot"] + ":b.txt"), "changed")
         self.assertEqual(git(self.repo, "status", "--porcelain"), status_before)
         self.assertEqual(git(self.repo, "for-each-ref"), refs_before)
 
@@ -78,9 +78,7 @@ class SnapshotTest(unittest.TestCase):
         self.assertEqual(result["lines"], 1)
         self.assertFalse(result["oversized"])
         self.assertFalse(result["empty"])
-        state = json.loads(
-            (Path(self.locate()["dir"]) / "review.json").read_text()
-        )
+        state = json.loads((Path(self.locate()["dir"]) / "review.json").read_text())
         self.assertEqual(len(state["rounds"]), 1)
         rnd = state["rounds"][0]
         self.assertEqual(rnd["head"], git(self.repo, "rev-parse", "HEAD"))
@@ -94,9 +92,7 @@ class SnapshotTest(unittest.TestCase):
         intent = self.tmp / "intent.txt"
         intent.write_text("Make b exist\n")
         self.begin("--intent-file", str(intent))
-        state = json.loads(
-            (Path(self.locate()["dir"]) / "review.json").read_text()
-        )
+        state = json.loads((Path(self.locate()["dir"]) / "review.json").read_text())
         self.assertEqual(state["intent"].strip(), "Make b exist")
 
     def test_begin_round_on_base_branch_is_empty(self):
@@ -121,9 +117,19 @@ class SnapshotTest(unittest.TestCase):
         with contextlib.redirect_stderr(err):
             code = review_state.main(
                 [
-                    "begin-round", "--mode", "followup", "--model", "m",
-                    "--snapshot", snap, "--base-ref", "main",
-                    "--state-dir", str(self.state_dir), "--repo", str(self.repo),
+                    "begin-round",
+                    "--mode",
+                    "followup",
+                    "--model",
+                    "m",
+                    "--snapshot",
+                    snap,
+                    "--base-ref",
+                    "main",
+                    "--state-dir",
+                    str(self.state_dir),
+                    "--repo",
+                    str(self.repo),
                 ]
             )
         self.assertEqual(code, 1)
@@ -156,14 +162,14 @@ class SnapshotTest(unittest.TestCase):
 
     def test_oversized_flag(self):
         for i in range(151):
-            (self.repo / ("f%03d.txt" % i)).write_text("x\n")
+            (self.repo / f"f{i:03d}.txt").write_text("x\n")
         result = self.begin()
         self.assertEqual(result["files"], 152)
         self.assertTrue(result["oversized"])
 
     def test_not_oversized_at_threshold(self):
         for i in range(149):
-            (self.repo / ("f%03d.txt" % i)).write_text("x\n")
+            (self.repo / f"f{i:03d}.txt").write_text("x\n")
         result = self.begin()
         self.assertEqual(result["files"], 150)
         self.assertFalse(result["oversized"])
@@ -194,9 +200,10 @@ class SnapshotTest(unittest.TestCase):
         git(self.repo, "config", "--unset", "user.name")
         git(self.repo, "config", "--unset", "user.email")
         (self.repo / "new.txt").write_text("fresh\n")
-        saved = {k: os.environ.pop(k, None) for k in (
-            "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
-            "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "EMAIL")}
+        saved = {
+            k: os.environ.pop(k, None)
+            for k in ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "EMAIL")
+        }
         os.environ["GIT_CONFIG_NOSYSTEM"] = "1"
         try:
             result = self.snapshot()

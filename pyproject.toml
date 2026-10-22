@@ -1,0 +1,14 @@
+[tool.ruff]
+target-version = "py39"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.ruff.lint.isort]
+# tests import `helpers` before `review_state`: helpers puts the scripts dir on sys.path.
+# Sorting by module name keeps that order (helpers < review_state < test_*).
+force-sort-within-sections = true

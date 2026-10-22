@@ -1,14 +1,14 @@
 import contextlib
+from datetime import datetime, timedelta, timezone
 import io
 import json
+from pathlib import Path
 import tempfile
 import unittest
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 from helpers import git, make_repo, run
-from test_ledger import finding, output, report
 import review_state
+from test_ledger import finding, output, report
 
 REPO_KEY = "owner__repo"  # derived from make_repo's default origin
 
@@ -33,9 +33,7 @@ class CleanupTest(unittest.TestCase):
     def call(self, *argv, repo=None):
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = review_state.main(
-                [*argv, "--state-dir", str(self.state_dir), "--repo", str(repo or self.repo)]
-            )
+            code = review_state.main([*argv, "--state-dir", str(self.state_dir), "--repo", str(repo or self.repo)])
         return code, out.getvalue(), err.getvalue()
 
     def raw(self, *argv):
@@ -53,8 +51,15 @@ class CleanupTest(unittest.TestCase):
     def begin(self, mode="deep"):
         snap = self.cli("snapshot")["snapshot"]
         return self.cli(
-            "begin-round", "--mode", mode, "--model", "opus",
-            "--snapshot", snap, "--base-ref", "main",
+            "begin-round",
+            "--mode",
+            mode,
+            "--model",
+            "opus",
+            "--snapshot",
+            snap,
+            "--base-ref",
+            "main",
         )
 
     def record(self, data):
@@ -124,14 +129,10 @@ class CleanupTest(unittest.TestCase):
             self.assertIn(part, header)
 
         positions = [
-            text.index(h)
-            for h in ("## Counts", "## Escalated", "## Deferred", "## Invalid", "## Fixed and verified")
+            text.index(h) for h in ("## Counts", "## Escalated", "## Deferred", "## Invalid", "## Fixed and verified")
         ]
         self.assertEqual(positions, sorted(positions))
-        order = [
-            text.index(t)
-            for t in ("Escalated one.", "Deferred one.", "Invalid one.", "Verified one.")
-        ]
+        order = [text.index(t) for t in ("Escalated one.", "Deferred one.", "Invalid one.", "Verified one.")]
         self.assertEqual(order, sorted(order))
         # entries land under their own heading
         self.assertLess(text.index("## Escalated"), text.index("Escalated one."))
@@ -260,10 +261,17 @@ class CleanupTest(unittest.TestCase):
     # list
     def test_list_sorted_by_updated(self):
         self.seed(
-            REPO_KEY, "a", "a", updated=days_ago(3), rounds=2,
+            REPO_KEY,
+            "a",
+            "a",
+            updated=days_ago(3),
+            rounds=2,
             findings=[
-                {"status": "open"}, {"status": "fixed"}, {"status": "still-open"},
-                {"status": "verified"}, {"status": "invalid"},
+                {"status": "open"},
+                {"status": "fixed"},
+                {"status": "still-open"},
+                {"status": "verified"},
+                {"status": "invalid"},
             ],
         )
         self.seed("other__repo", "b", "b", updated=days_ago(1))

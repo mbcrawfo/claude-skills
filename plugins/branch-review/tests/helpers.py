@@ -4,9 +4,9 @@ import contextlib
 import io
 import json
 import os
+from pathlib import Path
 import subprocess
 import sys
-from pathlib import Path
 from typing import Optional
 
 SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
@@ -68,8 +68,6 @@ def run(repo: Path, *argv: str, state_dir: Path) -> dict:
     """Invoke the CLI's main() against `repo` and return the parsed JSON output."""
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
-        code = review_state.main(
-            [*argv, "--state-dir", str(state_dir), "--repo", str(repo)]
-        )
-    assert code in (0, None), "main exited with %r" % (code,)
+        code = review_state.main([*argv, "--state-dir", str(state_dir), "--repo", str(repo)])
+    assert code in (0, None), f"main exited with {code!r}"
     return json.loads(buf.getvalue())

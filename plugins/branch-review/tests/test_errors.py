@@ -1,8 +1,8 @@
 import contextlib
 import io
+from pathlib import Path
 import tempfile
 import unittest
-from pathlib import Path
 
 from helpers import make_repo
 import review_state
@@ -39,14 +39,11 @@ class ErrorPathTest(unittest.TestCase):
     def test_repo_is_not_a_git_repo(self):
         plain = self.tmp / "plain"
         plain.mkdir()
-        self.assert_one_line_error(
-            *self.call("locate", "--repo", str(plain), "--state-dir", str(self.tmp / "s"))
-        )
+        self.assert_one_line_error(*self.call("locate", "--repo", str(plain), "--state-dir", str(self.tmp / "s")))
 
     def test_repo_path_does_not_exist(self):
         self.assert_one_line_error(
-            *self.call("locate", "--repo", str(self.tmp / "missing"),
-                       "--state-dir", str(self.tmp / "s"))
+            *self.call("locate", "--repo", str(self.tmp / "missing"), "--state-dir", str(self.tmp / "s"))
         )
 
     def _locate_with_review_json(self, content: bytes):

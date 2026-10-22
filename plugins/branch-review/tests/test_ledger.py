@@ -1,9 +1,9 @@
 import contextlib
 import io
 import json
+from pathlib import Path
 import tempfile
 import unittest
-from pathlib import Path
 
 from helpers import make_repo, run
 import review_state
@@ -57,9 +57,7 @@ class LedgerTest(unittest.TestCase):
     def call(self, *argv):
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = review_state.main(
-                [*argv, "--state-dir", str(self.state_dir), "--repo", str(self.repo)]
-            )
+            code = review_state.main([*argv, "--state-dir", str(self.state_dir), "--repo", str(self.repo)])
         return code, out.getvalue(), err.getvalue()
 
     def assert_error(self, *argv):
@@ -72,8 +70,15 @@ class LedgerTest(unittest.TestCase):
     def begin(self, mode="deep"):
         snap = self.cli("snapshot")["snapshot"]
         return self.cli(
-            "begin-round", "--mode", mode, "--model", "m",
-            "--snapshot", snap, "--base-ref", "main",
+            "begin-round",
+            "--mode",
+            mode,
+            "--model",
+            "m",
+            "--snapshot",
+            snap,
+            "--base-ref",
+            "main",
         )
 
     def write(self, name, text):
@@ -131,7 +136,7 @@ class LedgerTest(unittest.TestCase):
 
     def test_record_uses_last_json_block(self):
         self.begin()
-        text = "```json\n{\"example\": true}\n```\n\n" + report(output())
+        text = '```json\n{"example": true}\n```\n\n' + report(output())
         self.record(None, raw=text)
         self.assertEqual(len(self.state()["findings"]), 2)
 
@@ -140,9 +145,7 @@ class LedgerTest(unittest.TestCase):
         self.record(
             output(
                 findings=[finding()],
-                outside_change=[
-                    {"file": "z.py", "lines": "3", "title": "Old bug.", "detail": "d"}
-                ],
+                outside_change=[{"file": "z.py", "lines": "3", "title": "Old bug.", "detail": "d"}],
             )
         )
         findings = self.state()["findings"]
@@ -182,9 +185,7 @@ class LedgerTest(unittest.TestCase):
         self.assert_rejected(output(merge_risk={"level": "severe", "reason": "x"}))
 
     def test_record_rejects_unknown_verdict_id(self):
-        self.assert_rejected(
-            output(verdicts=[{"id": "R9-F9", "status": "verified", "reason": "x"}])
-        )
+        self.assert_rejected(output(verdicts=[{"id": "R9-F9", "status": "verified", "reason": "x"}]))
 
     def test_record_rejects_without_round(self):
         path = self.write("r.md", report(output()))
@@ -224,9 +225,7 @@ class LedgerTest(unittest.TestCase):
         self.record(output())
         self.begin("followup")
         self.record(output(findings=[finding()]))
-        self.assertEqual(
-            [f["id"] for f in self.state()["findings"]], ["R1-F1", "R1-F2", "R2-F1"]
-        )
+        self.assertEqual([f["id"] for f in self.state()["findings"]], ["R1-F1", "R1-F2", "R2-F1"])
 
     def test_record_copies_report(self):
         self.begin()
@@ -245,8 +244,7 @@ class LedgerTest(unittest.TestCase):
         self.assertEqual(f["status"], "fixed")
         self.assertEqual(
             f["resolution"],
-            {"status": "fixed", "note": "", "commit": "abc123",
-             "by": "orchestrator", "round": 1},
+            {"status": "fixed", "note": "", "commit": "abc123", "by": "orchestrator", "round": 1},
         )
         self.assertIsNone(f["round_closed"])
 
@@ -291,9 +289,7 @@ class LedgerTest(unittest.TestCase):
     # resolve
     def test_resolve_only_from_escalated(self):
         self.seeded()
-        self.assert_error(
-            "resolve", "--id", "R1-F1", "--decision", "fix", "--note", "do it"
-        )
+        self.assert_error("resolve", "--id", "R1-F1", "--decision", "fix", "--note", "do it")
         self.set_status("R1-F1", "escalated", "--note", "q")
         self.cli("resolve", "--id", "R1-F1", "--decision", "fix", "--note", "do it")
         f = self.find("R1-F1")
@@ -382,7 +378,7 @@ class LedgerTest(unittest.TestCase):
 
 class ExtractJsonBlockTest(unittest.TestCase):
     def test_returns_last_block(self):
-        text = "```json\n{\"a\": 1}\n```\ntext\n```json\n{\"a\": 2}\n```\n"
+        text = '```json\n{"a": 1}\n```\ntext\n```json\n{"a": 2}\n```\n'
         self.assertEqual(review_state.extract_json_block(text), {"a": 2})
 
     def test_no_block(self):
