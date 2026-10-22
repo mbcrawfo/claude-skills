@@ -19,7 +19,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -693,16 +693,262 @@ def cmd_status(args: argparse.Namespace) -> dict:
     }
 
 
+# --- summary, prune, list, cleanup -----------------------------------------
+
+STALE_DAYS = 30
+
+
+def _one_line(text: object) -> str:
+    return " ".join(str(text or "").split())
+
+
+def _location(finding: dict) -> str:
+    file = finding.get("file") or "?"
+    lines = finding.get("lines")
+    return "%s:%s" % (file, lines) if lines else file
+
+
+def _entry(finding: dict, details: List[str]) -> List[str]:
+    out = [
+        "- **%s** %s (`%s`)"
+        % (finding.get("id"), _one_line(finding.get("title")), _location(finding))
+    ]
+    out.extend("  - %s" % d for d in details if d)
+    return out
+
+
+def _resolution_note(finding: dict) -> List[str]:
+    res = finding.get("resolution") or {}
+    note = _one_line(res.get("note"))
+    if not note:
+        return []
+    return ["%s: %s" % (str(res.get("by") or "note").capitalize(), note)]
+
+
+def _invalid_details(finding: dict) -> List[str]:
+    res = finding.get("resolution") or {}
+    replies = [d for d in finding.get("discussion", []) if d.get("from") == "reviewer"]
+    reply = _one_line(replies[-1].get("text")) if replies else ""
+    return [
+        "Orchestrator: %s" % (_one_line(res.get("note")) or "(no note)"),
+        "Reviewer: %s" % (reply or "(no reply)"),
+    ]
+
+
+def _verified_details(finding: dict) -> List[str]:
+    res = finding.get("resolution") or {}
+    return ["Commit: %s" % (res.get("commit") or "(none)")]
+
+
+def render_summary(state: dict) -> str:
+    rounds = state["rounds"]
+    findings = state.get("findings", [])
+    last = rounds[-1]
+    risk = next(
+        (r["merge_risk"] for r in reversed(rounds) if isinstance(r.get("merge_risk"), dict)),
+        None,
+    )
+    risk_text = "n/a"
+    if risk:
+        risk_text = "%s (%s)" % (risk.get("level"), _one_line(risk.get("reason")))
+    header = "# Review of `%s` (%s): %d round%s, last %s with %s, merge risk %s" % (
+        state.get("branch"),
+        state.get("repo_key"),
+        len(rounds),
+        "" if len(rounds) == 1 else "s",
+        last.get("mode"),
+        last.get("model"),
+        risk_text,
+    )
+
+    counts = {s: 0 for s in STATUSES}
+    for f in findings:
+        counts[f.get("status")] = counts.get(f.get("status"), 0) + 1
+    out = [header, "", "## Counts", "", "| Status | Count |", "| --- | --- |"]
+    out.extend("| %s | %d |" % (s, n) for s, n in counts.items())
+
+    sections = (
+        ("Escalated", "escalated", _resolution_note),
+        ("Deferred", "deferred", _resolution_note),
+        ("Invalid", "invalid", _invalid_details),
+        ("Fixed and verified", "verified", _verified_details),
+    )
+    for title, status, details in sections:
+        out.extend(["", "## " + title, ""])
+        chosen = [f for f in findings if f.get("status") == status]
+        if not chosen:
+            out.append("None.")
+        for f in chosen:
+            out.extend(_entry(f, details(f)))
+    return "\n".join(out) + "\n"
+
+
+def cmd_summary(args: argparse.Namespace) -> dict:
+    directory = state_path(Path(args.state_dir).expanduser(), Path(args.repo))
+    state = load_state(directory)
+    if state is None or not state.get("rounds"):
+        raise StateError("no review rounds recorded for this branch")
+    text = render_summary(state)
+    path = directory / "summary.md"
+    path.write_text(text, encoding="utf-8")
+    return {"path": str(path), "text": text}
+
+
+def _parse_ts(value: object) -> Optional[datetime]:
+    try:
+        return datetime.strptime(str(value), "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc
+        )
+    except ValueError:
+        return None
+
+
+def _older_than(updated: object, days: float) -> bool:
+    """True when `updated` is more than `days` ago; an unreadable time counts as old."""
+    ts = _parse_ts(updated)
+    if ts is None:
+        return True
+    return datetime.now(timezone.utc) - ts > timedelta(days=days)
+
+
+def _read_review(directory: Path) -> Tuple[Optional[dict], Optional[str]]:
+    """`(state, error)`: state is None when missing or corrupt, error set if corrupt."""
+    try:
+        return load_state(directory), None
+    except (StateError, OSError) as exc:
+        return None, str(exc)
+
+
+def _subdirs(parent: Path) -> List[Path]:
+    """Real (non-symlink) child directories, sorted by name."""
+    if not parent.is_dir():
+        return []
+    return sorted(p for p in parent.iterdir() if p.is_dir() and not p.is_symlink())
+
+
+def _remove_dir(state_dir: Path, path: Path) -> None:
+    """rmtree `path`, but only if it is strictly inside `state_dir`."""
+    root = Path(state_dir).resolve()
+    target = Path(path)
+    resolved = target.resolve()
+    if target.is_symlink() or resolved == root or root not in resolved.parents:
+        raise StateError("refusing to remove %s: not inside %s" % (path, state_dir))
+    shutil.rmtree(str(resolved))
+
+
+def _remove_if_empty(path: Path) -> None:
+    try:
+        path.rmdir()
+    except OSError:
+        pass  # not empty, or already gone
+
+
+def cmd_prune(args: argparse.Namespace) -> dict:
+    repo = Path(args.repo)
+    state_dir = Path(args.state_dir).expanduser()
+    _, current_key = branch_key(repo)
+    repo_dir = state_dir / repo_key(repo)
+
+    removed: List[str] = []
+    for bdir in _subdirs(repo_dir):
+        if bdir.name == current_key:
+            continue
+        state, _err = _read_review(bdir)
+        stale = state is None or _older_than(state.get("updated"), args.days)
+        if not stale:
+            name = state.get("branch")
+            if not isinstance(name, str) or not name:
+                name = bdir.name.replace("__", "/")
+            known = _git_try(repo, "branch", "--list", name) or _git_try(
+                repo, "branch", "-r", "--list", "origin/" + name
+            )
+            stale = not known
+        if stale:
+            _remove_dir(state_dir, bdir)
+            removed.append(str(bdir))
+    _remove_if_empty(repo_dir)
+    return {"removed": removed}
+
+
+def cmd_list(args: argparse.Namespace) -> dict:
+    state_dir = Path(args.state_dir).expanduser()
+    reviews = []
+    for rdir in _subdirs(state_dir):
+        for bdir in _subdirs(rdir):
+            if not (bdir / STATE_FILE).exists():
+                continue
+            state, error = _read_review(bdir)
+            entry = {
+                "repo_key": rdir.name,
+                "branch": bdir.name.replace("__", "/"),
+                "rounds": None,
+                "updated": None,
+                "open": None,
+                "dir": str(bdir),
+            }
+            if state is None:
+                entry["error"] = error or "unreadable state file"
+            else:
+                entry["repo_key"] = state.get("repo_key") or rdir.name
+                entry["branch"] = state.get("branch") or entry["branch"]
+                entry["rounds"] = len(state.get("rounds", []))
+                entry["updated"] = state.get("updated")
+                entry["open"] = sum(
+                    1 for f in state.get("findings", []) if f.get("status") in OPEN_STATUSES
+                )
+            reviews.append(entry)
+    reviews.sort(key=lambda e: e["updated"] or "", reverse=True)
+    return {"reviews": reviews}
+
+
+def cmd_cleanup(args: argparse.Namespace) -> dict:
+    """Remove state by scope.
+
+    `--repo` doubles as the repository path here, so it is optional-valued: it
+    names the repo scope only when neither `--branch` nor `--all` is given.
+    """
+    if args.branch and args.all:
+        raise StateError("choose exactly one of --branch, --repo, --all")
+    if not (args.branch or args.all or args.repo is not None):
+        raise StateError("choose exactly one of --branch, --repo, --all")
+    state_dir = Path(args.state_dir).expanduser()
+
+    only = None
+    if args.all:
+        repo_dirs = _subdirs(state_dir)
+    else:
+        repo = Path(args.repo or ".")
+        repo_dirs = [state_dir / repo_key(repo)]
+        if args.branch:
+            only = state_path(state_dir, repo)
+
+    removed: List[str] = []
+    for rdir in repo_dirs:
+        candidates = [only] if only is not None else _subdirs(rdir)
+        for bdir in candidates:
+            if not bdir.is_dir():
+                continue
+            if args.older_than is not None:
+                state, _err = _read_review(bdir)
+                if not _older_than(state.get("updated") if state else None, args.older_than):
+                    continue
+            _remove_dir(state_dir, bdir)
+            removed.append(str(bdir))
+        _remove_if_empty(rdir)
+    return {"removed": removed}
+
+
 # --- CLI -------------------------------------------------------------------
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    common = _Parser(add_help=False)
-    common.add_argument(
+    state_opt = _Parser(add_help=False)
+    state_opt.add_argument(
         "--state-dir",
         default=DEFAULT_STATE_DIR,
         help="root directory for review state (default: %(default)s)",
     )
+    common = _Parser(add_help=False, parents=[state_opt])
     common.add_argument(
         "--repo", default=".", help="repository path (default: current directory)"
     )
@@ -771,6 +1017,43 @@ def _build_parser() -> argparse.ArgumentParser:
 
     stat = sub.add_parser("status", parents=[common], help="counts and whether to continue")
     stat.set_defaults(func=cmd_status)
+
+    summ = sub.add_parser(
+        "summary", parents=[common], help="write and print summary.md for the branch"
+    )
+    summ.set_defaults(func=cmd_summary)
+
+    prune = sub.add_parser(
+        "prune", parents=[common], help="remove state for branches that are gone or stale"
+    )
+    prune.add_argument(
+        "--days", type=int, default=STALE_DAYS, help="age in days that counts as stale"
+    )
+    prune.set_defaults(func=cmd_prune)
+
+    lst = sub.add_parser("list", parents=[common], help="list every review in the state dir")
+    lst.set_defaults(func=cmd_list)
+
+    clean = sub.add_parser(
+        "cleanup",
+        parents=[state_opt],
+        help="delete review state: exactly one of --branch, --repo, --all",
+    )
+    clean.add_argument("--branch", action="store_true", help="the current branch's state")
+    clean.add_argument(
+        "--repo",
+        nargs="?",
+        const=".",
+        default=None,
+        metavar="PATH",
+        help="all state for the repo at PATH (default: current directory); "
+        "with --branch, the repo the branch is read from",
+    )
+    clean.add_argument("--all", action="store_true", help="all state for every repo")
+    clean.add_argument(
+        "--older-than", type=int, metavar="D", help="only dirs last updated more than D days ago"
+    )
+    clean.set_defaults(func=cmd_cleanup)
     return parser
 
 
