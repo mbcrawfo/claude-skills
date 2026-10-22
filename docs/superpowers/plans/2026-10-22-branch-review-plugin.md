@@ -360,10 +360,12 @@ Expected: all exit 0, every test listed as `ok`.
 
 ---
 
-### Task 10: Ruff linting and formatting, with CI
+### Task 10: Ruff linting and formatting, editorconfig, with CI
 
 **Files:**
 - Create: `pyproject.toml` (repo root)
+- Create: `.editorconfig` (repo root)
+- Create: `.python-version` (repo root)
 - Create: `.github/workflows/lint.yml`
 - Modify: `.github/workflows/validate.yml` (only if the trigger block needs aligning)
 - Modify: `AGENTS.md` (repo)
@@ -373,7 +375,8 @@ Expected: all exit 0, every test listed as `ok`.
 - Consumes: the Python under `plugins/branch-review/scripts/` and `plugins/branch-review/tests/` from Tasks 2 to 6.
 - Produces: `ruff check .` and `ruff format --check .` both clean from the repo root; CI runs them on every push to `main` and every pull request.
 
-- [ ] **Step 1: Write `pyproject.toml`** with only a ruff section: `[tool.ruff]` `target-version = "py39"`, `line-length = 100`; `[tool.ruff.lint]` `select = ["E", "F", "W", "I", "UP", "B"]`. No `[project]` table; this repo is not a Python package.
+- [ ] **Step 1: Write `pyproject.toml`** with only a ruff section: `[tool.ruff]` `target-version = "py39"`, `line-length = 120`; `[tool.ruff.lint]` `select = ["E", "F", "W", "I", "UP", "B"]`; `[tool.ruff.format]` `quote-style = "double"`. No `[project]` table; this repo is not a Python package.
+- [ ] **Step 1b: Write `.editorconfig`** from the base file the controller saved at `.superpowers/sdd/2026-10-22-branch-review-plugin/base.editorconfig` (copied from mbcrawfo/space). Keep every section and value as in the base, including `max_line_length = 120` and `quote_type = double`, which mirror the ruff settings above; change only the header comment so it names this repo instead of "the space monorepo". Write `.python-version` containing `3.12` and a trailing newline. Change `validate.yml`'s `setup-python` step (added in Task 9) to use `python-version-file: .python-version` instead of a literal version.
 - [ ] **Step 2: Run ruff locally**
 
 Run: `uvx ruff check . && uvx ruff format --check .` (or `pipx run ruff`, or `python3 -m pip install --user ruff` then `ruff`; use whichever is available, and say which in the report)
@@ -381,10 +384,10 @@ Expected: findings and formatting diffs on the existing files.
 
 - [ ] **Step 3: Fix every finding** and apply `ruff format .`. Behavior must not change: run `python3 -m unittest discover -s plugins/branch-review/tests -v` after formatting and confirm the same pass count as before.
 - [ ] **Step 4: Write `.github/workflows/lint.yml`**: name `Lint`, triggers `push` to `main` and `pull_request`, one job `ruff` on `ubuntu-latest` with `actions/checkout` pinned to the same SHA `validate.yml` uses, then `astral-sh/ruff-action` pinned to a full commit SHA with the version tag in a trailing comment (per `.github/AGENTS.md`), once with `args: check .` and once with `args: format --check .`. Keep `validate.yml` as the plugin-validate and unit-test workflow; both workflows run on the same triggers.
-- [ ] **Step 5: Repo AGENTS.md**: under the Python conventions added in Task 9, add: Python is linted and formatted with ruff using the root `pyproject.toml`; run `ruff check .` and `ruff format .` before committing Python.
+- [ ] **Step 5: Repo AGENTS.md**: under the Python conventions added in Task 9, add: Python is linted and formatted with ruff using the root `pyproject.toml`; run `ruff check .` and `ruff format .` before committing Python; `.editorconfig` mirrors the ruff settings, so change both together; `.python-version` pins the local and CI interpreter.
 - [ ] **Step 6: Verify**
 
 Run: `uvx ruff check . && uvx ruff format --check . && python3 -m unittest discover -s plugins/branch-review/tests && claude plugin validate .`
 Expected: all exit 0.
 
-- [ ] **Step 7: Commit** `chore: lint and format python with ruff in CI`
+- [ ] **Step 7: Commit** `chore: ruff, editorconfig and python-version with lint CI`
