@@ -14,7 +14,7 @@ Every state command is the same prefix plus a subcommand. Shell variables do not
 python3 "${CLAUDE_SKILL_DIR}/../../scripts/review_state.py" <command> --state-dir "${CLAUDE_PLUGIN_DATA}" ...
 ```
 
-Below, `rs <command>` means this prefix plus `<command>`. Each command prints one JSON object. On failure it exits 1 and prints one line on stderr.
+Below, `rs <command>` means this prefix plus `<command>`. Each command prints one JSON object. On failure it exits 1 and prints one line on stderr. The script refuses an empty or relative `--state-dir`; if it reports that, `CLAUDE_PLUGIN_DATA` is not set, so stop and report it. Never work around it by passing another directory.
 
 ## 1. List
 
@@ -38,3 +38,4 @@ With no `--branch`, `--repo` or `--all`, print a table of `repo_key`, `branch`, 
 1. Unless `--yes` was given, ask the user to confirm removing exactly those entries, and wait for a clear yes. On anything else, stop and remove nothing.
 2. Run `rs cleanup --repo "<repo>" --scope <scope>`, adding `--older-than <DAYS>` when it was given. `<scope>` is `branch`, `repo` or `all` for `--branch`, `--repo` or `--all`. For `--all`, omit `--repo`.
 3. Print each path in `removed`, or say nothing was removed if the list is empty. If it differs from the list you showed, say so.
+4. If `skipped` is not empty, print those paths: they hold neither `review.json` nor `rounds/`, so the script treats them as something other than review state and leaves them in place. Do not delete them yourself.

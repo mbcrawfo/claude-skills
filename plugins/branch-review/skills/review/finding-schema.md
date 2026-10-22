@@ -38,7 +38,7 @@ Required top-level keys: `summary` (string), `merge_risk` (`level` from the enum
 
 Required finding keys: `severity`, `category`, `file`, `lines`, `title`, `trigger`, `consequence`, `reachable_now`, `fix`. Optional: `reachable_note`, `evidence`, `test`, `source` (default `""`) and `effort` (default `"quick"`). `lines` is a string.
 
-Verdicts are for earlier findings only, and only in follow-up rounds. `id` must exist in the ledger; `status` is `verified` or `still-open`; `reason` is optional.
+Verdicts are for earlier findings only: the entries of `OPEN_FINDINGS`, which a follow-up round always has and a deep round has when findings are carried forward. Give each entry one verdict and never re-report it as a new finding. `id` must exist in the ledger; `status` is `verified` or `still-open`; `reason` is optional.
 
 `outside_change` entries require `file` and `title`; `lines` and `detail` default to `""`. `severity` and `category` may be given (same enums) and default to `minor` and `logic`.
 
@@ -61,7 +61,9 @@ Top level:
 | `rounds` | list of round objects |
 | `findings` | list of finding records |
 
-Round object: `number`, `mode` (`deep` or `followup`), `model`, `started`, `snapshot`, `head`, `base_ref`, `diff_from`, `diff_to`, `changed_files`, `paths`, then filled by `record-findings`: `summary`, `merge_risk`, `intent_check`, `added`. Before recording, `summary` and `merge_risk` are null and `intent_check` and `added` are absent. `added` is the number of new in-change findings the round produced; outside-change entries are not counted.
+Round object: `number`, `mode` (`deep` or `followup`), `model`, `started`, `snapshot`, `head`, `base_ref`, `merge_base` (of HEAD and `base_ref` when the round began), `diff_from`, `diff_to`, `changed_files`, `paths` (normalized: no leading `./`, a directory as `dir/**`), then filled by `record-findings`: `summary`, `merge_risk`, `intent_check`, `added`. Before recording, `summary` and `merge_risk` are null and `intent_check` and `added` are absent. `added` is the number of new in-change findings the round produced; outside-change entries are not counted.
+
+A round with `added` is recorded. A round without it was begun but its reviewer never reported, so it reviewed nothing: it never anchors a follow-up, `begin-round` drops it before adding the next round, and `status` and `summary` exit 1 while it is the last round. `begin-round` never saves an empty round (no changed files): it returns `saved: false`, and creates no state when none existed.
 
 Finding record:
 
@@ -92,11 +94,33 @@ Outside-change records carry `file`, `lines`, `title`, `detail`, `severity` and 
 
 Transitions:
 
-- `open` or `still-open` to `fixed`, `invalid` or `escalated`: `set-status`. `fixed` needs `--commit` or `--note`; `invalid` and `escalated` need `--note`.
+- `open` or `still-open` to `fixed`, `invalid` or `escalated`: `set-status`. `fixed` needs `--commit` or a note; `invalid` and `escalated` need a note (`--note` or `--note-file`).
 - any status back to `open`: `set-status --status open`.
 - `fixed` to `verified` or `still-open`: reviewer verdict. `verified` sets `round_closed`.
 - `escalated` to `open` (decision `fix`) or `deferred` (decision `defer`): `resolve`. Only valid from `escalated`. `defer` sets `round_closed`.
 
 `invalid` and `escalated` set `round_closed` in `set-status`; `fixed` and `open` leave it null.
 
-`status` reports `continue: true` while any finding is `open`, `fixed` or `still-open` (`open-findings`, or `unverified-fixes` when only `fixed` remain) or when the last round added findings (`new-findings`). It reports `continue: false` with `converged` otherwise, and with `max-rounds` once there are six rounds numbered above `--since-round N` (default 0, so every round counts).
+Text arguments have file forms: `set-status --note-file PATH`, `discuss --text-file PATH` and `resolve --note-file PATH` read the text from a UTF-8 file and strip surrounding whitespace. Each is mutually exclusive with its inline form (`--note`, `--text`). `discuss` and `resolve` reject an empty file; for `set-status` an empty file is no note.
+
+`status` reports `continue: true` while any finding is `open`, `fixed` or `still-open` (`open-findings`, or `unverified-fixes` when only `fixed` remain) or when the last round added findings (`new-findings`). It reports `continue: false` with `converged` otherwise. When it would continue but there are six or more rounds numbered above `--since-round N` (default 0, so every round counts), it reports `continue: false` with `max-rounds` instead.
+
+## Mode selection
+
+`locate` picks the next round's mode from the last recorded round (the anchor) and returns it with a reason:
+
+| reason | mode | when |
+| --- | --- | --- |
+| `no-state` | deep | no `review.json` for the branch |
+| `no-rounds` | deep | no recorded round |
+| `snapshot-missing` | deep | the anchor's snapshot commit is gone |
+| `history-rewritten` | deep | HEAD does not descend from the anchor's HEAD |
+| `base-moved` | deep | the merge base of HEAD and the base ref differs from the anchor's `merge_base`, as after merging the base into the branch |
+| `paths-changed` | deep | the normalized `--paths` given to `locate` differ from the anchor's `paths` |
+| `continuing` | followup | none of the above |
+
+`open_findings` is returned in every case, so a deep round after an earlier one carries them forward. `locate` and `begin-round` use `--base` / `--base-ref` when given, else the stored `base_ref`, else `origin/HEAD`'s target, else `main`.
+
+## State dir and cleanup
+
+Every command refuses an empty, blank or relative `--state-dir` (`~` is expanded first). `prune` and `cleanup` remove only `<repo_key>/<branch_key>` directories holding `review.json` or `rounds/`; any other directory is left in place and listed under `skipped` in their output.
