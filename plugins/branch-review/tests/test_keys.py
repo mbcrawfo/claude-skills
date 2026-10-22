@@ -82,7 +82,7 @@ class KeysTest(unittest.TestCase):
         out = run(repo, "locate", state_dir=state_dir)
         self.assertTrue(out["exists"])
         self.assertEqual(out["mode"], "deep")
-        self.assertEqual(out["reason"], "state-exists")
+        self.assertEqual(out["reason"], "snapshot-missing")
         self.assertEqual(out["rounds"], 1)
         self.assertEqual([f["id"] for f in out["open_findings"]], ["F1", "F2", "F3"])
 
