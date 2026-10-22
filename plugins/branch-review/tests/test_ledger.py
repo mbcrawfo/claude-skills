@@ -68,6 +68,10 @@ class LedgerTest(unittest.TestCase):
         self.assertEqual(len(err.strip().splitlines()), 1, err)
 
     def begin(self, mode="deep"):
+        if mode == "followup":
+            # An empty round is never saved, so give each follow-up a delta.
+            self._changes = getattr(self, "_changes", 0) + 1
+            (self.repo / f"change-{self._changes}.txt").write_text("x\n")
         snap = self.cli("snapshot")["snapshot"]
         return self.cli(
             "begin-round",
@@ -354,26 +358,115 @@ class LedgerTest(unittest.TestCase):
         self.assertFalse(result["continue"])
         self.assertEqual(result["reason"], "converged")
 
-    def test_status_max_rounds(self):
-        for _ in range(6):
+    def rounds_with_open_findings(self, count):
+        for _ in range(count):
             self.begin()
+            self.record(output())
+
+    def test_status_max_rounds(self):
+        self.rounds_with_open_findings(6)
         result = self.cli("status")
         self.assertEqual(result["rounds"], 6)
         self.assertFalse(result["continue"])
         self.assertEqual(result["reason"], "max-rounds")
 
     def test_status_max_rounds_counts_rounds_after_since_round(self):
-        for _ in range(7):
-            self.begin()
+        self.rounds_with_open_findings(7)
         result = self.cli("status", "--since-round", "3")
         self.assertEqual(result["rounds"], 7)
-        self.assertNotEqual(result["reason"], "max-rounds")
+        self.assertTrue(result["continue"])
+        self.assertEqual(result["reason"], "open-findings")
         result = self.cli("status", "--since-round", "0")
         self.assertFalse(result["continue"])
         self.assertEqual(result["reason"], "max-rounds")
 
+    def test_status_converged_on_sixth_round_is_not_max_rounds(self):
+        for _ in range(6):
+            self.begin()
+            self.record(output(findings=[]))
+        result = self.cli("status")
+        self.assertEqual(result["rounds"], 6)
+        self.assertFalse(result["continue"])
+        self.assertEqual(result["reason"], "converged")
+
     def test_status_without_state_is_an_error(self):
         self.assert_error("status")
+
+    def test_status_and_summary_reject_unrecorded_last_round(self):
+        self.seeded()
+        self.begin("followup")  # dispatched, never recorded
+        for command in ("status", "summary"):
+            with self.subTest(command=command):
+                code, out, err = self.call(command)
+                self.assertEqual(code, 1, command)
+                self.assertEqual(out, "")
+                self.assertIn("round 2 has no recorded findings", err)
+                self.assertEqual(len(err.strip().splitlines()), 1, err)
+
+    def test_status_rejects_unrecorded_only_round(self):
+        self.begin()
+        code, out, err = self.call("status")
+        self.assertEqual(code, 1)
+        self.assertIn("round 1 has no recorded findings", err)
+
+    # text files
+    def test_set_status_note_file(self):
+        self.seeded()
+        text = 'it\'s "quoted" $(touch pwned) `x` \\ done'
+        note = self.write("note.md", "\n" + text + "\n\n")
+        self.set_status("R1-F1", "escalated", "--note-file", note)
+        f = self.find("R1-F1")
+        self.assertEqual(f["status"], "escalated")
+        self.assertEqual(f["resolution"]["note"], text)
+        self.assertFalse((self.repo / "pwned").exists())
+
+    def test_set_status_note_file_empty_counts_as_no_note(self):
+        self.seeded()
+        empty = self.write("empty.md", "  \n\n")
+        self.assert_error("set-status", "--id", "R1-F1", "--status", "invalid", "--note-file", empty)
+        self.assertEqual(self.find("R1-F1")["status"], "open")
+
+    def test_discuss_text_file(self):
+        self.seeded()
+        path = self.write("reply.md", "R1-F1 upheld: the guard on line 3 is skipped when x='a\"b'\n")
+        self.cli("discuss", "--id", "R1-F1", "--from", "reviewer", "--text-file", path)
+        entry = self.find("R1-F1")["discussion"][-1]
+        self.assertEqual(entry["text"], "R1-F1 upheld: the guard on line 3 is skipped when x='a\"b'")
+        self.assertEqual(entry["from"], "reviewer")
+
+    def test_resolve_note_file(self):
+        self.seeded()
+        self.set_status("R1-F1", "escalated", "--note", "q")
+        path = self.write("decision.md", "Fix it; keep the 'legacy' path.\n")
+        self.cli("resolve", "--id", "R1-F1", "--decision", "fix", "--note-file", path)
+        f = self.find("R1-F1")
+        self.assertEqual(f["status"], "open")
+        self.assertEqual(f["resolution"]["note"], "Fix it; keep the 'legacy' path.")
+
+    def test_text_file_forms_reject_empty_missing_and_both(self):
+        self.seeded()
+        self.set_status("R1-F2", "escalated", "--note", "q")
+        empty = self.write("empty.md", "\n \n")
+        good = self.write("good.md", "ok\n")
+        missing = str(self.tmp / "missing.md")
+        binary = self.tmp / "binary.md"
+        binary.write_bytes(b"\xff\xfe\x00")
+        before = self.review_json.read_bytes()
+        for argv in (
+            ("discuss", "--id", "R1-F1", "--from", "reviewer", "--text-file", empty),
+            ("discuss", "--id", "R1-F1", "--from", "reviewer", "--text-file", missing),
+            ("discuss", "--id", "R1-F1", "--from", "reviewer", "--text-file", str(binary)),
+            ("discuss", "--id", "R1-F1", "--from", "reviewer", "--text", "x", "--text-file", good),
+            ("discuss", "--id", "R1-F1", "--from", "reviewer"),
+            ("resolve", "--id", "R1-F2", "--decision", "defer", "--note-file", empty),
+            ("resolve", "--id", "R1-F2", "--decision", "defer", "--note", "x", "--note-file", good),
+            ("resolve", "--id", "R1-F2", "--decision", "defer"),
+            ("set-status", "--id", "R1-F1", "--status", "fixed", "--note", "x", "--note-file", good),
+            ("set-status", "--id", "R1-F1", "--status", "fixed", "--note-file", missing),
+        ):
+            with self.subTest(argv=argv):
+                self.assert_error(*argv)
+        self.assertEqual(self.review_json.read_bytes(), before)
 
 
 class ExtractJsonBlockTest(unittest.TestCase):

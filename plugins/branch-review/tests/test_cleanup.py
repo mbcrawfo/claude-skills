@@ -6,7 +6,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from helpers import git, make_repo, run
+from helpers import git, make_repo, run, sandbox_cwd
 import review_state
 from test_ledger import finding, output, report
 
@@ -25,6 +25,10 @@ class CleanupTest(unittest.TestCase):
         self.tmp = Path(self._tmp.name)
         self.state_dir = self.tmp / "state"
         self.repo = make_repo(self.tmp / "r")
+        # These tests run prune and cleanup: never with the checkout as cwd.
+        sandbox = contextlib.ExitStack()
+        self.addCleanup(sandbox.close)
+        self.sandbox = sandbox.enter_context(sandbox_cwd())
 
     # helpers
     def cli(self, *argv):
@@ -49,6 +53,10 @@ class CleanupTest(unittest.TestCase):
         return json.loads(out)
 
     def begin(self, mode="deep"):
+        if mode == "followup":
+            # An empty round is never saved, so give each follow-up a delta.
+            self._changes = getattr(self, "_changes", 0) + 1
+            (self.repo / f"change-{self._changes}.txt").write_text("x\n")
         snap = self.cli("snapshot")["snapshot"]
         return self.cli(
             "begin-round",
@@ -128,13 +136,25 @@ class CleanupTest(unittest.TestCase):
         for part in (REPO_KEY, "feature/x", "2 rounds", "followup", "opus", "low"):
             self.assertIn(part, header)
 
-        positions = [
-            text.index(h) for h in ("## Counts", "## Escalated", "## Deferred", "## Invalid", "## Fixed and verified")
-        ]
+        headings = (
+            "## Counts",
+            "## Open and unverified",
+            "## Escalated",
+            "## Deferred",
+            "## Invalid",
+            "## Fixed and verified",
+        )
+        positions = [text.index(h) for h in headings]
         self.assertEqual(positions, sorted(positions))
-        order = [text.index(t) for t in ("Escalated one.", "Deferred one.", "Invalid one.", "Verified one.")]
+        order = [
+            text.index(t)
+            for t in ("Still open one.", "Escalated one.", "Deferred one.", "Invalid one.", "Verified one.")
+        ]
         self.assertEqual(order, sorted(order))
         # entries land under their own heading
+        self.assertLess(text.index("## Open and unverified"), text.index("Still open one."))
+        self.assertLess(text.index("Still open one."), text.index("## Escalated"))
+        self.assertIn("Status: open", text)
         self.assertLess(text.index("## Escalated"), text.index("Escalated one."))
         self.assertLess(text.index("Escalated one."), text.index("## Deferred"))
         self.assertLess(text.index("Invalid one."), text.index("## Fixed and verified"))
@@ -146,13 +166,22 @@ class CleanupTest(unittest.TestCase):
         self.assertIn("guarded upstream", text)
         self.assertIn("guard is bypassed by X", text)
         self.assertIn("abc123", text)
-        self.assertNotIn("Still open one.", text)  # open findings are only counted
+
+    def test_summary_lists_fixed_but_unverified(self):
+        self.begin()
+        self.record(output(findings=[finding(title="Claimed fix.")]))
+        self.cli("set-status", "--id", "R1-F1", "--status", "fixed", "--note", "guarded in b.txt")
+        text = self.cli("summary")["text"]
+        section = text.split("## Open and unverified")[1].split("## Escalated")[0]
+        self.assertIn("Claimed fix.", section)
+        self.assertIn("Status: fixed", section)
+        self.assertIn("guarded in b.txt", section)
 
     def test_summary_empty_sections_say_none(self):
         self.begin()
         self.record(output(findings=[]))
         text = self.cli("summary")["text"]
-        for heading in ("Escalated", "Deferred", "Invalid", "Fixed and verified"):
+        for heading in ("Open and unverified", "Escalated", "Deferred", "Invalid", "Fixed and verified"):
             body = text.split("## " + heading)[1].split("##")[0]
             self.assertIn("None.", body)
 
@@ -221,6 +250,7 @@ class CleanupTest(unittest.TestCase):
         git(self.repo, "branch", "feature/live2")
         result = self.cli("prune")
         self.assertEqual(result["removed"], [])
+        self.assertEqual(result["skipped"], [str(missing)])  # not review state at all
         self.assertTrue(local.exists() and remote.exists() and missing.exists())
 
     def test_prune_removes_corrupt_state_when_branch_is_gone(self):
@@ -228,9 +258,23 @@ class CleanupTest(unittest.TestCase):
         broken = self._corrupt("feature__gone")
         empty = self.state_dir / REPO_KEY / "gone-empty"
         empty.mkdir()
+        rounds_only = self.state_dir / REPO_KEY / "gone-rounds"
+        (rounds_only / "rounds").mkdir(parents=True)
         result = self.cli("prune")
-        self.assertEqual(sorted(result["removed"]), sorted([str(broken), str(empty)]))
-        self.assertFalse(broken.exists() or empty.exists())
+        self.assertEqual(sorted(result["removed"]), sorted([str(broken), str(rounds_only)]))
+        self.assertEqual(result["skipped"], [str(empty)])
+        self.assertFalse(broken.exists() or rounds_only.exists())
+        self.assertTrue(empty.exists())
+
+    def test_prune_skips_dirs_that_are_not_review_state(self):
+        self.begin()
+        stray = self.state_dir / REPO_KEY / "gone-stray"
+        (stray / "nested").mkdir(parents=True)
+        (stray / "nested" / "keep.txt").write_text("x")
+        result = self.cli("prune")
+        self.assertEqual(result["removed"], [])
+        self.assertEqual(result["skipped"], [str(stray)])
+        self.assertTrue((stray / "nested" / "keep.txt").exists())
 
     def test_prune_keeps_unparseable_updated_when_branch_is_live(self):
         self.begin()
@@ -377,6 +421,36 @@ class CleanupTest(unittest.TestCase):
             self.assertTrue(err.startswith("error: "), err)
             self.assertEqual(len(err.strip().splitlines()), 1, err)
         self.assertEqual(len(self.cli("list")["reviews"]), 3)
+
+    def test_cleanup_skips_dirs_that_are_not_review_state(self):
+        mine, sibling, foreign = self._three_dirs()
+        stray_here = self.state_dir / REPO_KEY / "stray"
+        (stray_here / "src").mkdir(parents=True)
+        (stray_here / "src" / "keep.py").write_text("x")
+        stray_there = self.state_dir / "not-a-repo-key" / "project"
+        (stray_there / ".git").mkdir(parents=True)
+        rounds_only = self.seed("other__repo", "x", "x")
+        (rounds_only / "review.json").unlink()
+        (rounds_only / "rounds").mkdir()
+
+        result = self.cli("cleanup", "--scope", "repo")
+        self.assertEqual(result["removed"], [str(mine), str(sibling)])
+        self.assertEqual(result["skipped"], [str(stray_here)])
+
+        result = self.cli("cleanup", "--scope", "all")
+        self.assertEqual(sorted(result["removed"]), sorted([str(foreign), str(rounds_only)]))
+        self.assertEqual(sorted(result["skipped"]), sorted([str(stray_here), str(stray_there)]))
+        self.assertTrue((stray_here / "src" / "keep.py").exists())
+        self.assertTrue((stray_there / ".git").is_dir())
+
+    def test_cleanup_branch_skips_current_dir_without_state(self):
+        self.begin()
+        mine = self.current_dir()
+        (mine / "review.json").unlink()
+        (mine / "notes.txt").write_text("x")
+        result = self.cli("cleanup", "--scope", "branch")
+        self.assertEqual(result, {"removed": [], "skipped": [str(mine)]})
+        self.assertTrue((mine / "notes.txt").exists())
 
     def test_remove_refuses_paths_outside_state_dir(self):
         outside = self.tmp / "elsewhere"

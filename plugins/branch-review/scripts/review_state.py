@@ -205,22 +205,93 @@ def _object_exists(repo: Path, sha: str) -> bool:
     return _git_try(repo, "cat-file", "-e", sha + "^{commit}") is not None
 
 
-def choose_mode(repo: Path, state: dict | None) -> tuple[str, str]:
-    """`(mode, reason)` for the next round on this branch."""
+def _recorded(rounds: list) -> list:
+    """`rounds` without its trailing unrecorded rounds (those with no `added` key).
+
+    A round is saved when it begins and gets `added` from `record-findings`. A
+    round whose reviewer never reported reviewed nothing, so it must not anchor
+    the next follow-up.
+    """
+    end = len(rounds)
+    while end and "added" not in rounds[end - 1]:
+        end -= 1
+    return rounds[:end]
+
+
+def _merge_base(repo: Path, base_ref: str) -> str | None:
+    return _git_try(repo, "merge-base", "HEAD", base_ref)
+
+
+def normalize_paths(repo: Path, patterns: list[str] | None) -> list[str]:
+    """Canonical `--paths` patterns: no leading `./`, a directory becomes `dir/**`.
+
+    A pattern with a trailing `/`, or naming an existing directory in the repo,
+    means everything under that directory.
+    """
+    out = []
+    for raw in patterns or []:
+        pat = raw.strip()
+        while pat.startswith("./"):
+            pat = pat[2:]
+        is_dir = pat.endswith("/")
+        pat = pat.rstrip("/")
+        if not pat:
+            continue
+        if is_dir or (not pat.endswith("/**") and (Path(repo) / pat).is_dir()):
+            pat += "/**"
+        if pat not in out:
+            out.append(pat)
+    return sorted(out)
+
+
+def path_matches(path: str, patterns: list[str]) -> bool:
+    """True when `path` matches a normalized pattern (`dir/**` is a prefix match)."""
+    for pat in patterns:
+        if pat.endswith("/**"):
+            if path.startswith(pat[: -len("**")]):
+                return True
+        elif fnmatch.fnmatchcase(path, pat):
+            return True
+    return False
+
+
+def choose_mode(repo: Path, state: dict | None, base_ref: str, paths: list[str]) -> tuple[str, str]:
+    """`(mode, reason)` for the next round on this branch.
+
+    `paths` is the normalized `--paths` set for the next round. The anchor is
+    the last recorded round.
+    """
     if state is None:
         return "deep", "no-state"
-    rounds = state.get("rounds", [])
-    if not rounds:
+    recorded = _recorded(state.get("rounds", []))
+    if not recorded:
         return "deep", "no-rounds"
-    last = rounds[-1]
-    if not _object_exists(repo, str(last.get("snapshot", ""))):
+    anchor = recorded[-1]
+    if not _object_exists(repo, str(anchor.get("snapshot", ""))):
         return "deep", "snapshot-missing"
-    if not _is_ancestor(repo, str(last.get("head", "")), "HEAD"):
+    if not _is_ancestor(repo, str(anchor.get("head", "")), "HEAD"):
         return "deep", "history-rewritten"
+    if anchor.get("merge_base") and anchor["merge_base"] != _merge_base(repo, base_ref):
+        return "deep", "base-moved"
+    if normalize_paths(repo, anchor.get("paths")) != paths:
+        return "deep", "paths-changed"
     return "followup", "continuing"
 
 
 # --- commands --------------------------------------------------------------
+
+
+def _stored_base(state: dict | None) -> str | None:
+    value = (state or {}).get("base_ref")
+    return value if isinstance(value, str) and value else None
+
+
+def _read_text_file(path: str) -> str:
+    """Read a UTF-8 text argument file; decoding errors become a StateError."""
+    try:
+        return Path(path).read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise StateError(f"{path} is not valid UTF-8: {exc.reason}") from exc
 
 
 def cmd_locate(args: argparse.Namespace) -> dict:
@@ -232,15 +303,18 @@ def cmd_locate(args: argparse.Namespace) -> dict:
 
     open_findings: list[dict] = []
     rounds = 0
+    stored_base = None
     if state is not None:
-        rounds = len(state.get("rounds", []))
+        rounds = len(_recorded(state.get("rounds", [])))
         open_findings = [f for f in state.get("findings", []) if f.get("status") in OPEN_STATUSES]
-    mode, reason = choose_mode(repo, state)
+        stored_base = _stored_base(state)
+    base = args.base or stored_base or default_base(repo)
+    mode, reason = choose_mode(repo, state, base, normalize_paths(repo, args.paths))
 
     return {
         "repo_key": repo_key(repo),
         "branch": branch,
-        "base": args.base or default_base(repo),
+        "base": base,
         "dir": str(directory),
         "exists": state is not None,
         "mode": mode,
@@ -275,37 +349,46 @@ def cmd_begin_round(args: argparse.Namespace) -> dict:
     branch, _ = branch_key(repo)
     directory = state_path(state_dir, repo)
     state = load_state(directory)
+    existed = state is not None
+    base_ref = args.base_ref or _stored_base(state) or default_base(repo)
 
     if state is None:
         now = _now()
         state = {
             "repo_key": repo_key(repo),
             "branch": branch,
-            "base_ref": args.base_ref,
+            "base_ref": base_ref,
             "intent": None,
             "created": now,
             "updated": now,
             "rounds": [],
             "findings": [],
         }
-    rounds = state.setdefault("rounds", [])
+    # A round that was begun but never recorded reviewed nothing: drop it.
+    rounds = _recorded(state.get("rounds", []))
+    state["rounds"] = rounds
     state.setdefault("findings", [])
 
+    merge_base = _merge_base(repo, base_ref)
     if args.mode == "followup":
         if not rounds:
-            raise StateError("cannot start a follow-up round: no previous round")
+            raise StateError("cannot start a follow-up round: no recorded round")
         diff_from = rounds[-1]["snapshot"]
     else:
-        diff_from = _git(repo, "merge-base", "HEAD", args.base_ref)
+        if merge_base is None:
+            # Re-run through _git so the error carries git's own message.
+            merge_base = _git(repo, "merge-base", "HEAD", base_ref)
+        diff_from = merge_base
     diff_to = args.snapshot
 
-    state["base_ref"] = args.base_ref
+    state["base_ref"] = base_ref
     if args.intent_file:
-        state["intent"] = Path(args.intent_file).read_text(encoding="utf-8")
+        state["intent"] = _read_text_file(args.intent_file)
 
+    paths = normalize_paths(repo, args.paths)
     entries = _numstat(repo, diff_from, diff_to)
-    if args.paths:
-        entries = [(f, n) for f, n in entries if any(fnmatch.fnmatchcase(f, pat) for pat in args.paths)]
+    if paths:
+        entries = [(f, n) for f, n in entries if path_matches(f, paths)]
     changed = [f for f, _ in entries]
     lines = sum(n for _, n in entries)
     files = len(changed)
@@ -317,16 +400,22 @@ def cmd_begin_round(args: argparse.Namespace) -> dict:
         "started": _now(),
         "snapshot": diff_to,
         "head": _git(repo, "rev-parse", "HEAD"),
-        "base_ref": args.base_ref,
+        "base_ref": base_ref,
+        "merge_base": merge_base,
         "diff_from": diff_from,
         "diff_to": diff_to,
         "changed_files": changed,
-        "paths": args.paths or [],
+        "paths": paths,
         "summary": None,
         "merge_risk": None,
     }
-    rounds.append(rnd)
-    save_state(directory, state)
+    # An empty round has nothing for a reviewer, so it is never saved. Existing
+    # state is still saved, to drop unrecorded rounds; no state is created.
+    saved = files > 0
+    if saved:
+        rounds.append(rnd)
+    if saved or existed:
+        save_state(directory, state)
 
     result = dict(rnd)
     result.update(
@@ -336,6 +425,7 @@ def cmd_begin_round(args: argparse.Namespace) -> dict:
             "lines": lines,
             "oversized": files > MAX_FILES or lines > MAX_LINES,
             "empty": files == 0,
+            "saved": saved,
         }
     )
     return result
@@ -593,10 +683,24 @@ def cmd_record_findings(args: argparse.Namespace) -> dict:
     }
 
 
+def _text_arg(inline: str | None, file: str | None, flag: str, required: bool) -> str:
+    """The value of `--X` or the stripped UTF-8 contents of `--X-file`.
+
+    Argparse makes the two forms mutually exclusive. With `required`, an empty
+    or blank file is an error rather than an empty value.
+    """
+    if file is None:
+        return inline or ""
+    text = _read_text_file(file).strip()
+    if required and not text:
+        raise StateError(f"{flag}-file {file} is empty")
+    return text
+
+
 def cmd_set_status(args: argparse.Namespace) -> dict:
     directory, state = _ledger_state(args)
     finding = _find(state, args.id)
-    note = args.note or ""
+    note = _text_arg(args.note, args.note_file, "--note", required=False)
     commit = args.commit or ""
     if args.status == "fixed" and not (commit or note):
         raise StateError("fixed requires --commit or --note")
@@ -623,8 +727,9 @@ def cmd_set_status(args: argparse.Namespace) -> dict:
 def cmd_discuss(args: argparse.Namespace) -> dict:
     directory, state = _ledger_state(args)
     finding = _find(state, args.id)
+    text = _text_arg(args.text, args.text_file, "--text", required=True)
     number = state["rounds"][-1]["number"]
-    finding["discussion"].append({"from": args.source, "text": args.text, "round": number})
+    finding["discussion"].append({"from": args.source, "text": text, "round": number})
     save_state(directory, state)
     return {"id": finding["id"], "discussion": len(finding["discussion"])}
 
@@ -634,11 +739,12 @@ def cmd_resolve(args: argparse.Namespace) -> dict:
     finding = _find(state, args.id)
     if finding["status"] != "escalated":
         raise StateError("{} is {}, not escalated".format(finding["id"], finding["status"]))
+    note = _text_arg(args.note, args.note_file, "--note", required=True)
     number = state["rounds"][-1]["number"]
     finding["status"] = "open" if args.decision == "fix" else "deferred"
     finding["resolution"] = {
         "status": finding["status"],
-        "note": args.note,
+        "note": note,
         "commit": "",
         "by": "developer",
         "round": number,
@@ -652,26 +758,36 @@ def cmd_resolve(args: argparse.Namespace) -> dict:
     }
 
 
-def cmd_status(args: argparse.Namespace) -> dict:
-    state = load_state(state_path(Path(args.state_dir).expanduser(), Path(args.repo)))
+def _reported_state(directory: Path) -> dict:
+    """Load state whose last round is recorded; `status` and `summary` need one."""
+    state = load_state(directory)
     if state is None or not state.get("rounds"):
         raise StateError("no review rounds recorded for this branch")
+    last = state["rounds"][-1]
+    if "added" not in last:
+        raise StateError("round {} has no recorded findings; run record-findings first".format(last.get("number", "?")))
+    return state
+
+
+def cmd_status(args: argparse.Namespace) -> dict:
+    state = _reported_state(state_path(Path(args.state_dir).expanduser(), Path(args.repo)))
     rounds = state["rounds"]
     counts = {s: 0 for s in STATUSES}
     for f in state.get("findings", []):
         counts[f.get("status")] = counts.get(f.get("status"), 0) + 1
 
-    run_rounds = [r for r in rounds if r.get("number", 0) > args.since_round]
-    if len(run_rounds) >= MAX_ROUNDS:
-        cont, reason = False, "max-rounds"
-    elif counts["open"] or counts["still-open"]:
+    if counts["open"] or counts["still-open"]:
         cont, reason = True, "open-findings"
     elif counts["fixed"]:
         cont, reason = True, "unverified-fixes"
-    elif rounds[-1].get("added", 0) > 0:
+    elif rounds[-1]["added"] > 0:
         cont, reason = True, "new-findings"
     else:
         cont, reason = False, "converged"
+    # The cap only stops a loop that would otherwise go on.
+    run_rounds = [r for r in rounds if r.get("number", 0) > args.since_round]
+    if cont and len(run_rounds) >= MAX_ROUNDS:
+        cont, reason = False, "max-rounds"
     return {
         "rounds": len(rounds),
         "last_mode": rounds[-1]["mode"],
@@ -720,6 +836,17 @@ def _invalid_details(finding: dict) -> list[str]:
     ]
 
 
+def _open_details(finding: dict) -> list[str]:
+    """Status, the claimed fix if any, and the reviewer's latest word on it."""
+    details = ["Status: {}".format(finding.get("status"))]
+    details.extend(_resolution_note(finding))
+    if finding.get("status") == "still-open":
+        replies = [d for d in finding.get("discussion", []) if d.get("from") == "reviewer"]
+        if replies:
+            details.append("Reviewer: " + _one_line(replies[-1].get("text")))
+    return details
+
+
 def _verified_details(finding: dict) -> list[str]:
     res = finding.get("resolution") or {}
     return ["Commit: %s" % (res.get("commit") or "(none)")]
@@ -749,6 +876,7 @@ def render_summary(state: dict) -> str:
     out.extend(f"| {s} | {n} |" for s, n in counts.items())
 
     sections = (
+        ("Open and unverified", OPEN_STATUSES, _open_details),
         ("Escalated", "escalated", _resolution_note),
         ("Deferred", "deferred", _resolution_note),
         ("Invalid", "invalid", _invalid_details),
@@ -756,7 +884,8 @@ def render_summary(state: dict) -> str:
     )
     for title, status, details in sections:
         out.extend(["", "## " + title, ""])
-        chosen = [f for f in findings if f.get("status") == status]
+        wanted = status if isinstance(status, tuple) else (status,)
+        chosen = [f for f in findings if f.get("status") in wanted]
         if not chosen:
             out.append("None.")
         for f in chosen:
@@ -766,9 +895,7 @@ def render_summary(state: dict) -> str:
 
 def cmd_summary(args: argparse.Namespace) -> dict:
     directory = state_path(Path(args.state_dir).expanduser(), Path(args.repo))
-    state = load_state(directory)
-    if state is None or not state.get("rounds"):
-        raise StateError("no review rounds recorded for this branch")
+    state = _reported_state(directory)
     text = render_summary(state)
     path = directory / "summary.md"
     path.write_text(text, encoding="utf-8")
@@ -815,6 +942,11 @@ def _remove_dir(state_dir: Path, path: Path) -> None:
     shutil.rmtree(str(resolved))
 
 
+def _is_review_dir(path: Path) -> bool:
+    """True for a branch dir this script wrote: it holds review.json or rounds/."""
+    return (path / STATE_FILE).is_file() or (path / "rounds").is_dir()
+
+
 def _remove_if_empty(path: Path) -> None:
     try:
         path.rmdir()
@@ -839,7 +971,8 @@ def cmd_prune(args: argparse.Namespace) -> dict:
     Anything ambiguous is kept: an unparseable `updated` never counts as old, and
     a dir whose branch name cannot be read is kept (and reported as skipped)
     rather than guessed from its name. A dir with no readable `review.json` is
-    removed only when no existing branch maps to its dir name.
+    removed only when no existing branch maps to its dir name. A dir holding
+    neither `review.json` nor `rounds/` is not review state: it is skipped.
     """
     repo = Path(args.repo)
     state_dir = Path(args.state_dir).expanduser()
@@ -851,6 +984,9 @@ def cmd_prune(args: argparse.Namespace) -> dict:
     skipped: list[str] = []
     for bdir in _subdirs(repo_dir):
         if bdir.name == current_key:
+            continue
+        if not _is_review_dir(bdir):
+            skipped.append(str(bdir))
             continue
         state, _err = _read_review(bdir)
         if state is None:
@@ -903,7 +1039,11 @@ def cmd_list(args: argparse.Namespace) -> dict:
 
 
 def cmd_cleanup(args: argparse.Namespace) -> dict:
-    """Remove state by `--scope`; `--older-than` never removes a dir of unknown age."""
+    """Remove state by `--scope`; `--older-than` never removes a dir of unknown age.
+
+    Only `<repo>/<branch>` dirs holding `review.json` or `rounds/` are removed;
+    any other dir is reported under `skipped` and left alone.
+    """
     state_dir = Path(args.state_dir).expanduser()
 
     only = None
@@ -916,10 +1056,14 @@ def cmd_cleanup(args: argparse.Namespace) -> dict:
             only = state_path(state_dir, repo)
 
     removed: list[str] = []
+    skipped: list[str] = []
     for rdir in repo_dirs:
         candidates = [only] if only is not None else _subdirs(rdir)
         for bdir in candidates:
             if not bdir.is_dir():
+                continue
+            if bdir.is_symlink() or not _is_review_dir(bdir):
+                skipped.append(str(bdir))
                 continue
             if args.older_than is not None:
                 state, _err = _read_review(bdir)
@@ -928,7 +1072,7 @@ def cmd_cleanup(args: argparse.Namespace) -> dict:
             _remove_dir(state_dir, bdir)
             removed.append(str(bdir))
         _remove_if_empty(rdir)
-    return {"removed": removed}
+    return {"removed": removed, "skipped": skipped}
 
 
 # --- CLI -------------------------------------------------------------------
@@ -948,7 +1092,8 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.required = True
 
     locate = sub.add_parser("locate", parents=[common], help="find state for the current branch")
-    locate.add_argument("--base", help="base ref (overrides the detected default)")
+    locate.add_argument("--base", help="base ref (default: the stored base ref, else the detected default)")
+    locate.add_argument("--paths", nargs="+", help="the --paths the next round will use")
     locate.set_defaults(func=cmd_locate)
 
     snap = sub.add_parser(
@@ -962,9 +1107,16 @@ def _build_parser() -> argparse.ArgumentParser:
     begin.add_argument("--mode", required=True, choices=("deep", "followup"))
     begin.add_argument("--model", required=True)
     begin.add_argument("--snapshot", required=True, help="snapshot sha to review")
-    begin.add_argument("--base-ref", required=True, help="ref the branch is reviewed against")
+    begin.add_argument(
+        "--base-ref",
+        help="ref the branch is reviewed against (default: the stored base ref, else the detected default)",
+    )
     begin.add_argument("--intent-file", help="file holding the change's stated intent")
-    begin.add_argument("--paths", nargs="+", help="glob patterns restricting the reviewed files")
+    begin.add_argument(
+        "--paths",
+        nargs="+",
+        help="glob patterns restricting the reviewed files; a directory or trailing / means everything under it",
+    )
     begin.set_defaults(func=cmd_begin_round)
 
     rec = sub.add_parser("record-findings", parents=[common], help="record a reviewer report into the ledger")
@@ -976,19 +1128,25 @@ def _build_parser() -> argparse.ArgumentParser:
     setst.add_argument("--id", required=True)
     setst.add_argument("--status", required=True, choices=("fixed", "invalid", "escalated", "open"))
     setst.add_argument("--commit", help="commit that fixes the finding")
-    setst.add_argument("--note", help="explanation")
+    note = setst.add_mutually_exclusive_group()
+    note.add_argument("--note", help="explanation")
+    note.add_argument("--note-file", metavar="PATH", help="read the explanation from a UTF-8 file")
     setst.set_defaults(func=cmd_set_status)
 
     disc = sub.add_parser("discuss", parents=[common], help="append a discussion entry")
     disc.add_argument("--id", required=True)
     disc.add_argument("--from", dest="source", required=True, choices=("orchestrator", "reviewer"))
-    disc.add_argument("--text", required=True)
+    text = disc.add_mutually_exclusive_group(required=True)
+    text.add_argument("--text")
+    text.add_argument("--text-file", metavar="PATH", help="read the text from a UTF-8 file")
     disc.set_defaults(func=cmd_discuss)
 
     res = sub.add_parser("resolve", parents=[common], help="record the developer's decision")
     res.add_argument("--id", required=True)
     res.add_argument("--decision", required=True, choices=("fix", "defer"))
-    res.add_argument("--note", required=True, help="the decision, in the developer's words")
+    note = res.add_mutually_exclusive_group(required=True)
+    note.add_argument("--note", help="the decision, in the developer's words")
+    note.add_argument("--note-file", metavar="PATH", help="read the decision from a UTF-8 file")
     res.set_defaults(func=cmd_resolve)
 
     stat = sub.add_parser("status", parents=[common], help="counts and whether to continue")

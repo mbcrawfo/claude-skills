@@ -70,7 +70,7 @@ class KeysTest(unittest.TestCase):
         review_state.save_state(
             review_state.state_path(state_dir, repo),
             {
-                "rounds": [{"number": 1}],
+                "rounds": [{"number": 1, "added": 1}],
                 "findings": [
                     {"id": "F1", "status": "open"},
                     {"id": "F2", "status": "fixed"},

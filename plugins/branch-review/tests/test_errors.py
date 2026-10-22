@@ -1,5 +1,6 @@
 import contextlib
 import io
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -25,6 +26,11 @@ class ErrorPathTest(unittest.TestCase):
         self.assertEqual(out, "")
         self.assertTrue(err.startswith("error: "), err)
         self.assertEqual(len(err.strip().splitlines()), 1, err)
+
+    def test_helpers_drop_git_repository_variables(self):
+        # Set by git hooks; left in place they would point fixture git commands at the outer repo.
+        for var in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY"):
+            self.assertNotIn(var, os.environ)
 
     def test_unknown_subcommand(self):
         self.assert_one_line_error(*self.call("bogus"))

@@ -8,6 +8,7 @@ import unittest
 
 from helpers import commit_file, git, make_repo, run
 import review_state
+from test_ledger import finding, output, report
 
 
 class SnapshotTest(unittest.TestCase):
@@ -24,6 +25,7 @@ class SnapshotTest(unittest.TestCase):
     def begin(self, *extra, mode="deep", snapshot=None, base_ref="main"):
         if snapshot is None:
             snapshot = self.snapshot()["snapshot"]
+        base = ["--base-ref", base_ref] if base_ref is not None else []
         return run(
             self.repo,
             "begin-round",
@@ -33,14 +35,29 @@ class SnapshotTest(unittest.TestCase):
             "test-model",
             "--snapshot",
             snapshot,
-            "--base-ref",
-            base_ref,
+            *base,
             *extra,
             state_dir=self.state_dir,
         )
 
-    def locate(self):
-        return run(self.repo, "locate", "--base", "main", state_dir=self.state_dir)
+    def record(self, findings=()):
+        """Record a reviewer report for the latest round."""
+        path = self.tmp / "report.md"
+        path.write_text(report(output(findings=list(findings))))
+        return run(self.repo, "record-findings", "--file", str(path), state_dir=self.state_dir)
+
+    def locate(self, *extra, base="main"):
+        args = ["--base", base] if base is not None else []
+        return run(self.repo, "locate", *args, *extra, state_dir=self.state_dir)
+
+    def review_json(self):
+        return json.loads((review_state.state_path(self.state_dir, self.repo) / "review.json").read_text())
+
+    def call(self, *argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = review_state.main([*argv, "--state-dir", str(self.state_dir), "--repo", str(self.repo)])
+        return code, out.getvalue(), err.getvalue()
 
     def test_snapshot_clean_tree_is_head(self):
         result = self.snapshot()
@@ -78,10 +95,13 @@ class SnapshotTest(unittest.TestCase):
         self.assertEqual(result["lines"], 1)
         self.assertFalse(result["oversized"])
         self.assertFalse(result["empty"])
+        self.assertTrue(result["saved"])
+        self.assertEqual(result["merge_base"], result["diff_from"])
         state = json.loads((Path(self.locate()["dir"]) / "review.json").read_text())
         self.assertEqual(len(state["rounds"]), 1)
         rnd = state["rounds"][0]
         self.assertEqual(rnd["head"], git(self.repo, "rev-parse", "HEAD"))
+        self.assertEqual(rnd["merge_base"], git(self.repo, "merge-base", "HEAD", "main"))
         self.assertIsNone(rnd["summary"])
         self.assertIsNone(rnd["merge_risk"])
         self.assertEqual(state["findings"], [])
@@ -99,10 +119,12 @@ class SnapshotTest(unittest.TestCase):
         git(self.repo, "checkout", "main")
         result = self.begin()
         self.assertTrue(result["empty"])
+        self.assertFalse(result["saved"])
         self.assertEqual(result["changed_files"], [])
 
     def test_begin_round_followup_uses_previous_snapshot(self):
         first = self.begin()
+        self.record()
         (self.repo / "c.txt").write_text("c\n")
         snap = self.snapshot()["snapshot"]
         second = self.begin(mode="followup", snapshot=snap)
@@ -134,10 +156,19 @@ class SnapshotTest(unittest.TestCase):
             )
         self.assertEqual(code, 1)
         self.assertEqual(len(err.getvalue().strip().splitlines()), 1)
-        self.assertIn("no previous round", err.getvalue())
+        self.assertIn("no recorded round", err.getvalue())
+
+    def test_begin_round_followup_after_unrecorded_round_fails(self):
+        self.begin()
+        snap = self.snapshot()["snapshot"]
+        code, out, err = self.call("begin-round", "--mode", "followup", "--model", "m", "--snapshot", snap)
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn("no recorded round", err)
 
     def test_locate_followup_after_commit(self):
         self.begin()
+        self.record()
         commit_file(self.repo, "c.txt", "c\n", "add c")
         result = self.locate()
         self.assertEqual(result["mode"], "followup")
@@ -145,6 +176,7 @@ class SnapshotTest(unittest.TestCase):
 
     def test_locate_deep_after_amend(self):
         self.begin()
+        self.record()
         git(self.repo, "commit", "--amend", "-m", "rewritten")
         result = self.locate()
         self.assertEqual(result["mode"], "deep")
@@ -152,6 +184,7 @@ class SnapshotTest(unittest.TestCase):
 
     def test_locate_deep_when_snapshot_gone(self):
         self.begin()
+        self.record()
         path = Path(self.locate()["dir"]) / "review.json"
         state = json.loads(path.read_text())
         state["rounds"][-1]["snapshot"] = "0" * 40
@@ -219,6 +252,122 @@ class SnapshotTest(unittest.TestCase):
         result = self.begin("--paths", "src/*")
         self.assertEqual(result["changed_files"], ["src/keep.py"])
         self.assertEqual(result["files"], 1)
+
+    # unrecorded rounds
+    def test_unrecorded_round_does_not_anchor_followup(self):
+        self.begin()  # the reviewer never reported, so record-findings never ran
+        commit_file(self.repo, "c.txt", "c\n", "add c")
+        result = self.locate()
+        self.assertEqual((result["mode"], result["reason"]), ("deep", "no-rounds"))
+        self.assertEqual(result["rounds"], 0)
+
+    def test_unrecorded_round_is_dropped_by_next_begin(self):
+        first = self.begin()
+        self.record()
+        self.begin(mode="followup")  # never recorded
+        commit_file(self.repo, "c.txt", "c\n", "add c")
+        located = self.locate()
+        self.assertEqual((located["mode"], located["reason"]), ("followup", "continuing"))
+        self.assertEqual(located["rounds"], 1)
+        again = self.begin(mode="followup")
+        self.assertEqual(again["number"], 2)
+        self.assertEqual(again["diff_from"], first["diff_to"])
+        self.assertEqual(again["changed_files"], ["c.txt"])
+        self.assertEqual([r["number"] for r in self.review_json()["rounds"]], [1, 2])
+
+    def test_empty_first_round_is_not_saved(self):
+        git(self.repo, "checkout", "-b", "feature/empty", "main")
+        result = self.begin()
+        self.assertTrue(result["empty"])
+        self.assertFalse(result["saved"])
+        self.assertFalse((review_state.state_path(self.state_dir, self.repo) / "review.json").exists())
+        commit_file(self.repo, "c.txt", "c\n", "add c")
+        located = self.locate()
+        self.assertEqual((located["mode"], located["reason"]), ("deep", "no-state"))
+        self.assertEqual(self.begin()["changed_files"], ["c.txt"])
+
+    def test_empty_followup_round_is_not_saved(self):
+        self.begin()
+        self.record()
+        commit_file(self.repo, "c.txt", "c\n", "add c")
+        self.begin(mode="followup")  # never recorded
+        git(self.repo, "reset", "--hard", "HEAD~1")
+        result = self.begin(mode="followup")
+        self.assertTrue(result["empty"])
+        self.assertFalse(result["saved"])
+        self.assertEqual(result["number"], 2)
+        rounds = self.review_json()["rounds"]
+        self.assertEqual([r["number"] for r in rounds], [1])  # the unrecorded round is dropped too
+        self.assertEqual(run(self.repo, "status", state_dir=self.state_dir)["reason"], "converged")
+
+    # base ref
+    def test_locate_and_begin_round_reuse_stored_base_ref(self):
+        git(self.repo, "branch", "develop", "main")
+        self.begin(base_ref="develop")
+        self.record()
+        self.assertEqual(self.locate(base=None)["base"], "develop")
+        self.assertEqual(self.locate(base="main")["base"], "main")
+        result = self.begin(mode="followup", base_ref=None)
+        self.assertEqual(result["base_ref"], "develop")
+        self.assertEqual(self.review_json()["base_ref"], "develop")
+
+    def test_begin_round_without_base_ref_or_state_uses_default_base(self):
+        result = self.begin(base_ref=None)
+        self.assertEqual(result["base_ref"], "main")
+        self.assertEqual(result["diff_from"], git(self.repo, "merge-base", "HEAD", "main"))
+
+    # base moved
+    def test_locate_deep_when_base_merged_into_branch(self):
+        self.begin()
+        self.record(findings=[finding()])
+        git(self.repo, "checkout", "main")
+        commit_file(self.repo, "upstream.txt", "u\n", "upstream work")
+        git(self.repo, "checkout", "feature/x")
+        git(self.repo, "merge", "--no-edit", "main")
+        result = self.locate()
+        self.assertEqual((result["mode"], result["reason"]), ("deep", "base-moved"))
+        self.assertEqual([f["id"] for f in result["open_findings"]], ["R1-F1"])
+        deep = self.begin()
+        self.assertEqual(deep["changed_files"], ["b.txt"])  # upstream.txt is not part of the change
+
+    def test_locate_followup_when_base_advances_without_merge(self):
+        self.begin()
+        self.record()
+        git(self.repo, "checkout", "main")
+        commit_file(self.repo, "upstream.txt", "u\n", "upstream work")
+        git(self.repo, "checkout", "feature/x")
+        commit_file(self.repo, "c.txt", "c\n", "add c")
+        result = self.locate()
+        self.assertEqual((result["mode"], result["reason"]), ("followup", "continuing"))
+
+    # paths
+    def test_locate_deep_when_paths_change(self):
+        (self.repo / "src").mkdir()
+        (self.repo / "src" / "keep.py").write_text("k\n")
+        self.begin("--paths", "src/*")
+        self.record(findings=[finding()])
+        same = self.locate("--paths", "./src/*")
+        self.assertEqual((same["mode"], same["reason"]), ("followup", "continuing"))
+        for extra in ((), ("--paths", "lib/*"), ("--paths", "src/*", "lib/*")):
+            with self.subTest(paths=extra):
+                result = self.locate(*extra)
+                self.assertEqual((result["mode"], result["reason"]), ("deep", "paths-changed"))
+                self.assertEqual([f["id"] for f in result["open_findings"]], ["R1-F1"])
+
+    def test_paths_directory_forms_match_nested_files(self):
+        (self.repo / "src" / "a").mkdir(parents=True)
+        (self.repo / "src" / "a" / "b.py").write_text("b\n")
+        (self.repo / "srcfile.py").write_text("s\n")
+        for pattern in ("src/", "src", "./src/"):
+            with self.subTest(pattern=pattern):
+                result = self.begin("--paths", pattern)
+                self.assertEqual(result["changed_files"], ["src/a/b.py"])
+                self.assertEqual(result["paths"], ["src/**"])
+        self.record()
+        for pattern in ("src", "src/", "./src"):
+            with self.subTest(locate=pattern):
+                result = self.locate("--paths", pattern)
+                self.assertEqual((result["mode"], result["reason"]), ("followup", "continuing"))
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 """Shared fixtures for the branch-review state script tests."""
 
+from collections.abc import Iterator
 import contextlib
 import io
 import json
@@ -7,11 +8,35 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 from typing import Optional
 
 SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
+
+# Drop variables that point git at another repository or index. They are set
+# when the suite runs from a git hook (for example pre-commit), and would make
+# every fixture command act on the outer repository instead.
+for _var in (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_NAMESPACE",
+    "GIT_PREFIX",
+    "GIT_SHALLOW_FILE",
+    "GIT_GRAFT_FILE",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_CONFIG",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_COUNT",
+):
+    os.environ.pop(_var, None)
 
 # Isolate fixture repos from the developer's global/system git configuration.
 os.environ["GIT_CONFIG_GLOBAL"] = os.devnull
@@ -71,3 +96,28 @@ def run(repo: Path, *argv: str, state_dir: Path) -> dict:
         code = review_state.main([*argv, "--state-dir", str(state_dir), "--repo", str(repo)])
     assert code in (0, None), f"main exited with {code!r}"
     return json.loads(buf.getvalue())
+
+
+CANARY = Path("canary") / "a" / "b" / "keep.txt"
+
+
+@contextlib.contextmanager
+def sandbox_cwd() -> Iterator[Path]:
+    """Run inside a fresh temp directory holding a canary tree; check it survives.
+
+    Every test that exercises `cleanup` or `prune`, or passes an empty, blank or
+    relative `--state-dir`, runs inside this, never with the checkout as cwd.
+    """
+    previous = os.getcwd()
+    with tempfile.TemporaryDirectory(prefix="br-sandbox-") as tmp:
+        sandbox = Path(tmp).resolve()
+        canary = sandbox / CANARY
+        canary.parent.mkdir(parents=True)
+        canary.write_text("canary\n")
+        os.chdir(str(sandbox))
+        try:
+            yield sandbox
+        finally:
+            os.chdir(previous)
+        if not canary.is_file():
+            raise AssertionError(f"canary {canary} was removed")
