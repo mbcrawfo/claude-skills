@@ -78,10 +78,14 @@ The reviewer reads every `AGENTS.md` and `CLAUDE.md` from the repo root down to 
 python3 -m unittest discover -s plugins/branch-review/tests -v
 ```
 
-The review-loop eval lives in `evals/review-loop/`. Run it from this plugin's directory:
+The review-loop eval lives in `evals/review-loop/`. Its scaffold script, `make_fixture.sh`, builds a small Python repo with four planted defects in the run's empty workspace, so the run needs `--scaffold`. The agent writes the review summary to `review-summary.md`, which the `loop` grader reads. Run it from this plugin's directory:
 
 ```bash
-claude plugin eval . --case review-loop --runs 1 --allow-tools Bash Write Edit
+claude plugin eval . --case review-loop --runs 1 --scaffold --allow-tools Bash Write Edit SendMessage ToolSearch
 ```
+
+`tests/fixture/make_fixture.sh <dir>` builds the same repo for a manual run.
+
+Known limitation: the eval sandbox confines Bash writes to the run's workspace, so the state script's writes to `${CLAUDE_PLUGIN_DATA}` may be blocked there. If they are, the eval cannot pass; that is a limit of the sandbox, not a failure of the review.
 
 Results go to `evals/results/`, which is gitignored.
