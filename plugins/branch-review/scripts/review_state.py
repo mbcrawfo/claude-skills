@@ -162,6 +162,14 @@ def make_snapshot(repo: Path) -> Tuple[str, bool]:
         return head, False
     with tempfile.TemporaryDirectory(prefix="branch-review-") as tmp:
         env = dict(os.environ, GIT_INDEX_FILE=os.path.join(tmp, "index"))
+        # Fallback identity so a machine without git user config still works.
+        for var, value in (
+            ("GIT_AUTHOR_NAME", "branch-review"),
+            ("GIT_AUTHOR_EMAIL", "branch-review@localhost"),
+            ("GIT_COMMITTER_NAME", "branch-review"),
+            ("GIT_COMMITTER_EMAIL", "branch-review@localhost"),
+        ):
+            env.setdefault(var, value)
 
         def run_git(*args: str) -> str:
             result = subprocess.run(
@@ -177,7 +185,15 @@ def make_snapshot(repo: Path) -> Tuple[str, bool]:
         run_git("read-tree", "HEAD")
         run_git("add", "-A")
         tree = run_git("write-tree")
-        sha = run_git("commit-tree", tree, "-p", head, "-m", "branch-review snapshot")
+        sha = run_git(
+            "commit-tree",
+            "--no-gpg-sign",
+            tree,
+            "-p",
+            head,
+            "-m",
+            "branch-review snapshot",
+        )
     return sha, True
 
 
@@ -242,8 +258,17 @@ def cmd_snapshot(args: argparse.Namespace) -> dict:
     return {"snapshot": sha, "head": _git(repo, "rev-parse", "HEAD"), "dirty": dirty}
 
 
-def _shortstat_lines(text: str) -> int:
-    return sum(int(n) for n, _ in re.findall(r"(\d+) (insertion|deletion)", text))
+def _numstat(repo: Path, diff_from: str, diff_to: str) -> List[Tuple[str, int]]:
+    """`(path, insertions + deletions)` per changed file; binary files count 0."""
+    out = _git(repo, "diff", "--numstat", "-z", "--no-renames", diff_from, diff_to)
+    entries = []
+    for record in out.split("\0"):
+        if not record:
+            continue
+        ins, dels, path = record.split("\t", 2)
+        count = (int(ins) if ins.isdigit() else 0) + (int(dels) if dels.isdigit() else 0)
+        entries.append((path, count))
+    return entries
 
 
 def cmd_begin_round(args: argparse.Namespace) -> dict:
@@ -280,16 +305,15 @@ def cmd_begin_round(args: argparse.Namespace) -> dict:
     if args.intent_file:
         state["intent"] = Path(args.intent_file).read_text(encoding="utf-8")
 
-    changed = [
-        line
-        for line in _git(repo, "diff", "--name-only", diff_from, diff_to).splitlines()
-        if line
-    ]
+    entries = _numstat(repo, diff_from, diff_to)
     if args.paths:
-        changed = [
-            f for f in changed if any(fnmatch.fnmatchcase(f, pat) for pat in args.paths)
+        entries = [
+            (f, n)
+            for f, n in entries
+            if any(fnmatch.fnmatchcase(f, pat) for pat in args.paths)
         ]
-    lines = _shortstat_lines(_git(repo, "diff", "--shortstat", diff_from, diff_to))
+    changed = [f for f, _ in entries]
+    lines = sum(n for _, n in entries)
     files = len(changed)
 
     rnd = {

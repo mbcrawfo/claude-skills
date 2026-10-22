@@ -1,6 +1,7 @@
 import contextlib
 import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -166,6 +167,44 @@ class SnapshotTest(unittest.TestCase):
         result = self.begin()
         self.assertEqual(result["files"], 150)
         self.assertFalse(result["oversized"])
+
+    def test_lines_respect_paths_filter(self):
+        (self.repo / "src").mkdir()
+        (self.repo / "src" / "keep.py").write_text("k\n" * 3)
+        (self.repo / "big.txt").write_text("x\n" * 10001)
+        (self.repo / "blob.bin").write_bytes(b"\x00\x01\x02" * 10)
+        everything = self.begin()
+        self.assertTrue(everything["oversized"])
+        narrowed = self.begin("--paths", "src/*", "*.bin")
+        self.assertEqual(narrowed["changed_files"], ["blob.bin", "src/keep.py"])
+        self.assertEqual(narrowed["files"], 2)
+        self.assertEqual(narrowed["lines"], 3)  # binary counts 0
+        self.assertFalse(narrowed["oversized"])
+
+    def test_snapshot_ignores_gpg_signing_and_missing_identity(self):
+        git(self.repo, "config", "commit.gpgSign", "true")
+        git(self.repo, "config", "gpg.program", "/nonexistent/gpg")
+        (self.repo / "new.txt").write_text("fresh\n")
+        result = self.snapshot()
+        self.assertTrue(result["dirty"])
+        obj = git(self.repo, "cat-file", "-p", result["snapshot"])
+        self.assertNotIn("gpgsig", obj)
+
+    def test_snapshot_without_git_identity(self):
+        git(self.repo, "config", "--unset", "user.name")
+        git(self.repo, "config", "--unset", "user.email")
+        (self.repo / "new.txt").write_text("fresh\n")
+        saved = {k: os.environ.pop(k, None) for k in (
+            "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
+            "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "EMAIL")}
+        os.environ["GIT_CONFIG_NOSYSTEM"] = "1"
+        try:
+            result = self.snapshot()
+        finally:
+            for k, v in saved.items():
+                if v is not None:
+                    os.environ[k] = v
+        self.assertTrue(result["dirty"])
 
     def test_paths_filter(self):
         (self.repo / "src").mkdir()
