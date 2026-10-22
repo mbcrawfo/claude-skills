@@ -14,7 +14,7 @@ There is no nitpick tier. If it is not worth fixing, it is not reported.
 
 ## 1. Logic and correctness bugs with a concrete failing input (`logic`)
 
-The code does the wrong thing for an input you can write down. Look for wrong order of operations (a substitution applied after unify, a cap enforced after the blowup), state that survives cancellation, a race between two signals, off-by-one and bounds reads, comparisons that use `>` where the rule says "or more", null and empty cases, wrong join semantics, 32-bit coercion, timezone and infinity edge cases. Compare every boundary in the code with the boundary stated in the intent, the docs or the tests, and run the code at the boundary value. A logic finding names the input, the actual result and the expected result.
+The code does the wrong thing for an input you can write down. Look for wrong order of operations (a substitution applied after unify, a cap enforced after the blowup), state that survives cancellation, a race between two signals, off-by-one and bounds reads, an inclusive bound implemented as exclusive or the reverse, null and empty cases, wrong join semantics, 32-bit coercion, timezone and infinity edge cases. Compare every boundary in the code with the boundary stated in the intent, the docs or the tests, and run the code at the boundary value. A logic finding names the input, the actual result and the expected result.
 
 - vibefun PR69, `infer-primitives.ts`: the substitution was applied after the directional `unify`, so a stale type variable let `unifyVar` overwrite an earlier constraint and missing-field errors vanished.
 - SqlSource PR59, `PlanExpression.TypeOid`: a bare `'x'::` cast read `_tokens[2]` out of range and surfaced as the wrong diagnostic (SQLSRC200).
@@ -35,14 +35,14 @@ Input that reaches a place it should not. Injection through an allowlist, path e
 
 ## 4. Tests that prove nothing (`tests`)
 
-A test that would still pass if the code under test were wrong. Assertions that only check a call returned, or returned something not `None`; assertions that pass on the crash path; substring matches that false-pass; fixtures with duplicate keys that silently overwrite; a missing regression test for the fix being reviewed; a missing boundary case for a limit the change introduces. For each test the change adds, ask what wrong implementation it would catch. If the answer is none, say so and show it: break the code in a scratch copy, or name the wrong value that still passes.
+A test that would still pass if the code under test were wrong. Assertions that only check a call returned; assertions that pass on the crash path; substring matches that false-pass; fixtures with duplicate keys that silently overwrite; a missing regression test for the fix being reviewed; a missing boundary case for a limit the change introduces. For each test the change adds, ask what wrong implementation it would catch. If the answer is none, say so and show it: break the code in a scratch copy, or name the wrong value that still passes.
 
 - vibefun PR78, property and spec-validation suites: crash paths were counted as passing outcomes, so a test passed when the compiler threw.
 - SqlSource PR67, test-case dictionaries: rows built with the indexer let a duplicate key silently overwrite an earlier case; 11 rows were converted to `Add` so duplicates throw.
 
 ## 5. Intent versus code (`intent`)
 
-The intent is the PR description: what the change is for, what it does and what it deliberately does not do. Check it in both directions. Every claim in the intent ("rejects X", "keeps Y", "works for Z") needs code that does it; try the claim with an input and report each claim the code does not keep as an `intent` finding, with the input that shows it. Behavior the code adds that the intent does not mention goes in `intent_check.unmentioned_behavior`, and becomes a finding only when it is risky.
+The intent is the PR description: what the change is for, what it does and what it deliberately does not do. Check it in both directions. Every claim in the intent ("rejects X", "keeps Y", "works for Z") needs code that does it; try the claim with an input. List every claim the code does not keep in `intent_check.unmet_claims`. Each one is also an `intent` finding, with the input that shows it, unless the same defect is already a finding under another category; then it is listed in `unmet_claims` only, so one defect is never reported twice. Behavior the code adds that the intent does not mention goes in `intent_check.unmentioned_behavior`, and becomes a finding only when it is risky.
 
 - SqlSource PR89, `Orders.sql`: the example promised a count per user, but an inner join dropped users with no orders; a `LEFT JOIN` was needed.
 - vibefun PR73, `typechecker.ts`: the PR set out to close the value-restriction hole, but top-level `let mut` still did not enforce VF4018 at all.

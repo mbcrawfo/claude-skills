@@ -62,6 +62,10 @@ commit() {
 
 mkdir -p src/shop
 
+cat >.gitignore <<'EOF'
+__pycache__/
+EOF
+
 cat >AGENTS.md <<'EOF'
 # shop
 
