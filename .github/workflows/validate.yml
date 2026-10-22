@@ -21,3 +21,12 @@ jobs:
             [ -d "$dir/.claude-plugin" ] || continue
             claude plugin validate "$dir"
           done
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Run plugin tests
+        run: |
+          for dir in plugins/*/tests; do
+            [ -d "$dir" ] || continue
+            python3 -m unittest discover -s "$dir" -v
+          done

@@ -13,6 +13,10 @@ Add the marketplace, then install any plugin from it:
 
 Run `/plugin` to browse what's available. Pull updates with `/plugin marketplace update mbcrawfo-skills`.
 
+## Available plugins
+
+- [`branch-review`](plugins/branch-review/README.md): a local replacement for CodeRabbit PR reviews. Agents review a branch, fix the findings and re-check until it converges.
+
 ## Layout
 
 ```
