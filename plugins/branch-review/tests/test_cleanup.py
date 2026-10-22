@@ -203,17 +203,52 @@ class CleanupTest(unittest.TestCase):
         self.assertEqual(self.cli("prune")["removed"], [])
         self.assertEqual(self.cli("prune", "--days", "3")["removed"], [str(old)])
 
-    def test_prune_treats_unreadable_state_as_stale(self):
+    def _corrupt(self, name):
+        d = self.state_dir / REPO_KEY / name
+        d.mkdir(parents=True)
+        (d / "review.json").write_text("{not json")
+        return d
+
+    def test_prune_keeps_corrupt_state_when_branch_is_live(self):
         self.begin()
-        git(self.repo, "branch", "broken")
-        git(self.repo, "branch", "empty")
-        broken = self.state_dir / REPO_KEY / "broken"
-        broken.mkdir(parents=True)
-        (broken / "review.json").write_text("{not json")
-        empty = self.state_dir / REPO_KEY / "empty"
+        git(self.repo, "branch", "feature/live")
+        git(self.repo, "update-ref", "refs/remotes/origin/on-remote", "HEAD")
+        local = self._corrupt("feature__live")
+        remote = self._corrupt("on-remote")
+        missing = self.state_dir / REPO_KEY / "feature__live2"
+        missing.mkdir()  # no review.json at all, branch absent
+        git(self.repo, "branch", "feature/live2")
+        result = self.cli("prune")
+        self.assertEqual(result["removed"], [])
+        self.assertTrue(local.exists() and remote.exists() and missing.exists())
+
+    def test_prune_removes_corrupt_state_when_branch_is_gone(self):
+        self.begin()
+        broken = self._corrupt("feature__gone")
+        empty = self.state_dir / REPO_KEY / "gone-empty"
         empty.mkdir()
         result = self.cli("prune")
         self.assertEqual(sorted(result["removed"]), sorted([str(broken), str(empty)]))
+        self.assertFalse(broken.exists() or empty.exists())
+
+    def test_prune_keeps_unparseable_updated_when_branch_is_live(self):
+        self.begin()
+        git(self.repo, "branch", "odd")
+        d = self.seed(REPO_KEY, "odd", "odd", updated="yesterday-ish")
+        self.assertEqual(self.cli("prune")["removed"], [])
+        self.assertTrue(d.exists())
+
+    def test_prune_keeps_dir_without_readable_branch_name(self):
+        self.begin()
+        git(self.repo, "branch", "a__b")
+        d = self.seed(REPO_KEY, "a__b", "a__b")
+        state = json.loads((d / "review.json").read_text())
+        del state["branch"]
+        (d / "review.json").write_text(json.dumps(state))
+        result = self.cli("prune")
+        self.assertEqual(result["removed"], [])
+        self.assertEqual(result["skipped"], [str(d)])
+        self.assertTrue(d.exists())
 
     def test_prune_never_removes_current_branch(self):
         self.begin()
@@ -263,17 +298,15 @@ class CleanupTest(unittest.TestCase):
 
     def test_cleanup_branch_repo_all(self):
         mine, sibling, foreign = self._three_dirs()
-        self.assertEqual(self.cli("cleanup", "--branch")["removed"], [str(mine)])
+        self.assertEqual(self.cli("cleanup", "--scope", "branch")["removed"], [str(mine)])
         self.assertFalse(mine.exists())
         self.assertTrue(sibling.exists() and foreign.exists())
 
-        self.assertEqual(
-            self.raw_json("cleanup", "--repo", str(self.repo))["removed"], [str(sibling)]
-        )
+        self.assertEqual(self.cli("cleanup", "--scope", "repo")["removed"], [str(sibling)])
         self.assertFalse((self.state_dir / REPO_KEY).exists())  # emptied repo dir goes too
         self.assertTrue(foreign.exists())
 
-        self.assertEqual(self.raw_json("cleanup", "--all")["removed"], [str(foreign)])
+        self.assertEqual(self.cli("cleanup", "--scope", "all")["removed"], [str(foreign)])
         self.assertFalse((self.state_dir / "other__repo").exists())
         self.assertTrue(self.state_dir.exists())
 
@@ -281,46 +314,54 @@ class CleanupTest(unittest.TestCase):
         foreign = self.seed("other__repo", "main", "main")
         plain = self.tmp / "plain"
         plain.mkdir()
-        code, out, err = self.call("cleanup", "--all", repo=plain)
+        code, out, err = self.call("cleanup", "--scope", "all", repo=plain)
         self.assertEqual(code, 0, err)
         self.assertEqual(json.loads(out)["removed"], [str(foreign)])
 
-    def test_cleanup_repo_needs_git_repo(self):
+    def test_cleanup_repo_and_branch_need_git_repo(self):
         plain = self.tmp / "plain"
         plain.mkdir()
-        code, out, err = self.raw("cleanup", "--repo", str(plain))
-        self.assertEqual(code, 1)
-        self.assertEqual(out, "")
-        self.assertTrue(err.startswith("error: "))
-
-    def test_cleanup_branch_needs_git_repo(self):
-        plain = self.tmp / "plain"
-        plain.mkdir()
-        code, out, err = self.call("cleanup", "--branch", repo=plain)
-        self.assertEqual(code, 1)
-        self.assertEqual(out, "")
-        self.assertTrue(err.startswith("error: "))
+        for scope in ("repo", "branch"):
+            code, out, err = self.call("cleanup", "--scope", scope, repo=plain)
+            self.assertEqual(code, 1, scope)
+            self.assertEqual(out, "")
+            self.assertTrue(err.startswith("error: "))
 
     def test_cleanup_older_than(self):
         mine, sibling, foreign = self._three_dirs()
         self.set_updated(sibling, days_ago(20))
         self.set_updated(foreign, days_ago(20))
-        removed = self.raw_json(
-            "cleanup", "--repo", str(self.repo), "--older-than", "10"
-        )["removed"]
+        removed = self.cli("cleanup", "--scope", "repo", "--older-than", "10")["removed"]
         self.assertEqual(removed, [str(sibling)])
         self.assertTrue(mine.exists())  # fresh, so kept along with its repo dir
-        removed = self.raw_json("cleanup", "--all", "--older-than", "10")["removed"]
+        removed = self.cli("cleanup", "--scope", "all", "--older-than", "10")["removed"]
         self.assertEqual(removed, [str(foreign)])
         self.assertTrue(mine.exists())
-        self.assertEqual(self.raw_json("cleanup", "--all", "--older-than", "10")["removed"], [])
+        removed = self.cli("cleanup", "--scope", "all", "--older-than", "10")["removed"]
+        self.assertEqual(removed, [])
+
+    def test_cleanup_older_than_keeps_unknown_age(self):
+        self.begin()
+        odd = self.seed(REPO_KEY, "odd", "odd", updated="not a time")
+        corrupt = self._corrupt("corrupt")
+        for scope in ("repo", "all"):
+            removed = self.cli("cleanup", "--scope", scope, "--older-than", "1")["removed"]
+            self.assertEqual(removed, [], scope)
+        self.assertTrue(odd.exists() and corrupt.exists())
+        # without an age filter they are removed like any other dir
+        removed = self.cli("cleanup", "--scope", "repo")["removed"]
+        self.assertIn(str(odd), removed)
+        self.assertIn(str(corrupt), removed)
 
     def test_cleanup_requires_one_scope(self):
         self._three_dirs()
         for argv in (
             ("cleanup",),
-            ("cleanup", "--branch", "--all"),
-            ("cleanup", "--branch", "--all", "--repo", str(self.repo)),
+            ("cleanup", "--scope", "bogus"),
+            ("cleanup", "--scope"),
+            ("cleanup", "--scope", "all", "--scope", "bogus"),
+            ("cleanup", "--all"),
+            ("cleanup", "--repo", str(self.repo)),
         ):
             code, out, err = self.raw(*argv)
             self.assertEqual(code, 1, argv)

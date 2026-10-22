@@ -804,10 +804,10 @@ def _parse_ts(value: object) -> Optional[datetime]:
 
 
 def _older_than(updated: object, days: float) -> bool:
-    """True when `updated` is more than `days` ago; an unreadable time counts as old."""
+    """True when `updated` is more than `days` ago; an unknown age is never old."""
     ts = _parse_ts(updated)
     if ts is None:
-        return True
+        return False
     return datetime.now(timezone.utc) - ts > timedelta(days=days)
 
 
@@ -843,22 +843,48 @@ def _remove_if_empty(path: Path) -> None:
         pass  # not empty, or already gone
 
 
+def _live_branch_keys(repo: Path) -> set:
+    """Dir keys of every local branch and `origin/` branch that exists."""
+    refs = _git_try(
+        repo, "for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes/origin"
+    )
+    keys = set()
+    for ref in (refs or "").splitlines():
+        for prefix in ("refs/heads/", "refs/remotes/origin/"):
+            if ref.startswith(prefix) and ref != prefix + "HEAD":
+                keys.add(ref[len(prefix) :].replace("/", "__"))
+    return keys
+
+
 def cmd_prune(args: argparse.Namespace) -> dict:
+    """Remove state whose branch is gone or whose last update is over `--days` old.
+
+    Anything ambiguous is kept: an unparseable `updated` never counts as old, and
+    a dir whose branch name cannot be read is kept (and reported as skipped)
+    rather than guessed from its name. A dir with no readable `review.json` is
+    removed only when no existing branch maps to its dir name.
+    """
     repo = Path(args.repo)
     state_dir = Path(args.state_dir).expanduser()
     _, current_key = branch_key(repo)
     repo_dir = state_dir / repo_key(repo)
+    live_keys = _live_branch_keys(repo)
 
     removed: List[str] = []
+    skipped: List[str] = []
     for bdir in _subdirs(repo_dir):
         if bdir.name == current_key:
             continue
         state, _err = _read_review(bdir)
-        stale = state is None or _older_than(state.get("updated"), args.days)
-        if not stale:
+        if state is None:
+            stale = bdir.name not in live_keys
+        elif _older_than(state.get("updated"), args.days):
+            stale = True
+        else:
             name = state.get("branch")
             if not isinstance(name, str) or not name:
-                name = bdir.name.replace("__", "/")
+                skipped.append(str(bdir))
+                continue
             known = _git_try(repo, "branch", "--list", name) or _git_try(
                 repo, "branch", "-r", "--list", "origin/" + name
             )
@@ -867,7 +893,7 @@ def cmd_prune(args: argparse.Namespace) -> dict:
             _remove_dir(state_dir, bdir)
             removed.append(str(bdir))
     _remove_if_empty(repo_dir)
-    return {"removed": removed}
+    return {"removed": removed, "skipped": skipped}
 
 
 def cmd_list(args: argparse.Namespace) -> dict:
@@ -902,24 +928,16 @@ def cmd_list(args: argparse.Namespace) -> dict:
 
 
 def cmd_cleanup(args: argparse.Namespace) -> dict:
-    """Remove state by scope.
-
-    `--repo` doubles as the repository path here, so it is optional-valued: it
-    names the repo scope only when neither `--branch` nor `--all` is given.
-    """
-    if args.branch and args.all:
-        raise StateError("choose exactly one of --branch, --repo, --all")
-    if not (args.branch or args.all or args.repo is not None):
-        raise StateError("choose exactly one of --branch, --repo, --all")
+    """Remove state by `--scope`; `--older-than` never removes a dir of unknown age."""
     state_dir = Path(args.state_dir).expanduser()
 
     only = None
-    if args.all:
+    if args.scope == "all":
         repo_dirs = _subdirs(state_dir)
     else:
-        repo = Path(args.repo or ".")
+        repo = Path(args.repo)
         repo_dirs = [state_dir / repo_key(repo)]
-        if args.branch:
+        if args.scope == "branch":
             only = state_path(state_dir, repo)
 
     removed: List[str] = []
@@ -942,13 +960,12 @@ def cmd_cleanup(args: argparse.Namespace) -> dict:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    state_opt = _Parser(add_help=False)
-    state_opt.add_argument(
+    common = _Parser(add_help=False)
+    common.add_argument(
         "--state-dir",
         default=DEFAULT_STATE_DIR,
         help="root directory for review state (default: %(default)s)",
     )
-    common = _Parser(add_help=False, parents=[state_opt])
     common.add_argument(
         "--repo", default=".", help="repository path (default: current directory)"
     )
@@ -1036,20 +1053,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
     clean = sub.add_parser(
         "cleanup",
-        parents=[state_opt],
-        help="delete review state: exactly one of --branch, --repo, --all",
+        parents=[common],
+        help="delete review state for one scope (branch and repo need a git repo)",
     )
-    clean.add_argument("--branch", action="store_true", help="the current branch's state")
-    clean.add_argument(
-        "--repo",
-        nargs="?",
-        const=".",
-        default=None,
-        metavar="PATH",
-        help="all state for the repo at PATH (default: current directory); "
-        "with --branch, the repo the branch is read from",
-    )
-    clean.add_argument("--all", action="store_true", help="all state for every repo")
+    clean.add_argument("--scope", required=True, choices=("branch", "repo", "all"))
     clean.add_argument(
         "--older-than", type=int, metavar="D", help="only dirs last updated more than D days ago"
     )
