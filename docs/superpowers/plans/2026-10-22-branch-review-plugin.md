@@ -357,3 +357,34 @@ Run: `claude plugin validate . && claude plugin validate plugins/branch-review &
 Expected: all exit 0, every test listed as `ok`.
 
 - [ ] **Step 6: Commit** `docs: document branch-review plugin and test conventions`, then run the superpowers:finishing-a-development-branch skill.
+
+---
+
+### Task 10: Ruff linting and formatting, with CI
+
+**Files:**
+- Create: `pyproject.toml` (repo root)
+- Create: `.github/workflows/lint.yml`
+- Modify: `.github/workflows/validate.yml` (only if the trigger block needs aligning)
+- Modify: `AGENTS.md` (repo)
+- Modify: any `plugins/*/scripts/*.py` or `plugins/*/tests/*.py` that ruff flags
+
+**Interfaces:**
+- Consumes: the Python under `plugins/branch-review/scripts/` and `plugins/branch-review/tests/` from Tasks 2 to 6.
+- Produces: `ruff check .` and `ruff format --check .` both clean from the repo root; CI runs them on every push to `main` and every pull request.
+
+- [ ] **Step 1: Write `pyproject.toml`** with only a ruff section: `[tool.ruff]` `target-version = "py39"`, `line-length = 100`; `[tool.ruff.lint]` `select = ["E", "F", "W", "I", "UP", "B"]`. No `[project]` table; this repo is not a Python package.
+- [ ] **Step 2: Run ruff locally**
+
+Run: `uvx ruff check . && uvx ruff format --check .` (or `pipx run ruff`, or `python3 -m pip install --user ruff` then `ruff`; use whichever is available, and say which in the report)
+Expected: findings and formatting diffs on the existing files.
+
+- [ ] **Step 3: Fix every finding** and apply `ruff format .`. Behavior must not change: run `python3 -m unittest discover -s plugins/branch-review/tests -v` after formatting and confirm the same pass count as before.
+- [ ] **Step 4: Write `.github/workflows/lint.yml`**: name `Lint`, triggers `push` to `main` and `pull_request`, one job `ruff` on `ubuntu-latest` with `actions/checkout` pinned to the same SHA `validate.yml` uses, then `astral-sh/ruff-action` pinned to a full commit SHA with the version tag in a trailing comment (per `.github/AGENTS.md`), once with `args: check .` and once with `args: format --check .`. Keep `validate.yml` as the plugin-validate and unit-test workflow; both workflows run on the same triggers.
+- [ ] **Step 5: Repo AGENTS.md**: under the Python conventions added in Task 9, add: Python is linted and formatted with ruff using the root `pyproject.toml`; run `ruff check .` and `ruff format .` before committing Python.
+- [ ] **Step 6: Verify**
+
+Run: `uvx ruff check . && uvx ruff format --check . && python3 -m unittest discover -s plugins/branch-review/tests && claude plugin validate .`
+Expected: all exit 0.
+
+- [ ] **Step 7: Commit** `chore: lint and format python with ruff in CI`
