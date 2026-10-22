@@ -1,1 +1,2 @@
 plugins/*/evals/results/
+__pycache__/
