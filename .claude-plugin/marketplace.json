@@ -6,5 +6,11 @@
     "name": "Michael Crawford",
     "url": "https://github.com/mbcrawfo"
   },
-  "plugins": []
+  "plugins": [
+    {
+      "name": "branch-review",
+      "source": "./plugins/branch-review",
+      "description": "Local, agent-run code review of a branch before it becomes a PR: deep adversarial review, delta follow-ups, per-branch state."
+    }
+  ]
 }
