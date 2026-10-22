@@ -40,9 +40,9 @@ Things that would make this a failure even if it technically works:
 
 - Ships as a plugin in this marketplace: `plugins/branch-review/`, manifest, marketplace entry, `claude plugin validate` clean. Plugin and skill names are kebab-case.
 - Runs inside Claude Code. The orchestrator is whichever agent invokes the skill; the reviewer is a subagent dispatched with the Agent tool and continued with SendMessage.
-- This is a final, whole-change review, the local analogue of a PR review. It is run by the top-level session (or whichever agent owns the whole change) once the change set is complete. An implementer subagent building one slice of a change must not run it. Subagents can't dispatch subagents in Claude Code, so the skill detects that it is running inside one and refuses with a message saying the review belongs to the session that owns the whole change.
+- This is a final, whole-change review, the local analogue of a PR review. It is run by the session or agent that owns the whole change, once the change set is complete. An implementer subagent building one slice of a larger change must not run it. Claude Code gives a skill no way to detect that it is inside a subagent (subagents can nest, and no variable reports it), so this is a stated rule in the skill, not a check: the skill tells an agent that is working one slice of a plan to stop and leave the review to the agent that owns the whole change.
 - Defaults: Opus for the deep review, Sonnet for follow-ups. Any model, including Fable, can be requested per run.
-- State lives under `~/.claude/branch-review/`, never inside the repo or its `.git` directory, and has a cleanup process.
+- State lives in the plugin's data directory, `${CLAUDE_PLUGIN_DATA}` (which Claude Code resolves to `~/.claude/plugins/data/<plugin-id>/` and removes on uninstall), never inside the repo or its `.git` directory, and has a cleanup process.
 - Works for a dirty working tree. Agents often review before their final commit, and the skill never commits or forbids commits; the invoking agent follows its own workflow.
 - Must not require network access or GitHub.
 
@@ -75,7 +75,7 @@ Two skills rather than two review skills: the review skill picks deep or follow-
 
 The orchestrator (the coding agent) does this when the skill is invoked:
 
-1. **Check the caller and locate state.** Refuse if running inside a subagent. Compute the repo key and branch key (below). Load `review.json` if it exists. Prune stale state while here (see Cleanup).
+1. **Locate state.** Compute the repo key and branch key (below). Load `review.json` if it exists. Prune stale state while here (see Cleanup).
 2. **Pick the mode.**
    - No state, or `--full`: deep.
    - State exists and the last round's snapshot commit still exists and its parent (the HEAD at that time) is an ancestor of the current HEAD: follow-up.
@@ -152,7 +152,7 @@ The reviewer returns prose for the human reader and a fenced JSON block for the 
 
 ## State
 
-Location: `~/.claude/branch-review/<repo-key>/<branch-key>/`.
+Location: `${CLAUDE_PLUGIN_DATA}/<repo-key>/<branch-key>/`.
 
 - `repo-key`: `owner__repo` from the `origin` remote URL, normalized (strip scheme, host, `.git`, lowercase). If there is no origin remote, a short hash of the git common directory path. Worktrees of the same repo share a key because they share a remote.
 - `branch-key`: the branch name with `/` replaced by `__`. A detached HEAD uses `detached-<short-sha>` and prints a warning.
@@ -180,7 +180,6 @@ Every `review` run prunes, without asking: state for branches of the current rep
 - How the orchestrator parses the reviewer's output robustly when the JSON block is malformed (ask the reviewer to re-emit it).
 - Whether the plugin agent definition can be selected by the Agent tool from a plugin and how model override interacts with the agent's declared model. If a plugin agent can't be dispatched that way, fall back to a general-purpose subagent given the agent prompt file.
 - The size at which the oversized-change warning fires.
-- How to detect that the skill is running inside a subagent.
 - Argument parsing conventions for the skill.
 - A manual test on one of the three analyzed repos before release: a deep review on a branch with a known planted bug, a fix, and a follow-up that verifies it.
 
