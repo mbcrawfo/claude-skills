@@ -5,10 +5,13 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 from helpers import commit_file, git, make_repo, run
 import review_state
 from test_ledger import finding, output, report
+
+IDENTITY_VARS = ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "EMAIL")
 
 
 class SnapshotTest(unittest.TestCase):
@@ -172,6 +175,7 @@ class SnapshotTest(unittest.TestCase):
         commit_file(self.repo, "c.txt", "c\n", "add c")
         result = self.locate()
         self.assertEqual(result["mode"], "followup")
+        self.assertEqual(result["reason"], "continuing")
         self.assertEqual(result["rounds"], 1)
 
     def test_locate_deep_after_amend(self):
@@ -229,22 +233,154 @@ class SnapshotTest(unittest.TestCase):
         obj = git(self.repo, "cat-file", "-p", result["snapshot"])
         self.assertNotIn("gpgsig", obj)
 
-    def test_snapshot_without_git_identity(self):
+    def committer(self, sha):
+        return git(self.repo, "log", "-1", "--format=%cn <%ce>|%an <%ae>", sha)
+
+    def test_snapshot_keeps_configured_identity(self):
+        (self.repo / "new.txt").write_text("fresh\n")
+        with mock.patch.dict(os.environ):
+            for var in IDENTITY_VARS:
+                os.environ.pop(var, None)
+            result = self.snapshot()
+        self.assertTrue(result["dirty"])
+        self.assertEqual(
+            self.committer(result["snapshot"]),
+            "Test User <test@example.com>|Test User <test@example.com>",
+        )
+
+    def test_snapshot_without_git_identity_uses_fallback(self):
         git(self.repo, "config", "--unset", "user.name")
         git(self.repo, "config", "--unset", "user.email")
+        git(self.repo, "config", "user.useConfigOnly", "true")  # no auto-detected identity either
         (self.repo / "new.txt").write_text("fresh\n")
-        saved = {
-            k: os.environ.pop(k, None)
-            for k in ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "EMAIL")
-        }
-        os.environ["GIT_CONFIG_NOSYSTEM"] = "1"
-        try:
+        with mock.patch.dict(os.environ, {"GIT_CONFIG_NOSYSTEM": "1"}):
+            for var in IDENTITY_VARS:
+                os.environ.pop(var, None)
             result = self.snapshot()
-        finally:
-            for k, v in saved.items():
-                if v is not None:
-                    os.environ[k] = v
         self.assertTrue(result["dirty"])
+        self.assertEqual(
+            self.committer(result["snapshot"]),
+            "branch-review <branch-review@localhost>|branch-review <branch-review@localhost>",
+        )
+
+    def test_snapshot_does_not_rewrite_the_index(self):
+        index = self.repo / ".git" / "index"
+        # Make the index stat-dirty without changing content; a plain `git status`
+        # would refresh and rewrite it.
+        stamp = index.stat().st_mtime + 5
+        os.utime(str(self.repo / "a.txt"), (stamp, stamp))
+        before = index.read_bytes()
+        self.assertFalse(self.snapshot()["dirty"])
+        self.assertEqual(index.read_bytes(), before)
+
+    def test_round_head_comes_from_the_snapshot(self):
+        before = git(self.repo, "rev-parse", "HEAD")
+        (self.repo / "c.txt").write_text("c\n")
+        snap = self.snapshot()
+        self.assertTrue(snap["dirty"])
+        self.assertEqual(snap["head"], before)
+        commit_file(self.repo, "d.txt", "d\n", "commit between snapshot and begin-round")
+        result = self.begin(snapshot=snap["snapshot"])
+        self.assertEqual(result["head"], before)
+        self.assertEqual(self.review_json()["rounds"][-1]["head"], before)
+
+    def test_round_head_of_clean_snapshot_is_the_snapshot(self):
+        snap = self.snapshot()["snapshot"]
+        commit_file(self.repo, "d.txt", "d\n", "commit between snapshot and begin-round")
+        self.assertEqual(self.begin(snapshot=snap)["head"], snap)
+
+    def test_begin_round_rejects_non_utf8_intent_file(self):
+        intent = self.tmp / "intent.txt"
+        intent.write_bytes(b"\xff\xfe intent")
+        snap = self.snapshot()["snapshot"]
+        code, out, err = self.call(
+            "begin-round", "--mode", "deep", "--model", "m", "--snapshot", snap, "--base-ref", "main",
+            "--intent-file", str(intent),
+        )  # fmt: skip
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("not valid UTF-8", err)
+        self.assertEqual(len(err.strip().splitlines()), 1, err)
+
+    def test_begin_round_unknown_base_ref(self):
+        self.begin()
+        self.record()
+        before = self.review_json()
+        (self.repo / "c.txt").write_text("c\n")
+        snap = self.snapshot()["snapshot"]
+        for mode in ("deep", "followup"):
+            with self.subTest(mode=mode):
+                code, out, err = self.call(
+                    "begin-round", "--mode", mode, "--model", "m", "--snapshot", snap, "--base-ref", "nope",
+                )  # fmt: skip
+                self.assertEqual((code, out), (1, ""))
+                self.assertEqual(err.strip(), "error: base ref not found: nope")
+                self.assertEqual(self.review_json(), before)
+
+    def test_malformed_anchor_round_is_a_one_line_error(self):
+        self.begin()
+        self.record()
+        path = review_state.state_path(self.state_dir, self.repo) / "review.json"
+        good = path.read_text()
+        commit_file(self.repo, "c.txt", "c\n", "add c")
+        snap = self.snapshot()["snapshot"]
+        for key in ("snapshot", "head", "merge_base"):
+            state = json.loads(good)
+            del state["rounds"][-1][key]
+            path.write_text(json.dumps(state))
+            for argv in (
+                ("locate", "--base", "main"),
+                ("begin-round", "--mode", "followup", "--model", "m", "--snapshot", snap, "--base-ref", "main"),
+            ):
+                with self.subTest(key=key, command=argv[0]):
+                    code, out, err = self.call(*argv)
+                    self.assertEqual((code, out), (1, ""), err)
+                    self.assertIn(f"round 1 is missing {key}", err)
+                    self.assertEqual(len(err.strip().splitlines()), 1, err)
+
+    def test_save_state_writes_through_a_unique_temp_file(self):
+        directory = review_state.state_path(self.state_dir, self.repo)
+        (directory / "review.json.tmp").mkdir(parents=True)  # the old fixed temp name is taken
+        with mock.patch.object(review_state, "_now", return_value="2026-01-01T00:00:00Z"):
+            review_state.save_state(directory, {"rounds": []})
+        first = self.review_json()["updated"]
+        with mock.patch.object(review_state, "_now", return_value="2026-01-02T00:00:00Z"):
+            review_state.save_state(directory, {"rounds": []})
+        self.assertEqual(first, "2026-01-01T00:00:00Z")
+        self.assertEqual(self.review_json()["updated"], "2026-01-02T00:00:00Z")
+        self.assertEqual(sorted(p.name for p in directory.iterdir()), ["review.json", "review.json.tmp"])
+
+    def test_oversized_by_lines(self):
+        (self.repo / "big.txt").write_text("x\n" * 9999)
+        at_limit = self.begin()
+        self.assertEqual(at_limit["lines"], 10000)  # b.txt adds the 10000th line
+        self.assertFalse(at_limit["oversized"])
+        (self.repo / "big.txt").write_text("x\n" * 10000)
+        over = self.begin()
+        self.assertEqual((over["files"], over["lines"]), (2, 10001))
+        self.assertTrue(over["oversized"])
+
+    def test_locate_followup_after_dirty_dangling_snapshot(self):
+        (self.repo / "c.txt").write_text("c\n")
+        snap = self.snapshot()
+        self.assertTrue(snap["dirty"])
+        self.begin(snapshot=snap["snapshot"])
+        self.record()
+        self.assertEqual(git(self.repo, "branch", "--contains", snap["snapshot"]), "")  # dangling
+        located = self.locate()
+        self.assertEqual((located["mode"], located["reason"]), ("followup", "continuing"))
+        commit_file(self.repo, "c.txt", "c2\n", "add c")
+        located = self.locate()
+        self.assertEqual((located["mode"], located["reason"]), ("followup", "continuing"))
+
+    def test_paths_dot_means_no_filter(self):
+        (self.repo / "src").mkdir()
+        (self.repo / "src" / "keep.py").write_text("k\n")
+        for patterns in (["."], ["./"], ["/"], [".", "src"], ["./."]):
+            with self.subTest(patterns=patterns):
+                self.assertEqual(review_state.normalize_paths(self.repo, patterns), [])
+        result = self.begin("--paths", ".")
+        self.assertEqual(result["changed_files"], ["b.txt", "src/keep.py"])
+        self.assertEqual(result["paths"], [])
 
     def test_paths_filter(self):
         (self.repo / "src").mkdir()

@@ -2,6 +2,8 @@ import contextlib
 import io
 import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -31,6 +33,28 @@ class ErrorPathTest(unittest.TestCase):
         # Set by git hooks; left in place they would point fixture git commands at the outer repo.
         for var in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY"):
             self.assertNotIn(var, os.environ)
+
+    def test_importing_helpers_drops_git_variables_in_a_fresh_process(self):
+        script = (
+            "import sys, helpers; from pathlib import Path; "
+            "repo = helpers.make_repo(Path(sys.argv[1])); "
+            "print(helpers.git(repo, 'rev-parse', '--abbrev-ref', 'HEAD'))"
+        )
+        env = dict(
+            os.environ,
+            GIT_DIR=str(self.tmp / "bogus" / ".git"),
+            GIT_WORK_TREE=str(self.tmp / "bogus"),
+            PYTHONPATH=str(Path(__file__).resolve().parent),
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", script, str(self.tmp / "fresh")],
+            cwd=str(self.tmp),
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "feature/x")
 
     def test_unknown_subcommand(self):
         self.assert_one_line_error(*self.call("bogus"))

@@ -191,6 +191,90 @@ class LedgerTest(unittest.TestCase):
     def test_record_rejects_unknown_verdict_id(self):
         self.assert_rejected(output(verdicts=[{"id": "R9-F9", "status": "verified", "reason": "x"}]))
 
+    def test_record_rejects_non_utf8_file(self):
+        self.begin()
+        before = self.review_json.read_bytes()
+        bad = self.tmp / "bad.md"
+        bad.write_bytes(b"# Review\n\xff\xfe\n")
+        self.assert_error("record-findings", "--file", str(bad))
+        self.assertEqual(self.review_json.read_bytes(), before)
+
+    def test_record_bare_json_parse_error_says_invalid_json(self):
+        self.begin()
+        path = self.write("bare.json", '{"summary": "x", ')
+        code, out, err = self.call("record-findings", "--file", path)
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("invalid JSON", err)
+        self.assertNotIn("no json block", err)
+
+    def test_record_rejects_empty_merge_risk_reason_and_non_string_intent_items(self):
+        self.assert_rejected(output(merge_risk={"level": "low", "reason": ""}))
+        self.assert_rejected(output(merge_risk={"level": "low", "reason": "   "}))
+        self.assert_rejected(output(intent_check={"unmet_claims": [1], "unmentioned_behavior": []}))
+        self.assert_rejected(output(intent_check={"unmet_claims": [], "unmentioned_behavior": [{"a": 1}]}))
+
+    def test_record_rejects_duplicate_verdict_ids(self):
+        self.begin()
+        self.record(output())
+        self.assert_rejected(
+            output(
+                findings=[],
+                verdicts=[
+                    {"id": "R1-F1", "status": "verified", "reason": "ok"},
+                    {"id": "R1-F1", "status": "still-open", "reason": "no"},
+                ],
+            )
+        )
+
+    def test_record_rejects_verdict_on_closed_finding(self):
+        self.begin()
+        self.record(output(outside_change=[{"file": "z.py", "title": "Old bug."}]))
+        self.set_status("R1-F1", "invalid", "--note", "n")
+        self.set_status("R1-F2", "escalated", "--note", "q")
+        for fid in ("R1-F1", "R1-F2", "R1-F3"):
+            with self.subTest(fid=fid):
+                self.assert_rejected(output(findings=[], verdicts=[{"id": fid, "status": "verified"}]))
+
+    def test_record_rejects_valid_verdict_with_later_invalid_finding(self):
+        self.begin()
+        self.record(output())
+        self.assert_rejected(
+            output(
+                verdicts=[{"id": "R1-F1", "status": "verified", "reason": "ok"}],
+                findings=[finding(), finding(reachable_now="maybe")],
+            )
+        )
+
+    def test_still_open_verdict_clears_round_closed(self):
+        self.seeded()
+        self.set_status("R1-F1", "fixed", "--note", "guarded")
+        state = self.state()
+        state["findings"][0]["round_closed"] = 1  # a stale value from a hand edit
+        self.review_json.write_text(json.dumps(state))
+        self.begin("followup")
+        self.record(output(findings=[], verdicts=[{"id": "R1-F1", "status": "still-open", "reason": "no"}]))
+        f = self.find("R1-F1")
+        self.assertEqual(f["status"], "still-open")
+        self.assertIsNone(f["round_closed"])
+
+    def test_record_report_copy_failure_leaves_state_untouched(self):
+        self.begin()
+        before = self.review_json.read_bytes()
+        (self.review_json.parent / "rounds").write_text("not a directory")
+        path = self.write("report.md", report(output()))
+        self.assert_error("record-findings", "--file", path, "--report")
+        self.assertEqual(self.review_json.read_bytes(), before)
+
+    def test_record_report_from_its_own_copy(self):
+        self.begin()
+        rounds = self.review_json.parent / "rounds"
+        rounds.mkdir()
+        copy = rounds / "1.md"
+        copy.write_text(report(output()))
+        result = self.cli("record-findings", "--file", str(copy), "--report")
+        self.assertEqual(result["added"], 2)
+        self.assertEqual(copy.read_text(), report(output()))
+
     def test_record_rejects_without_round(self):
         path = self.write("r.md", report(output()))
         self.assert_error("record-findings", "--file", path)
@@ -335,9 +419,10 @@ class LedgerTest(unittest.TestCase):
         self.assertEqual(result["reason"], "new-findings")
 
     def test_status_converged(self):
-        self.seeded()
+        self.seeded(findings=[finding(), finding(title="Second problem."), finding(title="Not a problem.")])
         self.set_status("R1-F1", "fixed", "--commit", "c1")
         self.set_status("R1-F2", "escalated", "--note", "q")
+        self.set_status("R1-F3", "invalid", "--note", "guarded upstream")
         self.begin("followup")
         self.record(
             output(
@@ -350,6 +435,7 @@ class LedgerTest(unittest.TestCase):
         self.assertEqual(result["reason"], "converged")
         self.assertEqual(result["counts"]["verified"], 1)
         self.assertEqual(result["counts"]["escalated"], 1)
+        self.assertEqual(result["counts"]["invalid"], 1)
 
     def test_status_deep_round_with_nothing_is_converged(self):
         self.begin()
@@ -481,6 +567,14 @@ class ExtractJsonBlockTest(unittest.TestCase):
     def test_parse_error(self):
         with self.assertRaisesRegex(ValueError, "json parse error"):
             review_state.extract_json_block("```json\n{oops\n```")
+
+    def test_fence_tag_is_case_insensitive(self):
+        self.assertEqual(review_state.extract_json_block('```JSON\n{"a": 1}\n```\n'), {"a": 1})
+        self.assertEqual(review_state.extract_json_block('```Json \n{"a": 2}\n```'), {"a": 2})
+
+    def test_crlf_report(self):
+        text = '# Review\r\n\r\n```json\r\n{"a": 1,\r\n "b": [2]}\r\n```\r\n'
+        self.assertEqual(review_state.extract_json_block(text), {"a": 1, "b": [2]})
 
 
 if __name__ == "__main__":

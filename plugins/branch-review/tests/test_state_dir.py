@@ -9,7 +9,9 @@ import contextlib
 import io
 import os
 from pathlib import Path
+import tempfile
 import unittest
+from unittest import mock
 
 from helpers import CANARY, sandbox_cwd
 import review_state
@@ -61,6 +63,25 @@ class StateDirTest(unittest.TestCase):
             self.assertTrue((sandbox / CANARY).is_file())
             self.assertTrue((lookalike / "review.json").is_file())
             self.assertEqual(Path(os.getcwd()).resolve(), sandbox)
+
+    def test_root_and_home_state_dirs_are_rejected(self):
+        with sandbox_cwd(), tempfile.TemporaryDirectory(prefix="br-home-") as home:
+            home = str(Path(home).resolve())
+            with mock.patch.dict(os.environ, {"HOME": home}):
+                for value in ("/", "/..", "//", "~", "~/", home, home + "/", home + "/sub/.."):
+                    # cleanup only against the fake home: a regression must never
+                    # run it on the real filesystem root.
+                    commands = [("list",)]
+                    if value not in ("/", "/..", "//"):
+                        commands.append(("cleanup", "--scope", "all"))
+                    for command in commands:
+                        with self.subTest(value=value, command=command[0]):
+                            code, out, err = call(*command, "--state-dir", value)
+                            self.assertEqual((code, out), (1, ""))
+                            self.assertTrue(err.startswith("error: --state-dir"), err)
+                            self.assertEqual(len(err.strip().splitlines()), 1, err)
+                code, out, err = call("list", "--state-dir", "~/state")
+                self.assertEqual(code, 0, err)
 
     def test_home_relative_state_dir_is_accepted(self):
         with sandbox_cwd():

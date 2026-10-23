@@ -19,6 +19,35 @@ class KeysTest(unittest.TestCase):
         self.assertEqual(review_state.repo_key(ssh), "owner__repo")
         self.assertEqual(review_state.repo_key(https), "owner__repo")
 
+    def test_repo_key_url_forms(self):
+        cases = (
+            ("https://github.com/Owner/Repo", "owner__repo"),
+            ("https://github.com/Owner/Repo.git/", "owner__repo"),
+            ("https://github.com/owner/repo/", "owner__repo"),
+            ("ssh://git@github.com/owner/repo.git", "owner__repo"),
+            ("ssh://git@host.example:2222/Owner/Repo.git", "owner__repo"),
+            ("git@github.com:OWNER/REPO.git", "owner__repo"),
+            ("https://gitlab.com/group/sub/repo.git", "group__sub__repo"),
+            ("git@gitlab.com:Group/Sub/Deeper/Repo.git", "group__sub__deeper__repo"),
+        )
+        for i, (url, expected) in enumerate(cases):
+            with self.subTest(url=url):
+                repo = make_repo(self.tmp / f"r{i}", origin=url)
+                self.assertEqual(review_state.repo_key(repo), expected)
+
+    def test_repo_key_non_url_origin_falls_back_to_local_hash(self):
+        repo = make_repo(self.tmp, origin=str(self.tmp / "elsewhere" / "repo.git"))
+        common = (repo / ".git").resolve()
+        expected = hashlib.sha256(str(common).encode()).hexdigest()[:12]
+        self.assertEqual(review_state.repo_key(repo), "local-" + expected)
+
+    def test_linked_worktree_shares_local_key(self):
+        repo = make_repo(self.tmp, origin=None)
+        linked = self.tmp / "linked"
+        git(repo, "worktree", "add", "-q", "-b", "other", str(linked))
+        self.assertTrue(review_state.repo_key(repo).startswith("local-"))
+        self.assertEqual(review_state.repo_key(linked), review_state.repo_key(repo))
+
     def test_repo_key_without_origin_is_hashed(self):
         repo = make_repo(self.tmp, origin=None)
         key = review_state.repo_key(repo)
@@ -70,12 +99,15 @@ class KeysTest(unittest.TestCase):
         review_state.save_state(
             review_state.state_path(state_dir, repo),
             {
-                "rounds": [{"number": 1, "added": 1}],
+                "rounds": [{"number": 1, "added": 1, "snapshot": "0" * 40, "head": "0" * 40, "merge_base": None}],
                 "findings": [
                     {"id": "F1", "status": "open"},
                     {"id": "F2", "status": "fixed"},
                     {"id": "F3", "status": "still-open"},
-                    {"id": "F4", "status": "dismissed"},
+                    {"id": "F4", "status": "verified"},
+                    {"id": "F5", "status": "invalid"},
+                    {"id": "F6", "status": "escalated"},
+                    {"id": "F7", "status": "deferred"},
                 ],
             },
         )

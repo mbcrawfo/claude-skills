@@ -2,6 +2,7 @@ import contextlib
 from datetime import datetime, timedelta, timezone
 import io
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -295,6 +296,95 @@ class CleanupTest(unittest.TestCase):
         self.assertEqual(result["skipped"], [str(d)])
         self.assertTrue(d.exists())
 
+    def test_prune_checks_exact_branch_names_not_globs(self):
+        self.begin()
+        git(self.repo, "branch", "feature/live")
+        star = self.seed(REPO_KEY, "feature__star", "feature/*")
+        result = self.cli("prune")
+        self.assertEqual(result["removed"], [str(star)])
+
+    def test_live_branch_keys_git_failure_is_an_error(self):
+        plain = self.tmp / "plain"
+        plain.mkdir()
+        with self.assertRaises(review_state.StateError):
+            review_state._live_branch_keys(plain)
+
+    def test_prune_detached_dirs_only_by_age(self):
+        self.begin()
+        fresh = self.seed(REPO_KEY, "detached-1234567", "HEAD")
+        old = self.seed(REPO_KEY, "detached-89abcde", "HEAD", updated=days_ago(31))
+        fresh_corrupt = self._corrupt("detached-aaaaaaa")
+        old_corrupt = self._corrupt("detached-bbbbbbb")
+        stamp = (datetime.now(timezone.utc) - timedelta(days=31)).timestamp()
+        os.utime(str(old_corrupt / "review.json"), (stamp, stamp))
+        result = self.cli("prune")
+        self.assertEqual(sorted(result["removed"]), sorted([str(old), str(old_corrupt)]))
+        self.assertTrue(fresh.exists() and fresh_corrupt.exists())
+
+    def _read_only(self, directory):
+        """Make `directory`'s contents undeletable until the test ends."""
+        directory.chmod(0o500)
+        self.addCleanup(directory.chmod, 0o700)
+
+    def test_prune_keeps_going_after_a_removal_error(self):
+        self.begin()
+        first = self.seed(REPO_KEY, "a-gone", "a-gone")
+        stuck = self.seed(REPO_KEY, "b-gone", "b-gone")
+        (stuck / "rounds").mkdir()
+        (stuck / "rounds" / "1.md").write_text("x")
+        last = self.seed(REPO_KEY, "c-gone", "c-gone")
+        try:
+            self._read_only(stuck / "rounds")
+            code, out, err = self.call("prune")
+        finally:
+            (stuck / "rounds").chmod(0o700)
+        self.assertEqual(code, 1)
+        result = json.loads(out)
+        self.assertEqual(result["removed"], [str(first), str(last)])
+        self.assertEqual([e["dir"] for e in result["errors"]], [str(stuck)])
+        self.assertTrue(err.startswith("error: "), err)
+        self.assertEqual(len(err.strip().splitlines()), 1, err)
+        self.assertFalse(first.exists() or last.exists())
+
+    def test_cleanup_keeps_going_after_a_removal_error(self):
+        mine, sibling, foreign = self._three_dirs()
+        (mine / "rounds").mkdir()
+        (mine / "rounds" / "1.md").write_text("x")
+        try:
+            self._read_only(mine / "rounds")
+            code, out, err = self.call("cleanup", "--scope", "all")
+        finally:
+            (mine / "rounds").chmod(0o700)
+        self.assertEqual(code, 1)
+        result = json.loads(out)
+        self.assertEqual(sorted(result["removed"]), sorted([str(sibling), str(foreign)]))
+        self.assertEqual([e["dir"] for e in result["errors"]], [str(mine)])
+        self.assertEqual(len(err.strip().splitlines()), 1, err)
+
+    def test_prune_and_cleanup_report_no_errors_when_clean(self):
+        self.begin()
+        self.assertEqual(self.cli("prune")["errors"], [])
+        self.assertEqual(self.cli("cleanup", "--scope", "repo")["errors"], [])
+
+    def test_symlinked_children_are_skipped_not_followed(self):
+        self.begin()
+        outside = self.tmp / "outside"
+        target_branch = outside / "owner__repo" / "feature__z"
+        target_branch.mkdir(parents=True)
+        (target_branch / "review.json").write_text(json.dumps({"branch": "feature/z", "updated": days_ago(90)}))
+        branch_link = self.state_dir / REPO_KEY / "feature__link"
+        branch_link.symlink_to(target_branch, target_is_directory=True)
+        repo_link = self.state_dir / "linked__repo"
+        repo_link.symlink_to(outside / "owner__repo", target_is_directory=True)
+        result = self.cli("prune")
+        self.assertIn(str(branch_link), result["skipped"])
+        result = self.cli("cleanup", "--scope", "all")
+        self.assertIn(str(branch_link), result["skipped"])
+        self.assertIn(str(repo_link), result["skipped"])
+        self.assertNotIn(str(branch_link), result["removed"])
+        self.assertTrue(branch_link.is_symlink() and repo_link.is_symlink())
+        self.assertTrue((target_branch / "review.json").is_file())
+
     def test_prune_never_removes_current_branch(self):
         self.begin()
         current = self.current_dir()
@@ -336,6 +426,21 @@ class CleanupTest(unittest.TestCase):
         self.assertIsNone(broken["rounds"])
         self.assertIn("error", broken)
         self.assertEqual(broken["repo_key"], REPO_KEY)
+
+    def test_list_reports_malformed_state_as_error_entries(self):
+        self.seed(REPO_KEY, "good", "good", updated=days_ago(1))
+        odd = self.seed(REPO_KEY, "odd", "odd")
+        state = json.loads((odd / "review.json").read_text())
+        state["updated"] = 12345
+        (odd / "review.json").write_text(json.dumps(state))
+        arr = self.state_dir / REPO_KEY / "arr"
+        arr.mkdir()
+        (arr / "review.json").write_text("[1, 2]")
+        entries = self.cli("list")["reviews"]
+        self.assertEqual(entries[0]["branch"], "good")
+        errors = {e["dir"]: e for e in entries if "error" in e}
+        self.assertEqual(sorted(errors), sorted([str(odd), str(arr)]))
+        self.assertIsNone(errors[str(odd)]["updated"])
 
     def test_list_empty_when_no_state_dir(self):
         self.assertEqual(self.cli("list"), {"reviews": []})
@@ -449,7 +554,7 @@ class CleanupTest(unittest.TestCase):
         (mine / "review.json").unlink()
         (mine / "notes.txt").write_text("x")
         result = self.cli("cleanup", "--scope", "branch")
-        self.assertEqual(result, {"removed": [], "skipped": [str(mine)]})
+        self.assertEqual(result, {"removed": [], "skipped": [str(mine)], "errors": []})
         self.assertTrue((mine / "notes.txt").exists())
 
     def test_remove_refuses_paths_outside_state_dir(self):
