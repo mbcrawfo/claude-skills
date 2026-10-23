@@ -4,6 +4,7 @@
 # agent write inside the workspace and the review keeps its state outside the
 # repo being reviewed.
 set -euo pipefail
+unset CDPATH
 here=$(cd "$(dirname "$0")" && pwd -P)
 bash "$here/make_fixture.sh" repo >/dev/null
 mkdir -p state

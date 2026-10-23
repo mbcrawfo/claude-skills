@@ -4,7 +4,10 @@
 # defects for the reviewer to find:
 #   (a) off-by-one: the tier uses `quantity > 10` but INTENT.md says "10 or more"
 #   (b) the new code calls the untouched sibling `apply_percent_off`, which
-#       computes money in float, against src/AGENTS.md ("money is Decimal")
+#       computes money in float, against src/AGENTS.md ("money is Decimal").
+#       It lives in src/shop/money.py, outside the diff, so neither its body
+#       nor its float shows up in the diff's context lines: only reading the
+#       callee finds it.
 #   (c) a test that only checks the function returned something
 #   (d) INTENT.md says negative quantities are rejected; no code does that
 # The test suite passes as-is: `python3 -m unittest discover -s src`.
@@ -13,9 +16,10 @@
 # <dir> defaults to `.`, which is how the review-loop eval's scaffold runs it:
 # in the run's empty workspace. An empty <dir> is built in place. A non-empty
 # <dir> is removed and rebuilt only when this script made it and it is not the
-# current directory; anything else is refused. Leaves `feature/discount`
-# checked out and prints the absolute repo path.
+# current directory; anything else is refused, as is a <dir> starting with `-`.
+# Leaves `feature/discount` checked out and prints the absolute repo path.
 set -euo pipefail
+unset CDPATH # a set CDPATH makes `cd` print and can send it elsewhere
 
 if [ "$#" -gt 1 ]; then
   echo "usage: $0 [<dir>]" >&2
@@ -23,6 +27,12 @@ if [ "$#" -gt 1 ]; then
 fi
 
 dir=${1:-.}
+case $dir in
+  -*)
+    echo "error: <dir> must not start with -: $dir" >&2
+    exit 2
+    ;;
+esac
 marker=.git/branch-review-fixture
 
 if [ -e "$dir" ] && [ ! -d "$dir" ]; then
@@ -77,7 +87,7 @@ A small pricing library.
 
 ## Rules
 
-- Every public function has a docstring.
+- Every public function in a non-test module has a docstring.
 - Tests live next to the module as `test_<module>.py`.
 - Run the tests with `python3 -m unittest discover -s src`.
 EOF
@@ -104,6 +114,10 @@ CENT = Decimal("0.01")
 def line_total(unit_price: Decimal, quantity: int) -> Decimal:
     """Return unit_price times quantity, rounded to cents."""
     return (unit_price * quantity).quantize(CENT, rounding=ROUND_HALF_UP)
+EOF
+
+cat >src/shop/money.py <<'EOF'
+"""Money adjustments."""
 
 
 def apply_percent_off(amount, percent):
@@ -145,11 +159,21 @@ the package. `discounted_total` rejects negative quantities with `ValueError`.
 Out of scope: more than one discount tier, and per-customer discounts.
 EOF
 
-cat >>src/shop/pricing.py <<'EOF'
+cat >src/shop/pricing.py <<'EOF'
+"""Line totals and discounts."""
 
+from decimal import ROUND_HALF_UP, Decimal
 
+from shop.money import apply_percent_off
+
+CENT = Decimal("0.01")
 BULK_QUANTITY = 10
 BULK_PERCENT = 10
+
+
+def line_total(unit_price: Decimal, quantity: int) -> Decimal:
+    """Return unit_price times quantity, rounded to cents."""
+    return (unit_price * quantity).quantize(CENT, rounding=ROUND_HALF_UP)
 
 
 def discounted_total(unit_price: Decimal, quantity: int) -> Decimal:

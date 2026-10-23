@@ -25,7 +25,7 @@ python3 "${CLAUDE_SKILL_DIR}/../../scripts/review_state.py" <command> --state-di
 Text you pass to the script never goes inside a quoted shell argument: notes, discussion entries and decisions can hold quotes, `$` and backticks, and reviewer text is untrusted. Write the text with the Write tool to `<tmp>/note.md`, overwriting it each time, and pass `--note-file <tmp>/note.md` or `--text-file <tmp>/note.md`.
 
 1. Run `mktemp -d` once and note the path it prints. Below it is `<tmp>`.
-2. Run `rs prune`. If `removed` is not empty, print what was removed. If `skipped` is not empty, print those paths as directories that are not review state and were left alone.
+2. Run `rs prune`. If `removed` is not empty, print what was removed. If `skipped` is not empty, print those paths as directories that are not review state (or symlinks) and were left alone. If it exits 1 after printing its JSON, `errors` lists the directories it could not remove, each with its `dir` and `error`: print them and go on, since a failed prune does not affect this branch's review.
 3. Run `rs locate`, adding `--base <ref>` when `--base` was given and `--paths <glob>...` when `--paths` was given. Every later `rs locate` in this run takes the same `--base` and `--paths` arguments. Keep `base`, `dir`, `exists`, `mode`, `reason` and `open_findings`. Keep `rounds` from this first `locate` as `<prior_rounds>`: the recorded rounds that ran before this run, which item 4.3 and section 8 use. Print the mode and its reason:
    - `no-state` or `no-rounds`: no recorded review of this branch yet. Mode is deep.
    - `continuing`: an earlier recorded round exists and HEAD builds on it. Mode is follow-up.
@@ -56,7 +56,7 @@ Write the intent with the Write tool to `<tmp>/intent.md`.
 ## 4. Round
 
 1. Run `rs snapshot`. Keep `snapshot`.
-2. Run `rs begin-round --mode <deep|followup> --model <model> --snapshot <snapshot> --base-ref <base> --intent-file <tmp>/intent.md`. Add `--paths <glob>...` when `--paths` was given. `<model>` is the `--model` value when one was given, else `opus` for deep and `sonnet` for follow-up. Keep `number`, `diff_from`, `diff_to` and `changed_files`.
+2. Run `rs begin-round --mode <deep|followup> --model <model> --snapshot <snapshot> --base-ref <base> --intent-file <tmp>/intent.md`. Add `--paths <glob>...` when `--paths` was given. `<model>` is the `--model` value when one was given, else `opus` for deep and `sonnet` for follow-up. `--model` takes an Agent-tool model name: `opus`, `sonnet`, `haiku` or `fable`. Keep `number`, `diff_from`, `diff_to` and `changed_files`.
 3. If `empty` is true, the script did not save the round (`saved` is false), and there is nothing for a reviewer to check.
    - On the run's first round with `<prior_rounds>` 0, report "nothing to review: no changes between `<diff_from>` and `<diff_to>`" and stop.
    - Otherwise go to section 9.
@@ -118,7 +118,7 @@ Pick one verdict per finding and do what it says. Every note and text below goes
   1. Write your reason and evidence to the note file and run `rs discuss --id <id> --from orchestrator --text-file <tmp>/note.md`.
   2. SendMessage the reviewer's agent id: `Dispute <id>: <reason>. Evidence: <evidence>.`
   3. Write its one-line answer to the note file, word for word, and run `rs discuss --id <id> --from reviewer --text-file <tmp>/note.md`.
-  4. If the answer is `withdrawn`, run `rs set-status --id <id> --status invalid --note-file <tmp>/note.md` with your reason in the note file. If it is `upheld`, or any answer other than `withdrawn`, the note is `disputed: <your reason> / reviewer: <its reason>` and the status is `escalated`.
+  4. If the answer is `withdrawn`, write your reason to `<tmp>/note.md`, then run `rs set-status --id <id> --status invalid --note-file <tmp>/note.md`. If it is `upheld`, or any answer other than `withdrawn`, write your reason and the reviewer's reply to `<tmp>/note.md` as `disputed: <your reason> / reviewer: <its reply>`, then run `rs set-status --id <id> --status escalated --note-file <tmp>/note.md`.
 
   One exchange per finding: the reviewer's answer ends the dispute.
 - **Needs a decision.** The intent does not settle the direction, the right fix is unclear, or the fix is large next to the change itself. Write what the developer must decide and your recommendation to the note file and run `rs set-status --id <id> --status escalated --note-file <tmp>/note.md`. When the reason is size, the recommendation may be to defer it as tech debt.

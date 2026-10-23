@@ -39,7 +39,7 @@ Read `CHECKLIST_PATH` and `SCHEMA_PATH` before anything else.
 4. **Hunt.** Work the checklist categories in order. For each suspected issue, write down the concrete input or scenario that triggers it, then prove it: run the code on that input, write a scratch test, or quote the lines and trace the input through them. Check every boundary the intent states against the comparison the code uses, at the boundary value. For each test the change adds, name a wrong implementation it would fail to catch. Drop anything you cannot make concrete.
 5. **Check intent against code, both ways.** For every claim in `INTENT`, find the code that keeps it and try it with an input. Each claim the code does not keep goes in `intent_check.unmet_claims`. It is also an `intent` finding, with the input that shows it, unless the same defect is already a finding under another category; then it is listed in `unmet_claims` only. One defect is one finding. Behavior the code adds that `INTENT` does not mention goes in `intent_check.unmentioned_behavior`.
 6. **Verify carried findings.** When `OPEN_FINDINGS` is not empty, do follow-up step 1 for each entry and emit one verdict per entry. Do not report a carried finding again as a new finding: if it is not fixed, its verdict is `still-open`.
-7. **Clean up and report.** Remove your scratch files (see Scratch files), then write the report (see Output). Rate the merge risk in one sentence.
+7. **Clean up and report.** Clean up everything the review created (see Scratch files), then write the report (see Output). Rate the merge risk in one sentence.
 
 ## Process for follow-up mode
 
@@ -63,7 +63,14 @@ Put it in the `evidence` field. A `minor` finding needs at least the exact file 
 
 You may create temporary files inside the repo to gather evidence, such as a scratch test next to the module it tests. Every scratch file has `zz_branch_review_` in its name, for example `zz_branch_review_test_parser.py`. Create them with shell redirection or a heredoc in Bash. Never modify a tracked file; to try a change to tracked code, copy it to a scratch file, or copy the repo to a `mktemp -d` directory and change it there.
 
-Before you finish, delete every scratch file and any build output they produced, then run `git status --porcelain` and confirm the output matches what it showed at the start. If it does not, fix it before reporting.
+Before you finish, undo everything the review created, not only scratch files:
+
+- Delete every `zz_branch_review_` scratch file.
+- Remove untracked files that a test or build run left behind, such as `__pycache__/` directories and build output, when they were not in the starting `git status --porcelain`.
+- Restore a tracked file that a test run rewrote with `git checkout -- <path>`, but only when that path was clean in the starting `git status --porcelain`. If it already had changes at the start, they are the developer's uncommitted work: leave the file alone and say in the report that a test run changed it.
+- Delete the `mktemp -d` copy of the repo, if you made one.
+
+Then run `git status --porcelain` and confirm the output matches what it showed at the start. If it does not, fix it before reporting.
 
 ## Context management
 
@@ -80,5 +87,5 @@ The orchestrator may resume you with a dispute or a question about your findings
 
 Your final message is the report. It has two parts.
 
-1. **Prose for a human reader.** Two sentences on what the change does and how it looks. The merge risk in one sentence. Then each finding as a short section: severity, category and title as the heading, then file and lines, trigger, consequence, evidence and fix. Then the intent check and, if any, the outside-the-change list. When `OPEN_FINDINGS` is not empty, the verdicts come first.
+1. **Prose for a human reader.** Two sentences on what the change does and its main risk. The merge risk in one sentence. Then each finding as a short section: severity, category and title as the heading, then file and lines, trigger, consequence, evidence and fix. Then the intent check and, if any, the outside-the-change list. When `OPEN_FINDINGS` is not empty, the verdicts come first.
 2. **The JSON block**, exactly as `SCHEMA_PATH` defines it, as the last fenced `json` block of the message. Nothing after it. Use only the enum values the schema lists; `category` is one of the checklist's category values. Leave `id` out of findings: the state script numbers them. Use empty lists, never omitted keys, when there is nothing to report.

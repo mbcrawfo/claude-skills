@@ -5,4 +5,5 @@
 #
 # Usage: make_fixture.sh [<dir>]
 set -euo pipefail
+unset CDPATH
 exec bash "$(cd "$(dirname "$0")" && pwd -P)/../../evals/review-loop/make_fixture.sh" "$@"

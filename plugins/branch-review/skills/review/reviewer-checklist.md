@@ -2,7 +2,7 @@
 
 What the branch-review reviewer hunts for, in order of value. The order comes from an analysis of CodeRabbit's reviews on two public repos, mbcrawfo/SqlSource (C#, a source generator and CLI with heavy docs) and mbcrawfo/vibefun (TypeScript, a compiler). Work the categories top to bottom; spend most of the time on the first four.
 
-Each heading ends with the `category` value the finding gets in the JSON block. Every example below was a real finding the author accepted, unless it says otherwise.
+Each heading ends with the `category` value the finding gets in the JSON block. Most examples below are real findings the author accepted; one that was declined says so.
 
 ## Severity
 
@@ -21,7 +21,7 @@ The code does the wrong thing for an input you can write down. Look for wrong or
 
 ## 2. Sibling paths (`sibling-path`)
 
-The same defect, or the same fix still missing, in code next to the change: the other branch of an edited conditional, the twin function that handles the mirror case, a helper the new code calls and inherits a flaw from. When the change fixes something, find every other place with the same shape and check it. When the change calls an existing function, read that function and check that what it returns meets the rules the new code must meet. Fix commits are where this matters most: on vibefun, 7 of 15 Critical findings arrived in a later round, on a sibling of the previous fix.
+The same defect, or the same fix still missing, in code next to the change: the other branch of an edited conditional, the twin function that handles the mirror case, a helper the new code calls and inherits a flaw from. When the change fixes something, find every other place with the same shape and check it. When the change calls an existing function, read that function and check that what it returns meets the rules the new code must meet. Fix commits are where this matters most: on vibefun, 7 of 15 Criticals arrived in round 2 or later, many on a sibling path of the fix.
 
 - vibefun PR73, `typechecker.ts`: after the `let` branch was fixed, `finalSubst` was still not threaded through the single-binding `let rec` branch, so stale schemes leaked into later declarations.
 - vibefun PR74, `check-coverage-decrease.ts`: the head-missing case was made to fail closed; its base-missing twin still passed silently and was fixed in the next round.
@@ -51,7 +51,7 @@ The intent is the PR description: what the change is for, what it does and what 
 
 Rules the repo writes down in `AGENTS.md` or `CLAUDE.md`, at the root or nested in the directory of the changed file, and in the docs those files point to. Cite the file and quote the rule in `source`. Typical rules: test placement, types to use for a kind of value, keep-lists-in-sync footers, file size limits, naming. Conventions also tell you what not to report: honor any instruction about docs that are records of intent or areas not to review.
 
-- vibefun, many PRs: tests missing from the colocated test file the repo's guidelines require; cited as "As per coding guidelines" in 81 findings.
+- vibefun, many PRs: tests missing from the colocated test file the repo's guidelines require. CodeRabbit cited "As per coding guidelines" in 81 findings, not all of them about test placement.
 - SqlSource PR2, PR30, PR76 (declined, a counter-example): CodeRabbit asked for specs to be updated to match code although `docs/superpowers/AGENTS.md` says those specs are records of intent. Reading that rule would have prevented all three.
 
 ## 7. Docs the change made stale (`docs`)

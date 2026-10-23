@@ -10,7 +10,7 @@ The file is the summary of a branch review followed by the agent's final report.
 1. The review ran at least two rounds, and the last one was a follow-up: the summary's first line says `N rounds` with N of 2 or more and `last followup`.
 2. Each of the four planted defects appears as a finding, under any section:
    - the off-by-one: the bulk tier uses `quantity > 10` while the intent says 10 or more units;
-   - the float sibling: `discounted_total` calls `apply_percent_off`, which computes money in float against the `src/AGENTS.md` rule that money is `Decimal`;
+   - the float sibling: `discounted_total` calls `apply_percent_off` (in `src/shop/money.py`), which computes money in float against the `src/AGENTS.md` rule that money is `Decimal`;
    - the vacuous test: the bulk-order test only asserts the result is not `None`;
    - the negative-quantity gap: the intent says negative quantities raise `ValueError` and no code does that.
 3. Each of those four findings is under "Fixed and verified", or under "Escalated" with what the developer must decide. None is left only under "Open and unverified".
