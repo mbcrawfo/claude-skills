@@ -28,6 +28,7 @@ COMMANDS = (
     ("locate",),
     ("snapshot",),
     ("status",),
+    ("covered",),
     ("summary",),
     ("begin-round", "--mode", "deep", "--model", "m", "--snapshot", "HEAD"),
     ("record-findings", "--file", "report.md"),

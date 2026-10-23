@@ -930,6 +930,63 @@ def cmd_status(args: argparse.Namespace) -> dict:
     }
 
 
+def cmd_covered(args: argparse.Namespace) -> dict:
+    """Whether a clean review has seen everything in a commit (default `HEAD`).
+
+    Never says covered for code the review did not see: anything it cannot
+    prove, such as a conflicting base update, counts against the commit.
+    """
+    repo = Path(args.repo)
+    _, branch, directory = _locate_keys(Path(args.state_dir).expanduser(), repo)
+    commit = _git_try(repo, "rev-parse", "--verify", "--quiet", args.commit + "^{commit}")
+    if not commit:
+        raise StateError(f"commit not found: {args.commit}")
+    state = load_state(directory)
+    base = args.base or _stored_base(state) or default_base(repo)
+
+    counts = {s: 0 for s in STATUSES}
+    for f in (state or {}).get("findings", []):
+        counts[f.get("status")] = counts.get(f.get("status"), 0) + 1
+    recorded = _recorded(state.get("rounds", [])) if state else []
+
+    reasons: list[str] = []
+    if not recorded:
+        reasons.append("no-rounds")
+    else:
+        anchor = _anchor(recorded)
+        if counts["open"] or counts["still-open"]:
+            reasons.append("open-findings")
+        if counts["fixed"]:
+            reasons.append("unverified-fixes")
+        if counts["escalated"]:
+            reasons.append("escalated")
+        if anchor.get("paths"):
+            reasons.append("partial-scope")
+        reviewed_tree = None
+        if not _object_exists(repo, anchor["snapshot"]):
+            reasons.append("snapshot-missing")
+        elif not _is_ancestor(repo, anchor["head"], commit):
+            reasons.append("history-rewritten")
+        else:
+            reviewed_tree = _git(repo, "rev-parse", anchor["snapshot"] + "^{tree}")
+            new_merge_base = _merge_base(repo, base, commit)
+            if anchor.get("merge_base") and anchor["merge_base"] != new_merge_base:
+                reviewed_tree = simulate_base_update(repo, anchor, new_merge_base) if new_merge_base else None
+                if reviewed_tree is None:
+                    reasons.append("base-conflict")
+        if reviewed_tree is not None and _git(repo, "rev-parse", commit + "^{tree}") != reviewed_tree:
+            reasons.append("changes-since-review")
+
+    return {
+        "covered": not reasons,
+        "commit": commit,
+        "branch": branch,
+        "reasons": reasons,
+        "counts": counts,
+        "rounds": len(recorded),
+    }
+
+
 # --- summary, prune, list, cleanup -----------------------------------------
 
 STALE_DAYS = 30
@@ -1391,6 +1448,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="count only rounds numbered above N toward the round cap (default: 0)",
     )
     stat.set_defaults(func=cmd_status)
+
+    cov = sub.add_parser("covered", parents=[common], help="whether a commit is covered by a clean review")
+    cov.add_argument("--commit", default="HEAD", help="commit to judge (default: HEAD)")
+    cov.add_argument("--base", help="base ref (default: the stored base ref, else the detected default)")
+    cov.set_defaults(func=cmd_covered)
 
     summ = sub.add_parser("summary", parents=[common], help="write and print summary.md for the branch")
     summ.set_defaults(func=cmd_summary)
