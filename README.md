@@ -16,6 +16,7 @@ Run `/plugin` to browse what's available. Pull updates with `/plugin marketplace
 ## Available plugins
 
 - [`branch-review`](plugins/branch-review/README.md): a local replacement for CodeRabbit PR reviews. Agents review a branch, fix the findings and re-check until it converges.
+- [`implementation-manager`](plugins/implementation-manager): runs a planned piece of work to completion through child sessions that each deliver a pull request, watching each PR until it is ready to merge.
 
 ## Layout
 

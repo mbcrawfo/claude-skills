@@ -11,6 +11,11 @@
       "name": "branch-review",
       "source": "./plugins/branch-review",
       "description": "Local, agent-run code review of a branch before it becomes a PR: deep adversarial review, delta follow-ups, per-branch state."
+    },
+    {
+      "name": "implementation-manager",
+      "source": "./plugins/implementation-manager",
+      "description": "Runs a planned multi-phase piece of work to completion through child sessions that each deliver a pull request."
     }
   ]
 }
