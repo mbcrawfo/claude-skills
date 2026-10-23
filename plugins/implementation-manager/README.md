@@ -26,7 +26,7 @@ Ask a session to be the implementation manager, either right after planning the 
 
 Invoking it authorizes starting the child sessions and merging the run's PRs once they meet the merge bar: the watch reports the PR ready, the child is idle with nothing left to do, and `branch-review:check` says the review covers the PR's head commit.
 
-Pushes go through the manager. A child reviews its change with `/branch-review:review` until it converges, then asks to push by ending its turn with `[push-request] <sha>`. The manager runs `branch-review:check` on that commit in the child's worktree and appends `go` or `redo` to the run's `pushes.log`, which the child polls. An Auto-fix wake-up in a child (CI failure, review comment, merge conflict) is never permission to push.
+Pushes go through the manager. A child reviews its change with `/branch-review:review` until it converges, then asks to push by ending its turn with `[push-request] <sha>`. The manager runs `branch-review:check` on that commit in the child's worktree and appends `<unit> go <sha>`, or `<unit> redo <sha> <reasons>` with the check's reasons joined by `, `, to the run's `pushes.log`. The child's poll reads only lines added after it starts, so it can ask again with the same sha. An Auto-fix wake-up in a child (CI failure, review comment, merge conflict) is never permission to push.
 
 ## Run folder
 
@@ -34,7 +34,7 @@ Each run keeps its coordination files in `~/.claude/implementation-manager/<owne
 
 ```
 gates.log    # <unit> open | <unit> stop <reason>: when a gated child may start
-pushes.log   # <unit> go <sha> | <unit> redo <sha> <reason>: push permission per commit
+pushes.log   # <unit> go <sha> | <unit> redo <sha> <reasons>: push permission per commit
 notes.md     # the units table, and what each merged unit left for later ones
 ```
 
