@@ -23,6 +23,7 @@ Run `/branch-review:review` from the branch once the whole change is complete:
 - `--intent TEXT` or `--intent-file PATH`: the PR description, meaning what the change is for, what it does and what it deliberately does not do. Later runs reuse the intent stored with the review.
 - `--paths GLOB...`: limit the review to matching files, useful for a change set too large to review at once. A directory, or a pattern ending in `/`, means everything under it. Changing `--paths` between runs forces a deep review, so no file in the new scope goes unreviewed.
 - `--resolve ID NOTE`: record your decision on an escalated finding. A note that asks for a fix reopens the finding; one that says to leave it defers it.
+- `--state-dir PATH`: keep state in this absolute directory instead of the plugin data directory. Meant for test harnesses; give `/branch-review:cleanup` the same value.
 
 The loop:
 
@@ -78,7 +79,7 @@ The reviewer reads every `AGENTS.md` and `CLAUDE.md` from the repo root down to 
 python3 -m unittest discover -s plugins/branch-review/tests -v
 ```
 
-The review-loop eval lives in `evals/review-loop/`. Its scaffold script, `make_fixture.sh`, builds a small Python repo with four planted defects in the run's empty workspace, so the run needs `--scaffold`. The agent writes the review summary to `review-summary.md`, which the `loop` grader reads. Run it from this plugin's directory:
+The review-loop eval lives in `evals/review-loop/`. Its scaffold script builds a small Python repo with four planted defects in `repo/` inside the run's empty workspace, plus an empty `state/` directory next to it, so the run needs `--scaffold`. The eval sandbox confines writes to the workspace, so the prompt tells the agent to pass `--state-dir` pointing at that `state/` directory. The agent writes the review summary to `review-summary.md` in the workspace, which the `loop` grader reads. Run it from this plugin's directory, with a credential the sandbox can use (`claude setup-token` and `CLAUDE_CODE_OAUTH_TOKEN`, since the sandbox cannot read the Keychain login):
 
 ```bash
 claude plugin eval . --case review-loop --runs 1 --scaffold --allow-tools Bash Write Edit SendMessage ToolSearch
@@ -86,6 +87,4 @@ claude plugin eval . --case review-loop --runs 1 --scaffold --allow-tools Bash W
 
 `tests/fixture/make_fixture.sh <dir>` builds the same repo for a manual run.
 
-Known limitation: the eval sandbox confines Bash writes to the run's workspace, so the state script's writes to `${CLAUDE_PLUGIN_DATA}` may be blocked there. If they are, the eval cannot pass; that is a limit of the sandbox, not a failure of the review.
-
-Results go to `evals/results/`, which is gitignored.
+Results go to `evals/results/` (under the plugin, or under the repo root when the eval is run from there); both are gitignored.

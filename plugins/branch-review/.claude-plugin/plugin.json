@@ -1,6 +1,6 @@
 {
   "name": "branch-review",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Local, agent-run code review of a branch before it becomes a PR: deep adversarial review, delta follow-ups, per-branch state.",
   "author": {
     "name": "Michael Crawford",

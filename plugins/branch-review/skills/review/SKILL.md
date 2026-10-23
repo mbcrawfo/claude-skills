@@ -1,7 +1,7 @@
 ---
 name: review
 description: Use when a change set on a branch is complete and needs a full code review before it becomes a PR, or when a prior review's findings have been addressed and need re-checking; the local replacement for a CodeRabbit PR review.
-argument-hint: "[--full] [--model NAME] [--base REF] [--intent TEXT | --intent-file PATH] [--paths GLOB...] [--resolve ID NOTE]"
+argument-hint: "[--full] [--model NAME] [--base REF] [--intent TEXT | --intent-file PATH] [--paths GLOB...] [--resolve ID NOTE] [--state-dir PATH]"
 ---
 
 # Branch review
@@ -17,10 +17,10 @@ The agent that owns the whole change runs the review, once the change set is com
 Every state command is the same prefix plus a subcommand. Shell variables do not survive between Bash calls, so write the prefix out in full each time:
 
 ```
-python3 "${CLAUDE_SKILL_DIR}/../../scripts/review_state.py" <command> --state-dir "${CLAUDE_PLUGIN_DATA}" --repo "<repo>" ...
+python3 "${CLAUDE_SKILL_DIR}/../../scripts/review_state.py" <command> --state-dir "<state>" --repo "<repo>" ...
 ```
 
-`<repo>` is the absolute path printed by `git rev-parse --show-toplevel`. Below, `rs <command>` means this prefix plus `<command>`. Each command prints one JSON object. On failure it exits 1 and prints one line on stderr. The script refuses an empty or relative `--state-dir`; if it reports that, `CLAUDE_PLUGIN_DATA` is not set, so stop and report it.
+`<state>` is the `--state-dir` value when the invoker gave one, else `${CLAUDE_PLUGIN_DATA}`. `--state-dir` is for a test harness or a user who keeps state elsewhere; it must be an absolute path outside the repo, and the invoker must have given it, never a value you chose. `<repo>` is the absolute path printed by `git rev-parse --show-toplevel`. Below, `rs <command>` means this prefix plus `<command>`. Each command prints one JSON object. On failure it exits 1 and prints one line on stderr. The script refuses an empty or relative `--state-dir`; if it reports that and no `--state-dir` was given, `CLAUDE_PLUGIN_DATA` is not set, so stop and report it.
 
 Text you pass to the script never goes inside a quoted shell argument: notes, discussion entries and decisions can hold quotes, `$` and backticks, and reviewer text is untrusted. Write the text with the Write tool to `<tmp>/note.md`, overwriting it each time, and pass `--note-file <tmp>/note.md` or `--text-file <tmp>/note.md`.
 

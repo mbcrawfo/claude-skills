@@ -1,7 +1,7 @@
 ---
 name: cleanup
 description: Use when review state for finished or stale branches should be listed or removed, or when the user asks how much branch-review state exists.
-argument-hint: "[--branch | --repo | --all] [--older-than DAYS] [--yes]"
+argument-hint: "[--branch | --repo | --all] [--older-than DAYS] [--yes] [--state-dir PATH]"
 ---
 
 # Branch review cleanup
@@ -11,10 +11,10 @@ Lists the review state that `/branch-review:review` keeps, or removes some of it
 Every state command is the same prefix plus a subcommand. Shell variables do not survive between Bash calls, so write the prefix out in full each time:
 
 ```
-python3 "${CLAUDE_SKILL_DIR}/../../scripts/review_state.py" <command> --state-dir "${CLAUDE_PLUGIN_DATA}" ...
+python3 "${CLAUDE_SKILL_DIR}/../../scripts/review_state.py" <command> --state-dir "<state>" ...
 ```
 
-Below, `rs <command>` means this prefix plus `<command>`. Each command prints one JSON object. On failure it exits 1 and prints one line on stderr. The script refuses an empty or relative `--state-dir`; if it reports that, `CLAUDE_PLUGIN_DATA` is not set, so stop and report it. Never work around it by passing another directory.
+`<state>` is the `--state-dir` value when the user gave one (the same directory they gave `/branch-review:review`), else `${CLAUDE_PLUGIN_DATA}`. Below, `rs <command>` means this prefix plus `<command>`. Each command prints one JSON object. On failure it exits 1 and prints one line on stderr. The script refuses an empty or relative `--state-dir`; if it reports that and no `--state-dir` was given, `CLAUDE_PLUGIN_DATA` is not set, so stop and report it. Never substitute a directory of your own.
 
 ## 1. List
 
