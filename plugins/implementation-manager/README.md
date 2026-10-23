@@ -4,7 +4,7 @@ Runs a planned multi-phase piece of work to merged code. The session you run it 
 
 ## Requirements
 
-- The [`branch-review`](../branch-review/README.md) plugin, for `/branch-review:review` and `branch-review:check`. The manager stops at setup if either is missing.
+- The [`branch-review`](../branch-review/README.md) plugin, for `/branch-review:review` and `branch-review:check`. It is a declared dependency, so installing this plugin installs it too. The manager stops at setup if either skill is missing.
 - The Claude desktop app's session tools (`start_session`, `get_session`, `list_events`, `sync_with_base_branch`, the ccd_pr tools), which start and inspect child sessions. The skill does not work in a plain terminal session.
 - `gh`, logged in, and `python3` (3.9+).
 
@@ -12,7 +12,6 @@ Runs a planned multi-phase piece of work to merged code. The session you run it 
 
 ```
 /plugin marketplace add mbcrawfo/claude-skills
-/plugin install branch-review@mbcrawfo-skills
 /plugin install implementation-manager@mbcrawfo-skills
 ```
 

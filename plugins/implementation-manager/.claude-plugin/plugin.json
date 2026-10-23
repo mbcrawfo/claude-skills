@@ -7,5 +7,12 @@
     "url": "https://github.com/mbcrawfo"
   },
   "license": "MIT",
-  "keywords": ["orchestration", "pull-requests", "sessions"]
+  "keywords": [
+    "orchestration",
+    "pull-requests",
+    "sessions"
+  ],
+  "dependencies": [
+    "branch-review"
+  ]
 }
