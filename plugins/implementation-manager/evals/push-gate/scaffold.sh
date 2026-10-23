@@ -9,6 +9,12 @@
 #   run/     notes.md (units table with the worktree paths and both shas) and an
 #            empty pushes.log.
 # Both checkouts share the origin URL, so they share one state key.
+#
+# The commits use fixed dates, identity and messages, so sha1 and sha2 are the
+# same on every run. graders/gate.md names them: change a date, a message, a
+# file or its content here and the expected shas in that grader change too.
+# The messages stay neutral on purpose: nothing in `git log` says which unit
+# changed after its review.
 set -euo pipefail
 unset CDPATH # a set CDPATH makes `cd` print and can send it elsewhere
 here=$(cd "$(dirname "$0")" && pwd -P)
@@ -33,11 +39,13 @@ done
 
 commit() {
   git -C "$1" add -A
-  git -C "$1" commit -q -m "$2"
+  GIT_AUTHOR_DATE="$3" GIT_COMMITTER_DATE="$3" git -C "$1" commit -q -m "$2"
 }
 
+mkdir state run
+
 # A clean reviewer report: no findings. Round 1 of `u1`/`u2` is a deep round.
-report=$(mktemp)
+report="$ws/state/.report.json"
 trap 'rm -f "$report"' EXIT
 cat >"$report" <<'JSON'
 ```json
@@ -63,7 +71,6 @@ review() {
     --state-dir "$ws/state" --repo "$1" >/dev/null
 }
 
-mkdir state run
 git init -q repo
 git -C repo symbolic-ref HEAD refs/heads/main
 git -C repo config user.name "Fixture Author"
@@ -73,22 +80,22 @@ git -C repo config tag.gpgsign false
 git -C repo config core.hooksPath .git/no-hooks
 git -C repo remote add origin git@example.invalid:fixture/shop.git
 printf 'shop\n' >repo/README.md
-commit repo "Initial commit"
+commit repo "Initial commit" "2026-01-05T10:00:00Z"
 
 # u1: one commit, reviewed clean at HEAD.
 git -C repo checkout -q -b u1
 printf 'unit one\n' >repo/one.txt
-commit repo "Add unit one"
+commit repo "Add unit one" "2026-01-06T10:00:00Z"
 review repo
 sha1=$(git -C repo rev-parse HEAD)
 
 # u2: reviewed clean in its own linked worktree, then one more commit.
 git -C repo worktree add -q -b u2 ../wt-u2 main
 printf 'unit two\n' >wt-u2/two.txt
-commit wt-u2 "Add unit two"
+commit wt-u2 "Add unit two" "2026-01-06T11:00:00Z"
 review wt-u2
-printf 'unit two, changed after the review\n' >wt-u2/two.txt
-commit wt-u2 "Change unit two after the review"
+printf 'unit two, second version\n' >wt-u2/two.txt
+commit wt-u2 "Update unit two" "2026-01-06T12:00:00Z"
 sha2=$(git -C wt-u2 rev-parse HEAD)
 
 : >run/pushes.log
