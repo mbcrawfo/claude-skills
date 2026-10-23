@@ -1,4 +1,6 @@
 [tool.ruff]
+# Keep in step with the `version:` pinned in .github/workflows/lint.yml.
+required-version = "==0.17.2"
 target-version = "py39"
 line-length = 120
 
@@ -9,6 +11,12 @@ select = ["E", "F", "W", "I", "UP", "B"]
 quote-style = "double"
 
 [tool.ruff.lint.isort]
-# tests import `helpers` before `review_state`: helpers puts the scripts dir on sys.path.
-# Sorting by module name keeps that order (helpers < review_state < test_*).
+# The tests' own modules are first-party, so they share one section instead of
+# landing among third-party imports (test_* covers modules like test_ledger that
+# other tests import).
+known-first-party = ["helpers", "review_state", "test_*"]
+# Still needed: tests import `helpers` before `review_state`, because helpers puts
+# the scripts dir on sys.path. Isort's default puts `import x` above `from x
+# import`, which would load review_state first; sorting by module name instead
+# keeps helpers < review_state < test_*.
 force-sort-within-sections = true
