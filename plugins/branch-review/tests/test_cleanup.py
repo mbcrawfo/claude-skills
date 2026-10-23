@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 from helpers import git, make_repo, run, sandbox_cwd
 import review_state
@@ -320,6 +321,55 @@ class CleanupTest(unittest.TestCase):
         result = self.cli("prune")
         self.assertEqual(sorted(result["removed"]), sorted([str(old), str(old_corrupt)]))
         self.assertTrue(fresh.exists() and fresh_corrupt.exists())
+
+    def test_prune_records_check_failures_and_keeps_going(self):
+        self.begin()
+        first = self.seed(REPO_KEY, "a-gone", "a-gone")
+        broken = self.seed(REPO_KEY, "b-check", "b-check")
+        last = self.seed(REPO_KEY, "c-gone", "c-gone")
+        real = review_state._ref_exists
+
+        def flaky(repo, ref):
+            if ref.endswith("/b-check"):
+                raise review_state.StateError(f"cannot check {ref}: simulated failure")
+            return real(repo, ref)
+
+        with mock.patch.object(review_state, "_ref_exists", side_effect=flaky):
+            code, out, err = self.call("prune")
+        self.assertEqual(code, 1, err)
+        result = json.loads(out)
+        self.assertEqual(result["removed"], [str(first), str(last)])
+        self.assertEqual(
+            result["errors"], [{"dir": str(broken), "error": "cannot check refs/heads/b-check: simulated failure"}]
+        )
+        self.assertEqual(len(err.strip().splitlines()), 1, err)
+        self.assertTrue(broken.exists())
+
+    def test_prune_detached_prefix_needs_a_sha(self):
+        self.begin()
+        branch_like = self.seed(REPO_KEY, "detached-ui", "detached-ui")  # a real branch name, now gone
+        sha_like = self.seed(REPO_KEY, "detached-1234567", "HEAD")
+        result = self.cli("prune")
+        self.assertEqual(result["removed"], [str(branch_like)])
+        self.assertTrue(sha_like.exists())
+
+    def test_symlinked_repo_key_dir_is_skipped(self):
+        outside = self.tmp / "outside-repo-dir"
+        for name, branch in (("feature__gone", "feature/gone"), ("feature__x", "feature/x")):
+            (outside / name).mkdir(parents=True)
+            (outside / name / "review.json").write_text(json.dumps({"branch": branch, "updated": days_ago(90)}))
+        self.state_dir.mkdir()
+        link = self.state_dir / REPO_KEY
+        link.symlink_to(outside, target_is_directory=True)
+        for argv in (("prune",), ("cleanup", "--scope", "repo"), ("cleanup", "--scope", "branch")):
+            with self.subTest(command=argv):
+                code, out, err = self.call(*argv)
+                self.assertEqual(code, 0, err)
+                result = json.loads(out)
+                self.assertEqual(result, {"removed": [], "skipped": [str(link)], "errors": []})
+        self.assertTrue(link.is_symlink())
+        self.assertTrue((outside / "feature__gone" / "review.json").is_file())
+        self.assertTrue((outside / "feature__x" / "review.json").is_file())
 
     def _read_only(self, directory):
         """Make `directory`'s contents undeletable until the test ends."""

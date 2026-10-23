@@ -284,6 +284,13 @@ class SnapshotTest(unittest.TestCase):
         self.assertEqual(result["head"], before)
         self.assertEqual(self.review_json()["rounds"][-1]["head"], before)
 
+    def test_real_commit_with_snapshot_message_is_its_own_head(self):
+        commit_file(self.repo, "c.txt", "c\n", review_state.SNAPSHOT_MESSAGE)
+        sha = git(self.repo, "rev-parse", "HEAD")
+        snap = self.snapshot()
+        self.assertEqual((snap["snapshot"], snap["dirty"], snap["head"]), (sha, False, sha))
+        self.assertEqual(self.begin(snapshot=sha)["head"], sha)
+
     def test_round_head_of_clean_snapshot_is_the_snapshot(self):
         snap = self.snapshot()["snapshot"]
         commit_file(self.repo, "d.txt", "d\n", "commit between snapshot and begin-round")

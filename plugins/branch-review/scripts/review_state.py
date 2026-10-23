@@ -224,11 +224,15 @@ def make_snapshot(repo: Path) -> tuple[str, bool]:
 
 
 def snapshot_head(repo: Path, snapshot: str) -> str:
-    """The commit a snapshot was taken on: its parent when dirty, else itself."""
+    """The commit a snapshot was taken on: its parent when dirty, else itself.
+
+    A dirty snapshot is a dangling commit with the snapshot message. A commit
+    on HEAD's history is a real commit, whatever its message says.
+    """
     sha = _git_try(repo, "rev-parse", "--verify", "--quiet", snapshot + "^{commit}")
     if not sha:
         raise StateError(f"snapshot not found: {snapshot}")
-    if _git(repo, "log", "-1", "--format=%B", sha) == SNAPSHOT_MESSAGE:
+    if _git(repo, "log", "-1", "--format=%B", sha) == SNAPSHOT_MESSAGE and not _is_ancestor(repo, sha, "HEAD"):
         return _git(repo, "rev-parse", sha + "^")
     return sha
 
@@ -1091,6 +1095,29 @@ def _try_remove(state_dir: Path, bdir: Path, removed: list, errors: list) -> Non
         removed.append(str(bdir))
 
 
+_DETACHED_KEY = re.compile(r"detached-[0-9a-f]{7}")
+
+
+def _prune_stale(repo: Path, bdir: Path, live_keys: set, days: int) -> bool | None:
+    """Whether `bdir` is stale; None when its branch name cannot be read (skip it).
+
+    Raises StateError or OSError when a check fails.
+    """
+    state, _err = _read_review(bdir)
+    if _DETACHED_KEY.fullmatch(bdir.name):
+        if state is None:
+            return _mtime_age_older_than(bdir, days)
+        return _older_than(state.get("updated"), days)
+    if state is None:
+        return bdir.name not in live_keys
+    if _older_than(state.get("updated"), days):
+        return True
+    name = state.get("branch")
+    if not isinstance(name, str) or not name:
+        return None
+    return not (_ref_exists(repo, f"refs/heads/{name}") or _ref_exists(repo, f"refs/remotes/origin/{name}"))
+
+
 def cmd_prune(args: argparse.Namespace) -> dict:
     """Remove state whose branch is gone or whose last update is over `--days` old.
 
@@ -1100,13 +1127,18 @@ def cmd_prune(args: argparse.Namespace) -> dict:
     removed only when no existing branch maps to its dir name. A `detached-<sha>`
     dir never matches a branch, so it is removed only by age (its `updated`, or
     the file's age when unreadable). A dir holding neither `review.json` nor
-    `rounds/`, or a symlink, is not review state: it is skipped.
+    `rounds/`, or a symlink (the repo dir itself included), is not review state:
+    it is skipped. A dir whose check fails goes under `errors` and the rest are
+    still processed.
     """
     repo = Path(args.repo)
     state_dir = Path(args.state_dir).expanduser()
     _, current_key = branch_key(repo)
     repo_dir = state_dir / repo_key(repo)
     live_keys = _live_branch_keys(repo)
+
+    if repo_dir.is_symlink():
+        return {"removed": [], "skipped": [str(repo_dir)], "errors": []}
 
     removed: list[str] = []
     skipped: list[str] = [str(p) for p in _symlinked_subdirs(repo_dir)]
@@ -1117,23 +1149,14 @@ def cmd_prune(args: argparse.Namespace) -> dict:
         if not _is_review_dir(bdir):
             skipped.append(str(bdir))
             continue
-        state, _err = _read_review(bdir)
-        if bdir.name.startswith("detached-"):
-            if state is None:
-                stale = _mtime_age_older_than(bdir, args.days)
-            else:
-                stale = _older_than(state.get("updated"), args.days)
-        elif state is None:
-            stale = bdir.name not in live_keys
-        elif _older_than(state.get("updated"), args.days):
-            stale = True
-        else:
-            name = state.get("branch")
-            if not isinstance(name, str) or not name:
-                skipped.append(str(bdir))
-                continue
-            stale = not (_ref_exists(repo, f"refs/heads/{name}") or _ref_exists(repo, f"refs/remotes/origin/{name}"))
-        if stale:
+        try:
+            stale = _prune_stale(repo, bdir, live_keys, args.days)
+        except (StateError, OSError) as exc:
+            errors.append({"dir": str(bdir), "error": str(exc)})
+            continue
+        if stale is None:
+            skipped.append(str(bdir))
+        elif stale:
             _try_remove(state_dir, bdir, removed, errors)
     _remove_if_empty(repo_dir)
     return {"removed": removed, "skipped": skipped, "errors": errors}
@@ -1189,7 +1212,8 @@ def cmd_cleanup(args: argparse.Namespace) -> dict:
     """Remove state by `--scope`; `--older-than` never removes a dir of unknown age.
 
     Only `<repo>/<branch>` dirs holding `review.json` or `rounds/` are removed;
-    any other dir is reported under `skipped` and left alone.
+    any other dir, and any symlink (a symlinked repo dir included), is reported
+    under `skipped` and left alone.
     """
     state_dir = Path(args.state_dir).expanduser()
 
@@ -1208,6 +1232,9 @@ def cmd_cleanup(args: argparse.Namespace) -> dict:
     if args.scope == "all":
         skipped.extend(str(p) for p in _symlinked_subdirs(state_dir))
     for rdir in repo_dirs:
+        if rdir.is_symlink():
+            skipped.append(str(rdir))
+            continue
         if only is None:
             candidates = _subdirs(rdir)
             skipped.extend(str(p) for p in _symlinked_subdirs(rdir))

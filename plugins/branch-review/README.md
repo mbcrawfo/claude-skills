@@ -57,7 +57,7 @@ Slashes in the branch name become `__`, and every path segment of the origin URL
 
 Every review run prunes stale state first. It removes the state of branches that exist neither locally nor as `origin/<branch>`, and state untouched for more than 30 days. Detached-HEAD state matches no branch, so it goes only by age. It never removes the current branch's state.
 
-The state script refuses an empty or relative `--state-dir`, so an unset `CLAUDE_PLUGIN_DATA` is an error rather than the current directory; it also refuses the filesystem root and your home directory itself. Pruning and cleanup only remove `<repo>/<branch>` directories that hold `review.json` or `rounds/`; any other directory under the state dir, and any symlink, is reported as `skipped` and left alone. A directory that cannot be removed is reported under `errors` without stopping the rest, and the command then exits 1.
+The state script refuses an empty or relative `--state-dir`, so an unset `CLAUDE_PLUGIN_DATA` is an error rather than the current directory; it also refuses the filesystem root and your home directory itself. Pruning and cleanup only remove `<repo>/<branch>` directories that hold `review.json` or `rounds/`; any other directory under the state dir, and any symlink (including a symlinked repo directory, which is never walked into), is reported as `skipped` and left alone. A directory that cannot be checked or removed is reported under `errors` without stopping the rest, and the command then exits 1.
 
 ## Clean up
 

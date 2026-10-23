@@ -33,7 +33,7 @@ Read `CHECKLIST_PATH` and `SCHEMA_PATH` before anything else.
 
 ## Process for deep mode
 
-1. **Learn the repo's rules.** Run `git status --porcelain` and keep the output; you compare against it at the end. Then read every `AGENTS.md` and `CLAUDE.md` from the repo root down to the directory of each changed file (`git ls-files '*AGENTS.md' '*CLAUDE.md'` lists them), and any doc they tell agents to read. Write down each rule that applies to a changed file, with its file. Note any instruction about what not to review, such as docs that are records of intent, and honor it.
+1. **Learn the repo's rules.** Run `git status --porcelain --ignored` and keep the output as the baseline; you compare against it at the end. `--ignored` matters: ignored files such as `__pycache__/` and `dist/` never show in plain `git status`, so without it you cannot tell what your own runs created from what the developer already had. Then read every `AGENTS.md` and `CLAUDE.md` from the repo root down to the directory of each changed file (`git ls-files '*AGENTS.md' '*CLAUDE.md'` lists them), and any doc they tell agents to read. Write down each rule that applies to a changed file, with its file. Note any instruction about what not to review, such as docs that are records of intent, and honor it.
 2. **Read the intent, then the change.** Read `INTENT`. Run `git diff --stat DIFF_FROM DIFF_TO -- <CHANGED_FILES>`, then `git diff DIFF_FROM DIFF_TO -- <CHANGED_FILES>`. Then read the full current contents of every changed file. Then read what the change touches: callers of changed functions, the callees the changed code depends on, whether or not the change touched them, the other branches of edited conditionals, the tests that cover the changed code, the docs that describe it. If `git diff --stat DIFF_TO` shows the working tree has moved on since the snapshot, read changed files with `git show DIFF_TO:<path>` instead.
 3. **Run what the repo runs.** Find the test command in the repo's `AGENTS.md`, README or build files, run it, and note the result. A failing suite is a finding; a passing one tells you the tests do not cover whatever you find next.
 4. **Hunt.** Work the checklist categories in order. For each suspected issue, write down the concrete input or scenario that triggers it, then prove it: run the code on that input, write a scratch test, or quote the lines and trace the input through them. Check every boundary the intent states against the comparison the code uses, at the boundary value. For each test the change adds, name a wrong implementation it would fail to catch. Drop anything you cannot make concrete.
@@ -66,11 +66,11 @@ You may create temporary files inside the repo to gather evidence, such as a scr
 Before you finish, undo everything the review created, not only scratch files:
 
 - Delete every `zz_branch_review_` scratch file.
-- Remove untracked files that a test or build run left behind, such as `__pycache__/` directories and build output, when they were not in the starting `git status --porcelain`.
-- Restore a tracked file that a test run rewrote with `git checkout -- <path>`, but only when that path was clean in the starting `git status --porcelain`. If it already had changes at the start, they are the developer's uncommitted work: leave the file alone and say in the report that a test run changed it.
+- Remove the files your own runs created: untracked (`??`) and ignored (`!!`) paths, such as `__pycache__/` directories and build output, that were not in the baseline. Never remove a path the baseline already listed; it is the developer's.
+- Restore a tracked file that a test run rewrote with `git checkout -- <path>`, but only when that path was clean in the baseline. If it already had changes at the start, they are the developer's uncommitted work: leave the file alone and say in the report that a test run changed it.
 - Delete the `mktemp -d` copy of the repo, if you made one.
 
-Then run `git status --porcelain` and confirm the output matches what it showed at the start. If it does not, fix it before reporting.
+Then run `git status --porcelain --ignored` and confirm the output matches the baseline. If it does not, fix it before reporting.
 
 ## Context management
 
