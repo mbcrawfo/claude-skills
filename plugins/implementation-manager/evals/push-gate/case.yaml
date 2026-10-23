@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: push-gate
+context:
+  # Builds a fixture repo (repo/, wt-u2/), review state (state/) and a run
+  # folder (run/) in the run's workspace. Runs only with --scaffold.
+  scaffold_script: scaffold.sh
