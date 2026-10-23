@@ -930,6 +930,20 @@ def cmd_status(args: argparse.Namespace) -> dict:
     }
 
 
+def _partial_scope(recorded: list) -> bool:
+    """True when a round since the last deep one (that one included) reviewed only some paths.
+
+    A follow-up diffs from the previous snapshot, so it cannot see a change
+    that an earlier `--paths` round skipped.
+    """
+    for rnd in reversed(recorded):
+        if not isinstance(rnd, dict) or rnd.get("paths"):
+            return True
+        if rnd.get("mode") == "deep":
+            return False
+    return False
+
+
 def cmd_covered(args: argparse.Namespace) -> dict:
     """Whether a clean review has seen everything in a commit (default `HEAD`).
 
@@ -960,7 +974,7 @@ def cmd_covered(args: argparse.Namespace) -> dict:
             reasons.append("unverified-fixes")
         if counts["escalated"]:
             reasons.append("escalated")
-        if anchor.get("paths"):
+        if _partial_scope(recorded):
             reasons.append("partial-scope")
         reviewed_tree = None
         if not _object_exists(repo, anchor["snapshot"]):

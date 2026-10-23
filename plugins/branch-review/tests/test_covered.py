@@ -22,13 +22,13 @@ class CoveredTest(unittest.TestCase):
     def cli(self, *argv):
         return run(self.repo, *argv, state_dir=self.state_dir)
 
-    def review(self, findings=(), *extra):
-        """Snapshot the working tree, begin a deep round on it and record a report."""
+    def review(self, findings=(), *extra, mode="deep"):
+        """Snapshot the working tree, begin a round on it and record a report."""
         snapshot = self.cli("snapshot")["snapshot"]
         self.cli(
             "begin-round",
             "--mode",
-            "deep",
+            mode,
             "--model",
             "test-model",
             "--snapshot",
@@ -170,6 +170,23 @@ class CoveredTest(unittest.TestCase):
     def test_partial_scope_blocks(self):
         self.review([], "--paths", "b.txt")
         self.assert_covered(self.covered(), ["partial-scope"])
+
+    def test_partial_deep_then_full_followup_blocks(self):
+        self.review()
+        commit_file(self.repo, "a.txt", "changed\n", "edit a")
+        commit_file(self.repo, "b.txt", "changed\n", "edit b")
+        self.review([], "--paths", "b.txt")
+        commit_file(self.repo, "c.txt", "c\n", "add c")
+        self.review([], mode="followup")
+        result = self.covered()
+        self.assertEqual(result["rounds"], 3)
+        self.assert_covered(result, ["partial-scope"])
+
+    def test_full_deep_then_followups_is_covered(self):
+        self.review()
+        commit_file(self.repo, "c.txt", "c\n", "add c")
+        self.review([], mode="followup")
+        self.assert_covered(self.covered(), [])
 
     def test_reasons_are_reported_in_table_order(self):
         commit_file(self.repo, "a.txt", "branch\n", "branch edits a")
