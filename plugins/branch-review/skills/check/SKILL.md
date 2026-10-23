@@ -30,14 +30,14 @@ The command exits 0 whether or not the commit is covered, so read `covered` from
 
 `reasons` are listed in this order, and each stands on its own:
 
-- `no-rounds`: no review state, or no recorded round, for this branch.
+- `no-rounds`: no review state, or no recorded round, for this branch. It can also mean the wrong state directory: pass the same `--state-dir` the review used (or none, when the review used the plugin data dir).
 - `open-findings`: a finding is open or still open.
 - `unverified-fixes`: a finding was fixed but no later round has verified it.
 - `escalated`: a finding is waiting on a decision.
 - `partial-scope`: the latest deep round, or a later one, was limited with `--paths`.
 - `snapshot-missing`: the reviewed snapshot is gone from the repo.
 - `history-rewritten`: the reviewed head is not an ancestor of the commit.
-- `base-conflict`: the base branch was merged in and that merge could not be simulated cleanly.
+- `base-conflict`: the base branch was merged in and that merge could not be simulated cleanly, or the base ref does not resolve.
 - `changes-since-review`: the commit's tree differs from what was reviewed, allowing for a clean base merge.
 
 `counts` is the number of findings per status and `rounds` the number of recorded rounds. Do not fix any reason yourself; the caller decides what to do, which usually means running `/branch-review:review` again.

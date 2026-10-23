@@ -300,6 +300,20 @@ class ErrorTests(unittest.TestCase):
         line, _ = run_watch(FakeGh([PR7], [json.dumps({"data": {"repository": {"pullRequest": None}}})] * 10))
         self.assertTrue(line.startswith("ERROR gh api graphql on PR 7:"), line)
 
+    def test_malformed_rollup_is_a_failure(self):
+        pr = make_pr()
+        pr["commits"]["nodes"][0]["commit"]["statusCheckRollup"] = "bad"
+        line, _ = run_watch(FakeGh([PR7], [pr] * 10))
+        self.assertTrue(line.startswith("ERROR gh api graphql on PR 7:"), line)
+        line, _ = run_watch(FakeGh([PR7], [pr]), once=True)
+        self.assertTrue(line.startswith("ERROR gh api graphql on PR 7:"), line)
+
+    def test_null_head_ref_oid_is_a_failure(self):
+        line, _ = run_watch(FakeGh([PR7], [make_pr(head=None)] * 10))
+        self.assertTrue(line.startswith("ERROR gh api graphql on PR 7:"), line)
+        line, _ = run_watch(FakeGh([PR7], [make_pr(head=None)]), once=True)
+        self.assertTrue(line.startswith("ERROR gh api graphql on PR 7:"), line)
+
     def test_once_error_on_first_failure(self):
         gh = FakeGh([GhError("boom")])
         line, clock = run_watch(gh, once=True)

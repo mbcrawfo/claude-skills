@@ -20,7 +20,7 @@ Usage: wait_pr_ready.py <owner/repo> <branch> [stall-hours, whole number, defaul
 Env:   POLL_SECONDS (default 120)
        SKIP_HEAD=<sha>  never report READY or ATTENTION for a head starting with this (set it when restarting
                         after either)
-       ONCE=1           check now (two polls 30 s apart), print READY or NOT-READY <pr> <reasons>, and exit
+       ONCE=1           check now (two polls 30 s apart), print READY or NOT-READY <pr> head=<sha7><reasons>, and exit
 """
 
 from __future__ import annotations
@@ -97,7 +97,10 @@ class Summary:
 
 
 def summarize(pr: dict) -> Summary:
-    """Reduces the GraphQL `pullRequest` object to a Summary. Raises KeyError or TypeError on a malformed object."""
+    """Reduces the GraphQL `pullRequest` object to a Summary.
+
+    Raises KeyError, TypeError or AttributeError on a malformed object.
+    """
     commits = pr["commits"]["nodes"]
     rollup = commits[0]["commit"]["statusCheckRollup"] if commits else None
     contexts = ((rollup or {}).get("contexts") or {}).get("nodes") or []
@@ -108,11 +111,14 @@ def summarize(pr: dict) -> Summary:
         else:
             checks.append((node["state"] not in RUNNING_STATES, node["state"] == "SUCCESS"))
     threads = pr["reviewThreads"]
+    head = pr["headRefOid"]
+    if not isinstance(head, str):
+        raise TypeError("headRefOid is not a string")
     return Summary(
         state=pr["state"],
         draft=bool(pr["isDraft"]),
         merge=pr["mergeStateStatus"],
-        head=pr["headRefOid"],
+        head=head,
         unresolved=sum(1 for thread in threads["nodes"] if not thread["isResolved"]),
         many_threads=threads["totalCount"] > 100,
         total=len(checks),
@@ -137,7 +143,7 @@ def poll_pr(repo: str, pr: int, gh: Callable[[list[str]], str]) -> Summary:
         raise GhError("empty output")
     try:
         return summarize(json.loads(out)["data"]["repository"]["pullRequest"])
-    except (ValueError, KeyError, IndexError, TypeError) as exc:
+    except (ValueError, KeyError, IndexError, TypeError, AttributeError) as exc:
         raise GhError(f"unexpected output: {out.strip()[:200]}") from exc
 
 

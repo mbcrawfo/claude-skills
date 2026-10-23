@@ -71,7 +71,7 @@ With no scope it prints a table of what exists. `--branch` and `--repo` target t
 
 ## Check a commit
 
-`/branch-review:check` answers whether a clean review covers a commit. It exists for other agents, such as a manager in another plugin that must know a commit was reviewed before a push, PR or merge, and cannot find this plugin's script or data directory itself. It prints the JSON verdict and one line, `covered` or `not covered: <reasons>`, and changes nothing:
+`/branch-review:check` answers whether a clean review covers a commit. It exists for other agents, such as a manager in another plugin that must know a commit was reviewed before a push, PR or merge, and cannot find this plugin's script or data directory itself. It prints the JSON verdict and one line, `covered` or `not covered: <reasons>`, and changes no refs, index or files:
 
 ```
 /branch-review:check --repo PATH [--commit SHA] [--state-dir PATH]
@@ -83,7 +83,7 @@ With no scope it prints a table of what exists. `--branch` and `--repo` target t
 - A finding is open or still open, fixed but not yet verified, or escalated and awaiting a decision.
 - A round from the latest back to the most recent deep round was limited with `--paths`, so part of the change went unreviewed.
 - The reviewed snapshot is missing from the repo, or the reviewed head is not an ancestor of the commit (a rebase, amend or reset rewrote history).
-- The base branch was merged in and the merge could not be simulated cleanly, so the reviewed code cannot be compared to the commit.
+- The base branch was merged in and the merge could not be simulated cleanly, or the base ref does not resolve, so the reviewed code cannot be compared to the commit.
 - The commit's tree differs from what was reviewed. A clean merge of the base branch since the review does not count as a difference.
 
 The reasons, in the same order, are `no-rounds`, `open-findings`, `unverified-fixes`, `escalated`, `partial-scope`, `snapshot-missing`, `history-rewritten`, `base-conflict` and `changes-since-review`. The command exits 0 whether or not the commit is covered, and exits 1 with one line on stderr on an error such as an unknown commit.
