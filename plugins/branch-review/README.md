@@ -69,6 +69,25 @@ The state script refuses an empty or relative `--state-dir`, so an unset `CLAUDE
 
 With no scope it prints a table of what exists. `--branch` and `--repo` target the current branch or repository, `--all` everything. `--older-than DAYS` narrows that scope to state updated more than DAYS days ago; state whose age cannot be read is kept. It shows what it would remove and asks for confirmation unless you pass `--yes`. `--older-than` and `--yes` need a scope, and only one scope may be given.
 
+## Check a commit
+
+`/branch-review:check` answers whether a clean review covers a commit. It exists for other agents, such as a manager in another plugin that must know a commit was reviewed before a push, PR or merge, and cannot find this plugin's script or data directory itself. It prints the JSON verdict and one line, `covered` or `not covered: <reasons>`, and changes nothing:
+
+```
+/branch-review:check --repo PATH [--commit SHA] [--state-dir PATH]
+```
+
+`--commit` defaults to `HEAD` of the repo. A commit is covered only when none of these hold:
+
+- No recorded round exists for the branch.
+- A finding is open or still open, fixed but not yet verified, or escalated and awaiting a decision.
+- A round from the latest back to the most recent deep round was limited with `--paths`, so part of the change went unreviewed.
+- The reviewed snapshot is missing from the repo, or the reviewed head is not an ancestor of the commit (a rebase, amend or reset rewrote history).
+- The base branch was merged in and the merge could not be simulated cleanly, so the reviewed code cannot be compared to the commit.
+- The commit's tree differs from what was reviewed. A clean merge of the base branch since the review does not count as a difference.
+
+The reasons, in the same order, are `no-rounds`, `open-findings`, `unverified-fixes`, `escalated`, `partial-scope`, `snapshot-missing`, `history-rewritten`, `base-conflict` and `changes-since-review`. The command exits 0 whether or not the commit is covered, and exits 1 with one line on stderr on an error such as an unknown commit.
+
 ## Review guidance in AGENTS.md
 
 The reviewer reads every `AGENTS.md` and `CLAUDE.md` from the repo root down to each changed file. Put review-specific guidance in the repo's `AGENTS.md`: what the reviewer should not review (generated code, vendored files), and which documents are records of intent rather than documentation to keep current (plans, specs, changelogs).
