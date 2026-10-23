@@ -27,9 +27,9 @@ Run `/branch-review:review` from the branch once the whole change is complete:
 
 The loop:
 
-- **Set up.** The state script prunes old state, then locates this branch's earlier recorded rounds. The first review is deep; a later run on a branch that builds on an earlier round is a follow-up. These force a deep review instead, with open findings carried forward for the reviewer to verify:
+- **Set up.** The state script prunes old state, then locates this branch's earlier recorded rounds. The first review is deep; a later run on a branch that builds on an earlier round is a follow-up, including after the base branch was merged in cleanly (`base-updated`: the delta excludes the base's code). These force a deep review instead, with open findings carried forward for the reviewer to verify:
   - `snapshot-missing` or `history-rewritten`: a rebase, amend or reset that loses the earlier snapshot or rewrites history;
-  - `base-moved`: the merge base with the base branch changed, usually because the base was merged in, so a delta would show upstream code as the change;
+  - `base-moved`: the base was merged in and the merge had conflicts (or git is older than 2.40), so a delta would show upstream code as the change;
   - `paths-changed`: `--paths` differs from the earlier round's.
 
   A round whose reviewer never reported is not recorded and never anchors a follow-up, and a round with no changes is never saved.

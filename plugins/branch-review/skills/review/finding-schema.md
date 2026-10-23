@@ -117,8 +117,9 @@ Text arguments have file forms: `set-status --note-file PATH`, `discuss --text-f
 | `no-rounds` | deep | no recorded round |
 | `snapshot-missing` | deep | the anchor's snapshot commit is gone |
 | `history-rewritten` | deep | HEAD does not descend from the anchor's HEAD |
-| `base-moved` | deep | the merge base of HEAD and the base ref differs from the anchor's `merge_base`, as after merging the base into the branch |
+| `base-moved` | deep | the merge base of HEAD and the base ref differs from the anchor's `merge_base`, and merging the base's new commits into the anchor's snapshot conflicts (or git is older than 2.40) |
 | `paths-changed` | deep | the normalized `--paths` given to `locate` differ from the anchor's `paths` |
+| `base-updated` | followup | the merge base differs from the anchor's `merge_base`, but merging the base's new commits into the anchor's snapshot is clean; the delta excludes the base's code |
 | `continuing` | followup | none of the above |
 
 `open_findings` is returned in every case, so a deep round after an earlier one carries them forward. `locate` and `begin-round` use `--base` / `--base-ref` when given, else the stored `base_ref`, else `origin/HEAD`'s target, else `main`.

@@ -30,7 +30,8 @@ Text you pass to the script never goes inside a quoted shell argument: notes, di
    - `no-state` or `no-rounds`: no recorded review of this branch yet. Mode is deep.
    - `continuing`: an earlier recorded round exists and HEAD builds on it. Mode is follow-up.
    - `snapshot-missing` or `history-rewritten`: the earlier round's snapshot is gone, or HEAD no longer descends from it (rebase, amend, reset). Mode is deep.
-   - `base-moved`: the merge base with `<base>` changed since the earlier round, usually because the base branch was merged into this one. A follow-up delta would contain upstream code, so mode is deep.
+   - `base-updated`: the base branch was merged in cleanly since the earlier round, so the follow-up's delta excludes the base's code. Mode is follow-up.
+   - `base-moved`: the base branch was merged in and the merge had conflicts (or git is older than 2.40). A follow-up delta would contain upstream code, so mode is deep.
    - `paths-changed`: `--paths` differs from the earlier round's, so files may never have been reviewed. Mode is deep.
 
    With `snapshot-missing`, `history-rewritten`, `base-moved` or `paths-changed`, any `open_findings` are carried forward for re-verification. Say so.

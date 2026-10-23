@@ -46,10 +46,11 @@ class _Parser(argparse.ArgumentParser):
 # --- git helpers -----------------------------------------------------------
 
 
-def _git(repo: Path, *args: str) -> str:
+def _git(repo: Path, *args: str, env: dict | None = None) -> str:
     result = subprocess.run(
         ["git", *args],
         cwd=str(repo),
+        env=env,
         check=True,
         capture_output=True,
         text=True,
@@ -176,6 +177,19 @@ def save_state(dir: Path, state: dict) -> None:
 # --- snapshots -------------------------------------------------------------
 
 
+def _identity_env(repo: Path) -> dict:
+    """The environment for creating commits: a fallback identity only when git has none."""
+    env = dict(os.environ)
+    if _git_try(repo, "var", "GIT_COMMITTER_IDENT") is None:
+        env.update(
+            GIT_AUTHOR_NAME="branch-review",
+            GIT_AUTHOR_EMAIL="branch-review@localhost",
+            GIT_COMMITTER_NAME="branch-review",
+            GIT_COMMITTER_EMAIL="branch-review@localhost",
+        )
+    return env
+
+
 def make_snapshot(repo: Path) -> tuple[str, bool]:
     """Return `(sha, dirty)` for a commit holding the working tree's content.
 
@@ -187,15 +201,7 @@ def make_snapshot(repo: Path) -> tuple[str, bool]:
     if not _git(repo, "--no-optional-locks", "status", "--porcelain"):
         return head, False
     with tempfile.TemporaryDirectory(prefix="branch-review-") as tmp:
-        env = dict(os.environ, GIT_INDEX_FILE=os.path.join(tmp, "index"))
-        # Fallback identity only when git has none, so a configured user is kept.
-        if _git_try(repo, "var", "GIT_COMMITTER_IDENT") is None:
-            env.update(
-                GIT_AUTHOR_NAME="branch-review",
-                GIT_AUTHOR_EMAIL="branch-review@localhost",
-                GIT_COMMITTER_NAME="branch-review",
-                GIT_COMMITTER_EMAIL="branch-review@localhost",
-            )
+        env = dict(_identity_env(repo), GIT_INDEX_FILE=os.path.join(tmp, "index"))
 
         def run_git(*args: str) -> str:
             result = subprocess.run(
@@ -276,6 +282,26 @@ def _merge_base(repo: Path, base_ref: str, commit: str = "HEAD") -> str | None:
     return _git_try(repo, "merge-base", commit, base_ref)
 
 
+def simulate_base_update(repo: Path, anchor: dict, new_merge_base: str) -> str | None:
+    """The tree of the anchor's snapshot with the base's new commits merged in, or None.
+
+    None means the merge conflicts, or git could not do it (`merge-tree
+    --write-tree --merge-base` needs git 2.40). The tree is the anchor's
+    snapshot plus only the base's changes since the anchor's merge base.
+    """
+    out = _git_try(
+        repo,
+        "merge-tree",
+        "--write-tree",
+        f"--merge-base={anchor['merge_base']}",
+        anchor["snapshot"],
+        new_merge_base,
+    )
+    if not out:
+        return None
+    return out.splitlines()[0]
+
+
 def normalize_paths(repo: Path, patterns: list[str] | None) -> list[str]:
     """Canonical `--paths` patterns: no leading `./`, a directory becomes `dir/**`.
 
@@ -328,11 +354,15 @@ def choose_mode(repo: Path, state: dict | None, base_ref: str, paths: list[str])
         return "deep", "snapshot-missing"
     if not _is_ancestor(repo, anchor["head"], "HEAD"):
         return "deep", "history-rewritten"
-    if anchor.get("merge_base") and anchor["merge_base"] != _merge_base(repo, base_ref):
-        return "deep", "base-moved"
+    base_updated = False
+    new_merge_base = _merge_base(repo, base_ref)
+    if anchor.get("merge_base") and anchor["merge_base"] != new_merge_base:
+        if new_merge_base is None or simulate_base_update(repo, anchor, new_merge_base) is None:
+            return "deep", "base-moved"
+        base_updated = True
     if normalize_paths(repo, anchor.get("paths")) != paths:
         return "deep", "paths-changed"
-    return "followup", "continuing"
+    return "followup", "base-updated" if base_updated else "continuing"
 
 
 # --- commands --------------------------------------------------------------
@@ -433,7 +463,30 @@ def cmd_begin_round(args: argparse.Namespace) -> dict:
     if args.mode == "followup":
         if not rounds:
             raise StateError("cannot start a follow-up round: no recorded round")
-        diff_from = _anchor(rounds)["snapshot"]
+        anchor = _anchor(rounds)
+        diff_from = anchor["snapshot"]
+        if anchor["merge_base"] and anchor["merge_base"] != merge_base:
+            tree = simulate_base_update(repo, anchor, merge_base)
+            if tree is None:
+                raise StateError(
+                    f"cannot start a follow-up round: the base update since round {anchor.get('number', '?')} "
+                    "has conflicts; run a deep round"
+                )
+            # The anchor's snapshot with the base's new commits merged in, so
+            # the delta shows only the branch's own work.
+            diff_from = _git(
+                repo,
+                "commit-tree",
+                "--no-gpg-sign",
+                tree,
+                "-p",
+                anchor["snapshot"],
+                "-p",
+                merge_base,
+                "-m",
+                "branch-review base update",
+                env=_identity_env(repo),
+            )
     else:
         diff_from = merge_base
     diff_to = args.snapshot

@@ -3,6 +3,7 @@ import io
 import json
 import os
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -460,18 +461,84 @@ class SnapshotTest(unittest.TestCase):
         self.assertEqual(result["diff_from"], git(self.repo, "merge-base", "HEAD", "main"))
 
     # base moved
-    def test_locate_deep_when_base_merged_into_branch(self):
-        self.begin()
-        self.record(findings=[finding()])
+    def merge_main_cleanly(self):
         git(self.repo, "checkout", "main")
         commit_file(self.repo, "upstream.txt", "u\n", "upstream work")
         git(self.repo, "checkout", "feature/x")
         git(self.repo, "merge", "--no-edit", "main")
+
+    def conflicting_base_update(self):
+        """Review a branch that changed a.txt, then merge a main that changed it too."""
+        commit_file(self.repo, "a.txt", "branch\n", "branch edits a")
+        self.begin()
+        self.record(findings=[finding()])
+        git(self.repo, "checkout", "main")
+        (self.repo / "a.txt").write_text("main\n")
+        commit_file(self.repo, "upstream.txt", "u\n", "main edits a")
+        git(self.repo, "checkout", "feature/x")
+        merge = subprocess.run(["git", "merge", "main"], cwd=str(self.repo), capture_output=True, text=True)
+        self.assertNotEqual(merge.returncode, 0)
+        (self.repo / "a.txt").write_text("resolved\n")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "--no-edit")
+
+    def test_locate_followup_when_base_merged_cleanly(self):
+        self.begin()
+        self.record(findings=[finding()])
+        self.merge_main_cleanly()
+        result = self.locate()
+        self.assertEqual((result["mode"], result["reason"]), ("followup", "base-updated"))
+        self.assertEqual([f["id"] for f in result["open_findings"]], ["R1-F1"])
+
+    def test_followup_after_clean_base_update_reports_only_branch_work(self):
+        first = self.begin()
+        self.record(findings=[finding()])
+        self.merge_main_cleanly()
+        commit_file(self.repo, "c.txt", "c\n", "add c")
+        result = self.begin(mode="followup")
+        self.assertEqual(result["changed_files"], ["c.txt"])
+        parents = git(self.repo, "rev-list", "--parents", "-n1", result["diff_from"]).split()[1:]
+        self.assertEqual(parents, [first["snapshot"], git(self.repo, "merge-base", "HEAD", "main")])
+
+    def test_followup_after_clean_base_update_alone_is_empty(self):
+        self.begin()
+        self.record(findings=[finding()])
+        self.merge_main_cleanly()
+        result = self.begin(mode="followup")
+        self.assertTrue(result["empty"])
+        self.assertFalse(result["saved"])
+
+    def test_locate_deep_when_base_merge_had_conflicts(self):
+        self.conflicting_base_update()
         result = self.locate()
         self.assertEqual((result["mode"], result["reason"]), ("deep", "base-moved"))
         self.assertEqual([f["id"] for f in result["open_findings"]], ["R1-F1"])
         deep = self.begin()
-        self.assertEqual(deep["changed_files"], ["b.txt"])  # upstream.txt is not part of the change
+        self.assertEqual(deep["changed_files"], ["a.txt", "b.txt"])  # upstream.txt is not part of the change
+
+    def test_begin_followup_rejects_conflicting_base_update(self):
+        self.conflicting_base_update()
+        snapshot = self.snapshot()["snapshot"]
+        code, _, err = self.call(
+            "begin-round", "--mode", "followup", "--model", "test-model", "--snapshot", snapshot, "--base-ref", "main"
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("conflicts", err)
+
+    def test_simulate_base_update_without_merge_tree_support_is_none(self):
+        self.begin()
+        self.record()
+        self.merge_main_cleanly()
+        anchor = self.review_json()["rounds"][-1]
+        new_base = git(self.repo, "merge-base", "HEAD", "main")
+        self.assertIsNotNone(review_state.simulate_base_update(self.repo, anchor, new_base))
+        real = review_state._git_try
+
+        def fake(repo, *args):
+            return None if "merge-tree" in args else real(repo, *args)
+
+        with mock.patch.object(review_state, "_git_try", fake):
+            self.assertIsNone(review_state.simulate_base_update(self.repo, anchor, new_base))
 
     def test_locate_followup_when_base_advances_without_merge(self):
         self.begin()
