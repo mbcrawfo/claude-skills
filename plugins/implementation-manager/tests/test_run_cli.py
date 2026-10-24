@@ -149,7 +149,6 @@ class PushTests(CliTestCase):
         self.ok("yield", str(self.dir), "a", "owner", "question")
         self.assertEqual(self.ok("wait", str(self.dir)), f"NEXT b {SHA2}\n")
         self.assertEqual(self.read("pushes.log"), f"a go {SHA1}\n")
-        self.assertEqual(self.state()["units"]["a"]["yielded"], "owner question")
 
     def test_go_refused_exit_1(self):
         self.ok("go", str(self.dir), "a", SHA1)
@@ -159,6 +158,20 @@ class PushTests(CliTestCase):
         self.assertEqual(len(result.stderr.splitlines()), 1)
         self.assertIn("held by 'a'", result.stderr)
         self.assertEqual(self.read("pushes.log"), f"a go {SHA1}\n")
+
+    def test_go_refused_while_another_unit_is_first_in_the_queue_exit_1(self):
+        self.ok("unit", str(self.dir), "c")
+        self.ok("go", str(self.dir), "a", SHA1)
+        self.ok("queue", str(self.dir), "b", SHA2)
+        self.ok("yield", str(self.dir), "a", "owner", "question")
+        result = self.run_cli("go", str(self.dir), "c", SHA1)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(len(result.stderr.splitlines()), 1)
+        self.assertIn("'b' is first in the queue; use queue", result.stderr)
+        self.ok("queue", str(self.dir), "c", SHA1)
+        self.assertEqual(self.ok("wait", str(self.dir)), f"NEXT b {SHA2}\n")
+        self.ok("go", str(self.dir), "b", SHA2)
+        self.assertEqual(self.read("pushes.log"), f"a go {SHA1}\nb go {SHA2}\n")
 
     def test_redo_reasons_joined(self):
         self.ok("redo", str(self.dir), "b", SHA1, "changes-since-review, escalated")
@@ -332,6 +345,34 @@ class StatusTests(CliTestCase):
         self.assertIn("- gated: b may open", lines)
         self.assertRegex(lines[-2], r"^  - a PR #7 ready since \d\d:\d\d$")
         self.assertEqual(lines[-1], "  - gate b may open")
+
+    def test_status_lists_a_slot_holder_behind_base(self):
+        self.init()
+        self.ok("unit", str(self.dir), "a", "--branch", "feat/a")
+        self.ok("unit", str(self.dir), "b", "--branch", "feat/b")
+        self.ok("go", str(self.dir), "a", SHA1)
+
+        def status_with(marks, slot="keep", pending=False):
+            state = self.state()
+            state["units"]["a"]["prs"] = {"7": "OPEN"}
+            state["marks"]["a"] = marks
+            if slot is None:
+                state["slot"] = None
+            state["pending"] = [{"unit": "a", "sha": SHA2, "branch": "feat/a", "at": 1000.0}] if pending else []
+            (self.dir / "run.json").write_text(json.dumps(state))
+            return self.ok("status", str(self.dir)).splitlines()
+
+        behind = {"pr": 7, "head": HEAD_A, "behind_head": HEAD_A}
+        self.assertIn("  - slot holder a PR #7 behind base", status_with(behind))
+        for marks, slot in (
+            ({**behind, "head": SHA2}, "keep"),  # pushed since
+            ({**behind, "go_head": HEAD_A}, "keep"),  # approved to push: it syncs first
+            (behind, None),  # not the holder
+        ):
+            with self.subTest(marks=marks, slot=slot):
+                self.assertNotIn("behind base", "\n".join(status_with(marks, slot)))
+        # It already asked to push again (after syncing): the request is what needs the manager.
+        self.assertNotIn("behind base", "\n".join(status_with(behind, pending=True)))
 
     def test_status_ready_pr_with_a_newer_head_is_not_listed(self):
         self.init()

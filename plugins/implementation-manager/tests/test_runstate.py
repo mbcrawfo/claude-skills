@@ -148,7 +148,6 @@ class UnitTests(RunStateTestCase):
                 "gate_at": None,
                 "done": False,
                 "prs": {},
-                "yielded": None,
             },
         )
         self.assertEqual(state["units"]["b"]["order"], 1)
@@ -172,14 +171,14 @@ class UnitTests(RunStateTestCase):
 
     def test_bad_unit_name_rejected(self):
         state = self.init()
-        for name in ("a b", "-x", "", "a/b"):
+        for name in ("a b", "-x", "", "a/b", "1.2", "a.b"):
             with self.assertRaises(RunError, msg=name):
                 add(state, name)
 
     def test_unit_name_charset_accepted(self):
         state = self.init()
-        add(state, "1.2-a_b")
-        self.assertIn("1.2-a_b", state["units"])
+        add(state, "1-2a_B")
+        self.assertIn("1-2a_B", state["units"])
 
 
 class OptionTests(RunStateTestCase):
@@ -419,9 +418,38 @@ class SlotTests(RunStateTestCase):
         go(self.dir, state, "a", SHA1, 5.0)
         with self.assertRaises(RunError) as ctx:
             go(self.dir, state, "b", SHA2, 6.0)
-        self.assertIn("a", str(ctx.exception))
+        self.assertIn("held by 'a'", str(ctx.exception))
         self.assertIn("queue", str(ctx.exception))
         self.assertEqual(state["slot"]["unit"], "a")
+        self.assertEqual(self.pushes(), f"a go {SHA1}\n")
+
+    def test_go_refused_while_another_unit_is_first_in_the_queue(self):
+        state = self.setup_units("a", "b", "c")
+        go(self.dir, state, "a", SHA1, 5.0)
+        enqueue(state, "b", SHA2, 6.0)
+        yield_slot(state, "a", "owner question", 7.0)
+        with self.assertRaises(RunError) as ctx:
+            go(self.dir, state, "c", SHA1, 8.0)
+        self.assertIn("'b' is first in the queue", str(ctx.exception))
+        self.assertIn("use queue", str(ctx.exception))
+        self.assertIsNone(state["slot"])
+        self.assertEqual(self.pushes(), f"a go {SHA1}\n")
+        go(self.dir, state, "b", SHA2, 9.0)  # the queue's first unit may take the slot
+        self.assertEqual(state["slot"]["unit"], "b")
+        self.assertEqual(state["queue"], [])
+
+    def test_go_ignores_queue_entries_of_done_units(self):
+        state = self.setup_units("a", "b")
+        enqueue(state, "b", SHA2, 6.0)
+        state["units"]["b"]["done"] = True
+        go(self.dir, state, "a", SHA1, 7.0)
+        self.assertEqual(state["slot"]["unit"], "a")
+
+    def test_parallel_go_ignores_the_queue(self):
+        state = self.setup_units("a", "b")
+        enqueue(state, "b", SHA2, 6.0)
+        set_option(state, "queue", "parallel")
+        go(self.dir, state, "a", SHA1, 7.0)
         self.assertEqual(self.pushes(), f"a go {SHA1}\n")
 
     def test_holder_go_again_keeps_slot(self):
@@ -456,9 +484,8 @@ class SlotTests(RunStateTestCase):
         self.assertEqual(self.pushes(), "")
         self.assertIsNone(state["slot"])
 
-    def test_go_clears_pending_queue_and_yielded(self):
+    def test_go_clears_pending_and_queue(self):
         state = self.setup_units("a", "b")
-        state["units"]["a"]["yielded"] = "owner-wait"
         state["pending"] = [
             {"unit": "a", "sha": SHA1, "branch": "x", "at": 1},
             {"unit": "b", "sha": SHA1, "branch": "y", "at": 1},
@@ -470,21 +497,28 @@ class SlotTests(RunStateTestCase):
         go(self.dir, state, "a", SHA2, 5.0)
         self.assertEqual([e["unit"] for e in state["pending"]], ["b"])
         self.assertEqual([e["unit"] for e in state["queue"]], ["b"])
-        self.assertIsNone(state["units"]["a"]["yielded"])
 
     def test_redo_frees_holders_slot(self):
         state = self.setup_units("a")
         go(self.dir, state, "a", SHA1, 5.0)
         redo(self.dir, state, "a", SHA2, "pr-merged")
         self.assertIsNone(state["slot"])
-        self.assertEqual(state["units"]["a"]["yielded"], "redo")
+
+    def test_redo_clears_the_go_head_mark(self):
+        state = self.setup_units("a")
+        state["marks"]["a"] = {"head": "abc"}
+        go(self.dir, state, "a", SHA1, 5.0)
+        self.assertIn("go_head", state["marks"]["a"])
+        redo(self.dir, state, "a", SHA1, "base-conflict")
+        self.assertIsNone(state["slot"])
+        self.assertNotIn("go_head", state["marks"]["a"])  # the child must ask again
+        self.assertEqual(state["marks"]["a"]["head"], "abc")
 
     def test_redo_leaves_other_holder_alone(self):
         state = self.setup_units("a", "b")
         go(self.dir, state, "a", SHA1, 5.0)
         redo(self.dir, state, "b", SHA2, "nope")
         self.assertEqual(state["slot"]["unit"], "a")
-        self.assertIsNone(state["units"]["b"]["yielded"])
 
     def test_redo_line_format(self):
         state = self.setup_units("b")
@@ -536,6 +570,14 @@ class SlotTests(RunStateTestCase):
         enqueue(state, "a", SHA2, 2.0)
         self.assertEqual(state["queue"], [{"unit": "a", "sha": SHA2, "at": 2.0, "front": False}])
 
+    def test_enqueue_again_with_the_same_sha_keeps_its_place(self):
+        # A NEXT whose go was refused because a unit with an open PR got in front is queued again as it was.
+        state = self.setup_units("a", "b", "c")
+        enqueue(state, "a", SHA1, 1.0)
+        enqueue(state, "b", SHA1, 2.0)
+        enqueue(state, "a", SHA1, 3.0)
+        self.assertEqual([(e["unit"], e["at"]) for e in queue_order(state)], [("a", 1.0), ("b", 2.0)])
+
     def test_enqueue_removes_pending_entry(self):
         state = self.setup_units("a")
         state["pending"] = [{"unit": "a", "sha": SHA1, "branch": "x", "at": 1}]
@@ -565,16 +607,16 @@ class SlotTests(RunStateTestCase):
             yield_slot(state, "b", "owner-wait", 6.0)
         yield_slot(state, "a", "owner-wait", 7.0)
         self.assertIsNone(state["slot"])
-        self.assertEqual(state["units"]["a"]["yielded"], "owner-wait")
+        self.assertNotIn("yielded", state["units"]["a"])
 
-    def test_yield_drops_the_go_head_mark(self):
+    def test_yield_keeps_the_go_head_mark(self):
+        # The child may still push the approved commit, so READY for the old head stays held.
         state = self.setup_units("a")
         state["marks"]["a"] = {"head": "abc"}
         go(self.dir, state, "a", SHA1, 5.0)
-        self.assertIn("go_head", state["marks"]["a"])
         yield_slot(state, "a", "stuck", 6.0)
-        self.assertNotIn("go_head", state["marks"]["a"])
-        self.assertEqual(state["marks"]["a"]["head"], "abc")
+        self.assertIsNone(state["slot"])
+        self.assertEqual(state["marks"]["a"]["go_head"], "abc")
 
     def test_set_queue_parallel_keeps_the_queue(self):
         state = self.setup_units("a", "b")

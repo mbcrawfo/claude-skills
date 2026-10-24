@@ -59,6 +59,25 @@ def _last_go(run_dir: Path, unit: str) -> str | None:
     return sha
 
 
+def _behind_holder(state: dict, unit: str) -> bool:
+    """The slot holder's open PR was BEHIND at its current head, and the unit has no request or push under way.
+
+    A lost BEHIND event leaves exactly this; the child syncs once it is told to.
+    """
+    slot = state["slot"]
+    marks = state["marks"].get(unit, {})
+    behind = marks.get("behind_head")
+    return (
+        slot is not None
+        and slot["unit"] == unit
+        and behind is not None
+        and behind == marks.get("head")
+        and state["units"][unit]["prs"].get(str(marks.get("pr"))) == "OPEN"
+        and "go_head" not in marks
+        and not any(entry["unit"] == unit for entry in state["pending"])
+    )
+
+
 def _needs(run_dir: Path, state: dict) -> list[str]:
     """What waits on the manager, one line each."""
     units = state["units"]
@@ -85,6 +104,8 @@ def _needs(run_dir: Path, state: dict) -> list[str]:
         if "go_head" in marks:
             sha = _last_go(run_dir, name)
             needs.append(f"push approved for {name} {sha[:7] if sha else '-'}, not seen yet")
+        elif _behind_holder(state, name):
+            needs.append(f"slot holder {name} PR #{marks['pr']} behind base")
     if state["queue_mode"] == "serial" and state["slot"] is None and state["queue"]:
         head = runstate.queue_order(state)[0]
         needs.append(f"slot free with a queue, next {head['unit']} {head['sha']}")

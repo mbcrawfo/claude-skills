@@ -178,11 +178,63 @@ class RequestTests(WatcherTestCase):
         self.assertEqual(run_wait(self.dir), f"REQUEST b {SHA2} x")
         self.assertEqual(load(self.dir)["bad_requests"], ["requests.log was truncated"])
 
+    def test_a_request_clears_that_units_go_head(self):
+        # The child has moved on from its last go; its new request is answered afresh.
+        with locked(self.dir) as state:
+            go(self.dir, state, "a", SHA1, NOW)
+            yield_slot(state, "a", "owner question", NOW + 1)
+            go(self.dir, state, "b", SHA2, NOW + 2)
+        append(self.dir, f"a push {SHA3} feat/a\n")
+        self.assertEqual(run_wait(self.dir), f"REQUEST a {SHA3} feat/a")
+        marks = load(self.dir)["marks"]
+        self.assertNotIn("go_head", marks["a"])
+        self.assertIn("go_head", marks["b"])
+
     def test_no_event_sleeps_request_seconds_without_gh(self):
         clock = StopClock(limit=3)
         with self.assertRaises(Timeout):
             run_wait(self.dir, clock)
         self.assertEqual(clock.sleeps, [5.0, 5.0, 5.0])
+
+
+class PendingTests(WatcherTestCase):
+    def setUp(self):
+        super().setUp()
+        self.clock = StopClock(limit=0)
+
+    def wait_for(self, sleeps):
+        self.clock.allow(sleeps)
+        return run_wait(self.dir, self.clock)
+
+    def assert_quiet(self, sleeps):
+        with self.assertRaises(Timeout):
+            self.wait_for(sleeps)
+
+    def test_pending_after_fifteen_minutes_once(self):
+        append(self.dir, f"a push {SHA1} feat/a\n")
+        self.assertEqual(self.wait_for(1), f"REQUEST a {SHA1} feat/a")
+        reported_at = self.clock.t
+        self.assertEqual(self.wait_for(400), f"PENDING a {SHA1} feat/a")
+        self.assertGreaterEqual(self.clock.t - reported_at, 900)
+        self.assertLess(self.clock.t - reported_at, 900 + 10)
+        self.assert_quiet(400)
+        self.assertEqual([entry["unit"] for entry in load(self.dir)["pending"]], ["a"])
+
+    def test_no_pending_when_answered_within_fifteen_minutes(self):
+        append(self.dir, f"a push {SHA1} feat/a\n")
+        self.assertEqual(self.wait_for(1), f"REQUEST a {SHA1} feat/a")
+        self.assert_quiet(170)  # 14 minutes
+        with locked(self.dir) as state:
+            go(self.dir, state, "a", SHA1, self.clock.now())
+        self.assert_quiet(400)
+
+    def test_a_new_request_gets_its_own_pending(self):
+        append(self.dir, f"a push {SHA1} feat/a\n")
+        self.assertEqual(self.wait_for(1), f"REQUEST a {SHA1} feat/a")
+        self.assertEqual(self.wait_for(400), f"PENDING a {SHA1} feat/a")
+        append(self.dir, f"a push {SHA1} feat/a\n")
+        self.assertEqual(self.wait_for(1), f"REQUEST a {SHA1} feat/a")
+        self.assertEqual(self.wait_for(400), f"PENDING a {SHA1} feat/a")
 
 
 class NextTests(WatcherTestCase):
@@ -285,6 +337,7 @@ class ConcurrencyTests(WatcherTestCase):
 RUNNING = [check_run(status="IN_PROGRESS", conclusion=None)]
 FAILING = [check_run(conclusion="FAILURE")]
 SHA_A7 = HEAD_A[:7]
+PR9 = '[{"number": 9}]'
 
 
 class PrTestCase(WatcherTestCase):
@@ -386,6 +439,16 @@ class ReadyTests(PrTestCase):
                 self.assertEqual(self.wait(gh), f"READY a 7 {HEAD_B}")
                 self.assertGreaterEqual(self.clock.t - pushed_at, 30)
                 self.assertNotIn("go_head", load(self.dir)["marks"]["a"])
+
+    def test_ready_stays_held_after_a_yield_with_an_outstanding_go(self):
+        gh = self.go_over_clean_head_a()
+        with locked(self.dir) as state:
+            yield_slot(state, "a", "stuck", self.clock.now())
+        self.assert_quiet(gh, sleeps=300)  # the child may still push HEAD_B: HEAD_A is not READY
+        self.assertEqual(load(self.dir)["marks"]["a"]["go_head"], HEAD_A)
+        gh.polls[7] = [make_pr(head=HEAD_B)]
+        self.assertEqual(self.wait(gh), f"READY a 7 {HEAD_B}")
+        self.assertNotIn("go_head", load(self.dir)["marks"]["a"])
 
     def test_ready_after_a_request_needs_a_fresh_confirm(self):
         append(self.dir, f"a push {HEAD_B} feat/a\n")
@@ -539,10 +602,30 @@ class BehindStuckStalledTests(PrTestCase):
         self.assertLess(self.clock.t - start, 1200 + 60)
         self.assert_quiet(gh, sleeps=400)
 
+    def test_no_failure_stuck_while_the_holders_go_is_outstanding(self):
+        # The holder's PR fails and it got go for a fix: only the no-push STUCK covers a go that never lands.
+        fix = "f" * 40
+        gh = self.gh_a(make_pr(checks=FAILING))
+        with locked(self.dir) as state:
+            yield_slot(state, "a", "test", self.clock.now())
+        self.assert_quiet(gh, sleeps=1)
+        start = self.clock.t
+        with locked(self.dir) as state:
+            go(self.dir, state, "a", fix, start)
+        self.assertEqual(self.wait(gh, sleeps=400), "STUCK a 7 no-push")
+        self.assertGreaterEqual(self.clock.t - start, 1800)
+        self.assert_quiet(gh, sleeps=400)
+        gh.polls[7] = [make_pr(head=fix, checks=FAILING)]  # the fix lands and fails too
+        pushed_at = self.clock.t
+        self.assertEqual(self.wait(gh, sleeps=400), "STUCK a 7 checks-failed=1")
+        self.assertGreaterEqual(self.clock.t - pushed_at, 1200)
+
     def test_stuck_failing_waits_for_pending_request(self):
         append(self.dir, f"a push {HEAD_B} feat/a\n")
         gh = self.gh_a(make_pr(checks=FAILING))
         self.assertEqual(self.wait(gh), f"REQUEST a {HEAD_B} feat/a")
+        # The unanswered request is re-reported once, and never turns into a STUCK.
+        self.assertEqual(self.wait(gh, sleeps=400), f"PENDING a {HEAD_B} feat/a")
         self.assert_quiet(gh, sleeps=400)
 
     def test_stuck_not_for_non_holder(self):
@@ -589,6 +672,26 @@ class BehindStuckStalledTests(PrTestCase):
         self.assertGreaterEqual(self.clock.t - start, 10800)
         self.assertLess(self.clock.t - start, 10800 + 60)
         self.assert_quiet(gh, sleeps=1000)
+
+
+class OrphanTests(PrTestCase):
+    def test_orphan_reported_once_for_an_open_pr_on_a_done_units_branch(self):
+        self.add_b()
+        with locked(self.dir) as state:
+            record_merged(state, "b", 8, more=False)
+        gh = FakeGh({"feat/a": [PR7], "feat/b": [NO_PR, PR9]}, {7: [make_pr(checks=RUNNING)]})
+        self.assert_quiet(gh, sleeps=1)
+        self.assertEqual(self.wait(gh), "ORPHAN b 9")
+        self.assert_quiet(gh)
+        self.assertEqual(load(self.dir)["units"]["b"]["prs"], {"8": "MERGED"})
+
+    def test_no_orphan_for_a_done_unit_without_an_open_pr(self):
+        self.add_b()
+        with locked(self.dir) as state:
+            record_merged(state, "b", 8, more=False)
+        gh = FakeGh({"feat/a": [PR7], "feat/b": [NO_PR]}, {7: [make_pr(checks=RUNNING)]})
+        self.assert_quiet(gh)
+        self.assertGreater(gh.count(["pr", "list"]), 1)
 
 
 class GhFailureTests(PrTestCase):

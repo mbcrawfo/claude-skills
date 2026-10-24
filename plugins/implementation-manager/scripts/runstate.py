@@ -19,7 +19,8 @@ GATES = "gates.log"
 # The watcher's mark for the last NEXT it reported; not a unit name, since unit names start with a letter or digit.
 NEXT_MARK = "_next"
 
-UNIT_RE = r"[A-Za-z0-9][A-Za-z0-9._-]*"
+# No '.': children match their unit name in `grep -E` patterns, where it would be a wildcard.
+UNIT_RE = r"[A-Za-z0-9][A-Za-z0-9_-]*"
 SHA_RE = r"[0-9a-f]{40}"
 
 METHODS = ("merge", "squash", "rebase")
@@ -138,9 +139,7 @@ def add_unit(
 ) -> None:
     """Add a unit, or update the fields given on an existing one; None keeps the old value."""
     if not re.fullmatch(UNIT_RE, name):
-        raise RunError(
-            f"bad unit name {name!r}: use letters, digits, '.', '_' and '-', starting with a letter or digit"
-        )
+        raise RunError(f"bad unit name {name!r}: use letters, digits, '_' and '-', starting with a letter or digit")
     for prereq in prereqs or []:
         if prereq not in state["units"] or prereq == name:
             raise RunError(f"unit {name!r} has unknown prerequisite {prereq!r}")
@@ -156,7 +155,6 @@ def add_unit(
             "gate_at": None,
             "done": False,
             "prs": {},
-            "yielded": None,
         }
     for key, value in (("prereqs", prereqs), ("branch", branch), ("worktree", worktree), ("specs", specs)):
         if value is not None:
@@ -256,19 +254,34 @@ def _holds_slot(state: dict, unit: str) -> bool:
     return state["slot"] is not None and state["slot"]["unit"] == unit
 
 
+def _first_queued(state: dict) -> str | None:
+    """The unit first in the queue, skipping done units, whose entries the watcher drops."""
+    for entry in queue_order(state):
+        if not state["units"][entry["unit"]]["done"]:
+            return entry["unit"]
+    return None
+
+
 def go(run_dir: Path, state: dict, unit: str, sha: str, now: float) -> None:
-    """Answer a push request with `go`: log it and, in serial mode, take the slot."""
+    """Answer a push request with `go`: log it and, in serial mode, take the slot.
+
+    In serial mode it refuses while another unit holds the slot, or while the slot is free and another unit is
+    first in the queue.
+    """
     record = _unit(state, unit)
     _check_sha(sha)
     if record["done"]:
         raise RunError(f"unit {unit!r} is done; answer its push requests with: redo <sha> pr-merged")
     _refuse_stopped(record, unit)
-    holder = state["slot"]["unit"] if state["slot"] else None
-    if state["queue_mode"] == "serial" and holder not in (None, unit):
-        raise RunError(f"the push slot is held by {holder!r}; use queue to line {unit!r} up behind it")
+    if state["queue_mode"] == "serial":
+        holder = state["slot"]["unit"] if state["slot"] else None
+        if holder not in (None, unit):
+            raise RunError(f"the push slot is held by {holder!r}; use queue to line {unit!r} up behind it")
+        first = _first_queued(state) if holder is None else None
+        if first not in (None, unit):
+            raise RunError(f"{first!r} is first in the queue; use queue to line {unit!r} up behind it")
     _append(run_dir, PUSHES, f"{unit} go {sha}\n")
     _drop_entries(state, unit, "pending", "queue")
-    record["yielded"] = None
     marks = state["marks"].setdefault(unit, {})
     if marks.get("head") == sha:
         # The approved commit is already the PR's head: there is nothing new to wait for.
@@ -283,28 +296,33 @@ def go(run_dir: Path, state: dict, unit: str, sha: str, now: float) -> None:
 
 
 def redo(run_dir: Path, state: dict, unit: str, sha: str, reasons: str) -> None:
-    """Answer a push request with `redo` and one line of reasons; the unit gives up the slot."""
-    record = _unit(state, unit)
+    """Answer a push request with `redo` and one line of reasons; the unit gives up the slot.
+
+    Any earlier `go` is spent: the child asks again, so the watcher stops holding READY for a push.
+    """
+    _unit(state, unit)
     _check_sha(sha)
     if not reasons.strip() or "\n" in reasons or "\r" in reasons:
         raise RunError("redo reasons must be a single non-empty line")
     _append(run_dir, PUSHES, f"{unit} redo {sha} {reasons}\n")
     _drop_entries(state, unit, "pending", "queue")
+    state["marks"].get(unit, {}).pop("go_head", None)
     if _holds_slot(state, unit):
         state["slot"] = None
-        record["yielded"] = "redo"
 
 
 def enqueue(state: dict, unit: str, sha: str, now: float) -> None:
-    """Line a unit's push request up behind the slot holder, replacing any earlier entry."""
+    """Line a unit's request up behind the slot holder, replacing any earlier entry; the same sha keeps its time."""
     _refuse_stopped(_unit(state, unit), unit)
     _check_sha(sha)
     if state["queue_mode"] == "parallel":
         raise RunError("queue is not used in parallel mode; answer with go")
     if _holds_slot(state, unit):
         raise RunError(f"unit {unit!r} already holds the push slot")
+    # The same sha queued again (a NEXT whose go was refused) keeps its place.
+    at = next((entry["at"] for entry in state["queue"] if entry["unit"] == unit and entry["sha"] == sha), now)
     _drop_entries(state, unit, "pending", "queue")
-    state["queue"].append({"unit": unit, "sha": sha, "at": now, "front": has_open_pr(state, unit)})
+    state["queue"].append({"unit": unit, "sha": sha, "at": at, "front": has_open_pr(state, unit)})
 
 
 def queue_order(state: dict) -> list[dict]:
@@ -314,14 +332,15 @@ def queue_order(state: dict) -> list[dict]:
 
 
 def yield_slot(state: dict, unit: str, reason: str, now: float) -> None:
-    """The slot holder gives the slot up and remembers why. `now` is accepted for call symmetry and unused."""
-    record = _unit(state, unit)
+    """The slot holder gives the slot up. `reason` (for the manager's transcript) and `now` are unused.
+
+    A `go` it has not pushed yet stays outstanding: the child may still push it, so the watcher keeps holding
+    READY for the old head until a new head appears or the unit asks again.
+    """
+    _unit(state, unit)
     if not _holds_slot(state, unit):
         raise RunError(f"unit {unit!r} does not hold the push slot")
     state["slot"] = None
-    record["yielded"] = reason
-    # A unit that gave the slot up is not pushing, so the watcher stops holding its READY for a push.
-    state["marks"].get(unit, {}).pop("go_head", None)
 
 
 def record_merged(state: dict, unit: str, pr: int, *, more: bool) -> None:
