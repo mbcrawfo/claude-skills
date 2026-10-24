@@ -696,14 +696,15 @@ def cmd_begin_round(args: argparse.Namespace) -> dict:
     saved = files > 0
     if saved:
         rounds.append(rnd)
+    if saved or existed:
         if args.second_opinion is not None:
-            # A request is the number of the round that made it; it is met by a
-            # second-opinion round numbered at least that.
+            # A request is the number of the round that made it (or would have,
+            # for an empty round); it is met by a second-opinion round numbered
+            # at least that. An empty round still stores the choice.
             state["second_opinion"] = {
                 "requested": rnd["number"] if args.second_opinion else None,
                 "skipped": not args.second_opinion,
             }
-    if saved or existed:
         save_state(directory, state)
 
     result = dict(rnd)

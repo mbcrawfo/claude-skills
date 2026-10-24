@@ -67,6 +67,7 @@ Write the intent with the Write tool to `<tmp>/intent.md`.
    Keep `number`, `mode`, `model`, `diff_from`, `diff_to` and `changed_files`, plus `conflicts` and `upstream_overlap` for merge-check. The returned `mode` and `model` are the round's, even when they differ from what you passed: a follow-up whose delta is too large (40 or more non-generated files, or 2,000 or more lines) comes back as `mode: deep` with `mode_reason: large-delta` and the deep model, so dispatch a deep round with that model.
 3. If `empty` is true, the script did not save the round (`saved` is false), and there is nothing for a reviewer to check.
    - On the run's first round with `<prior_rounds>` 0, report "nothing to review: no changes between `<diff_from>` and `<diff_to>`" and stop.
+   - On the run's first round with earlier rounds, go to section 8 and follow `rs status`: a `--second-opinion` you just passed is stored, so a second opinion may be due.
    - Otherwise go to section 9.
 4. If `oversized` is true, print that the change set is `<counted_files>` files and `<counted_lines>` changed lines, not counting generated files, so review quality will degrade. Suggest re-running with `--paths <glob>...`, or reviewing commit by commit. Then continue, unless the invoker has said not to.
 
@@ -118,8 +119,8 @@ Leave out the lines that do not apply: `FOCUS` and `PRIOR_FINDINGS` unless the r
 ## 6. Record
 
 1. Run `rs record-findings --file <tmp>/round-<number>.md --report`. It prints `ids` (the new findings, outside ones included) and `verdicts` (how many earlier findings it updated).
-2. If it exits 1 because the file does not exist (`No such file or directory`) or holds no JSON block (`no json block`), save the reviewer's final message to that path with the Write tool, word for word. That is the Agent tool's result, or the report the reviewer handed back as a message when the result says it was delivered that way. Then run item 6.1 again.
-3. If it exits 1 for any other reason, send the reviewer one message with SendMessage (load the SendMessage tool with ToolSearch if it is deferred): `Re-emit the JSON block only, fixed per: <the stderr line>`. Append the reply to the end of `<tmp>/round-<number>.md`, then run item 6.1 again; the last JSON block in the file is the one recorded. If it fails a second time, stop and report the error. The round stays unrecorded: it anchors nothing, and the next run's `begin-round` replaces it.
+2. The first time it exits 1 because the file does not exist (`No such file or directory`) or holds no JSON block (`no json block`), save the reviewer's final message to that path with the Write tool, word for word, reading the file first if it exists. That is the Agent tool's result, or the report the reviewer handed back as a message when the result says it was delivered that way. Then run item 6.1 again. This item applies once per round.
+3. If it exits 1 for any other reason, or again after item 6.2, send the reviewer one message with SendMessage (load the SendMessage tool with ToolSearch if it is deferred): `Re-emit the JSON block only, fixed per: <the stderr line>`. Append the reply to the end of `<tmp>/round-<number>.md`, then run item 6.1 again; the last JSON block in the file is the one recorded. If it fails a second time, stop and report the error. The round stays unrecorded: it anchors nothing, and the next run's `begin-round` replaces it.
 4. Run `rs locate` again. Its `open_findings` is now the triage list.
 
 ## 7. Triage

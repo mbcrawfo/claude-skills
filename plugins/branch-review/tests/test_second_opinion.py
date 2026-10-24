@@ -121,6 +121,35 @@ class SecondOpinionTest(LedgerHarness, unittest.TestCase):
         self.record(output(findings=[]))
         self.assert_second_opinion(self.status_of(), ["requested"])
 
+    def begin_empty_followup(self, *extra):
+        """A follow-up on the anchor's own snapshot: no changes, so the round is not saved."""
+        snap = self.cli("snapshot")["snapshot"]
+        result = self.cli(
+            "begin-round", "--mode", "followup", "--model", "m", "--snapshot", snap, "--base-ref", "main", *extra
+        )
+        self.assertTrue(result["empty"], result)
+        self.assertFalse(result["saved"], result)
+        return result
+
+    def test_second_opinion_flag_on_empty_round_is_stored(self):
+        self.deep()
+        self.assertEqual(self.status_of()["reason"], "converged")
+        self.begin_empty_followup("--second-opinion")
+        self.assertEqual(self.state()["second_opinion"], {"requested": 2, "skipped": False})
+        self.assertEqual(len(self.state()["rounds"]), 1)
+        self.assert_second_opinion(self.status_of(), ["requested"])
+        self.assertIn("second-opinion-pending", self.cli("covered")["reasons"])
+
+    def test_no_second_opinion_on_empty_round_is_stored(self):
+        self.deep(merge_risk=MODERATE)
+        self.assertEqual(self.status_of()["reason"], "second-opinion")
+        self.begin_empty_followup("--no-second-opinion")
+        self.assertEqual(self.state()["second_opinion"], {"requested": None, "skipped": True})
+        result = self.status_of()
+        self.assertFalse(result["continue"])
+        self.assertEqual(result["reason"], "converged")
+        self.assertNotIn("second-opinion-pending", self.cli("covered")["reasons"])
+
     def test_second_opinion_flags_are_mutually_exclusive(self):
         snap = self.cli("snapshot")["snapshot"]
         self.assert_error(

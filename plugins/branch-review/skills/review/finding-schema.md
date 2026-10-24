@@ -132,7 +132,7 @@ Merge-check and second-opinion rounds count toward the cap and do not reset it.
 
 ## Second opinion
 
-`begin-round --second-opinion` sets `second_opinion` to `{"requested": <this round's number>, "skipped": false}`; `--no-second-opinion` sets `{"requested": null, "skipped": true}`. Either is stored only when the round is saved, and stays until a later run passes the other.
+`begin-round --second-opinion` sets `second_opinion` to `{"requested": <this round's number>, "skipped": false}`; `--no-second-opinion` sets `{"requested": null, "skipped": true}`. Either is stored whenever the state is saved, even by an empty round that is not (`requested` is then the number that round would have had), and stays until a later run passes the other.
 
 One function decides whether a second opinion is due, from recorded state alone; `status` and `covered` both use it. Its reasons, in this order:
 
