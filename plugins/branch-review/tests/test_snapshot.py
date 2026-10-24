@@ -547,6 +547,23 @@ class SnapshotTest(unittest.TestCase):
         self.assertEqual((stored["mode"], stored["conflicts"]), ("merge-check", ["b.txt"]))
         self.assertNotIn("upstream_overlap", stored)
 
+    def test_merge_check_keeps_branch_deletion_since_anchor(self):
+        self.conflicting_base_update(path="c.txt")
+        git(self.repo, "rm", "-q", "b.txt")
+        git(self.repo, "commit", "-m", "branch drops its own b")
+        result = self.begin(mode="merge-check")
+        self.assertIn("b.txt", result["changed_files"])
+        self.assertEqual(result["changed_files"], ["b.txt", "c.txt"])
+        self.assertNotIn("upstream.txt", result["changed_files"])
+
+    def test_merge_check_keeps_branch_revert_since_anchor(self):
+        commit_file(self.repo, "a.txt", "branch\n", "branch edits a")
+        self.conflicting_base_update(path="c.txt")
+        commit_file(self.repo, "a.txt", "a\n", "branch reverts its a edit")
+        result = self.begin(mode="merge-check")
+        self.assertIn("a.txt", result["changed_files"])
+        self.assertEqual(result["changed_files"], ["a.txt", "c.txt"])
+
     def test_modify_delete_conflict_is_listed(self):
         git(self.repo, "checkout", "main")
         git(self.repo, "merge", "--ff-only", "feature/x")  # main now has b.txt
@@ -605,7 +622,7 @@ class SnapshotTest(unittest.TestCase):
         self.assertEqual((result["mode"], result["reason"]), ("deep", "paths-changed"))
         self.assertEqual(result["conflicts"], [])
 
-    def test_base_conflicts_without_merge_tree_support_is_none(self):
+    def test_base_conflicts_conflicted_clean_and_failed(self):
         self.conflicting_base_update()
         anchor = self.review_json()["rounds"][-1]
         new_base = git(self.repo, "merge-base", "HEAD", "main")

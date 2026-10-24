@@ -588,6 +588,7 @@ def cmd_begin_round(args: argparse.Namespace) -> dict:
     conflicts: list[str] = []
     upstream_overlap: list[str] = []
     change_set: set[str] = set()
+    upstream: set[str] = set()
     if args.mode == "merge-check":
         if not rounds:
             raise StateError("cannot start a merge-check round: no recorded round")
@@ -598,7 +599,9 @@ def cmd_begin_round(args: argparse.Namespace) -> dict:
         conflicts = found
         diff_from = anchor["snapshot"]
         change_set = {f for f, _ in _numstat(repo, merge_base, args.snapshot)}
-        upstream_overlap = [f for f, _ in _numstat(repo, anchor["merge_base"], merge_base) if f in change_set]
+        upstream_files = [f for f, _ in _numstat(repo, anchor["merge_base"], merge_base)]
+        upstream = set(upstream_files)
+        upstream_overlap = [f for f in upstream_files if f in change_set]
     elif args.mode == "followup":
         if not rounds:
             raise StateError("cannot start a follow-up round: no recorded round")
@@ -646,8 +649,10 @@ def cmd_begin_round(args: argparse.Namespace) -> dict:
             entries = [(f, n) for f, n in entries if path_matches(f, paths)]
         if mode == "merge-check":
             # The branch's own work since the anchor plus the conflicted files;
-            # files only the base changed drop out.
-            entries = [(f, n) for f, n in entries if f in change_set]
+            # files only the base changed drop out. A file the base did not
+            # touch stays even when it no longer differs from the base (the
+            # branch deleted or reverted its own change).
+            entries = [(f, n) for f, n in entries if f not in upstream or f in change_set]
             listed = {f for f, _ in entries}
             entries += [(f, 0) for f in conflicts if f not in listed]
         names = [f for f, _ in entries]
