@@ -16,6 +16,11 @@
       "name": "implementation-manager",
       "source": "./plugins/implementation-manager",
       "description": "Runs a planned multi-phase piece of work to completion through child sessions that each deliver a pull request."
+    },
+    {
+      "name": "superpowers-cleanup",
+      "source": "./plugins/superpowers-cleanup",
+      "description": "Manual-only cleanup of old superpowers spec, plan and research files, with every reference to them handled before one reviewed commit."
     }
   ]
 }

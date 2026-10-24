@@ -1,0 +1,9 @@
+schema_version: "1.1"
+name: push-queue
+# Both plugins under test: the manager calls branch-review:check, and an eval
+# run otherwise loads only the plugin it was started from.
+plugins: ["../..", "../../../branch-review"]
+context:
+  # Builds a fixture repo (repo/, wt-u2/), review state (state/) and a run
+  # folder (run/) in the run's workspace. Runs only with --scaffold.
+  scaffold_script: scaffold.sh

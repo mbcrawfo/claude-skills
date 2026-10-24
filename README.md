@@ -16,7 +16,8 @@ Run `/plugin` to browse what's available. Pull updates with `/plugin marketplace
 ## Available plugins
 
 - [`branch-review`](plugins/branch-review/README.md): a local replacement for CodeRabbit PR reviews. Agents review a branch, fix the findings and re-check until it converges.
-- [`implementation-manager`](plugins/implementation-manager/README.md): runs a planned piece of work to completion through child sessions that each deliver a pull request, watching each PR until it is ready to merge.
+- [`implementation-manager`](plugins/implementation-manager/README.md): runs a planned piece of work to completion through child sessions that each deliver a pull request, with one run watcher and a push queue.
+- [`superpowers-cleanup`](plugins/superpowers-cleanup/README.md): removes old superpowers spec, plan and research files on request, handling every reference to them before one reviewed commit.
 
 ## Layout
 
