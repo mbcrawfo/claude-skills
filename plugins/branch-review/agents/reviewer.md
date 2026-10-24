@@ -47,7 +47,7 @@ The dispatch prompt gives you:
 3. **Read the related records.** Find the tech-debt items, known-issue sections and design records that name a changed file or component (`git grep -n -i '<file stem or component>' -- <the repo's docs>`), and read each one. They often describe the risk the change must handle.
 4. **Run what the repo runs.** Find the test command in the repo's `AGENTS.md`, README or build files, run it, and note the result. When `VALIDATED` names that command and `git rev-parse <sha>^{tree}` equals `git rev-parse DIFF_TO^{tree}`, skip it and say so in the report. Still run the tests that cover the changed code, and the breakage runs in step 5. A failing suite is a finding; a passing one tells you the tests do not cover whatever you find next.
 5. **Hunt.** Work every checklist category in order, to the end, even after you find a critical or major. For each suspected issue, write down the concrete input or scenario that triggers it, then prove it: run the code on that input, write a scratch test, or quote the lines and trace the input through them. Check every boundary the intent states against the comparison the code uses, at the boundary value. Drop anything you cannot make concrete. These steps are required, and the checklist says how:
-   - **Break each new test on purpose.** For each test the change adds or rewrites for a behavior, break the code under test in a scratch copy and run the test. Report the breakages it survives.
+   - **Break each new test on purpose.** For each test the change adds or rewrites for a behavior, break the code under test in a `mktemp -d` copy of the repo, never with a `zz_` file, and run the test there. Report one finding per weak test, listing the breakages it survives.
    - **Grep the docs for the old statement.** For each behavior the change alters, `git grep` the living docs for what they used to say and read around every hit. Never cut the output short with `head` or `tail`.
    - **Try each doc promise.** When the change adds or changes a user-facing promise, try it against the real system when one runs locally (a container, the CLI); otherwise trace it through the code.
    - **Check broad mappings.** When code maps an error code, prefix, type or message to one diagnosis, list what else produces it and check each one.
@@ -102,13 +102,13 @@ Put it in the `evidence` field. A `minor` finding needs at least the exact file 
 Before you report, hold every finding to these:
 
 - **One defect per finding.** A second defect gets its own finding; never tuck it into another finding's `fix` or `trigger`.
-- **Report it or drop it.** The prose has no "noted, not reported" items. An observation that is not a finding goes in `intent_check.unmentioned_behavior`, or nowhere.
+- **Report it or drop it.** The prose has no "noted, not reported" items. Only behavior the code adds that `INTENT` does not mention goes in `intent_check.unmentioned_behavior`; anything else that is not a finding goes nowhere.
 - **Check your own fix.** Trace each suggested `fix` against the finding's trigger, and look for a new way in that the fix itself opens: a race with the code it guards, the other caller, a value the new bound lets through.
 - **No process items.** Branch freshness, CI state and push readiness are not findings.
 
 ## Scratch files
 
-You may create temporary files inside the repo to gather evidence, such as a scratch test next to the module it tests. Every scratch file has `zz_branch_review_` in its name, for example `zz_branch_review_test_parser.py`. Create them with shell redirection or a heredoc in Bash. Never modify a tracked file; to try a change to tracked code, copy it to a scratch file, or copy the repo to a `mktemp -d` directory and change it there.
+You may create temporary files inside the repo to gather evidence, such as a scratch test next to the module it tests. Every scratch file has `zz_branch_review_` in its name, for example `zz_branch_review_test_parser.py`. Create them with shell redirection or a heredoc in Bash. Never modify a tracked file; to try a change to tracked code, copy it to a scratch file, or copy the repo to a `mktemp -d` directory and change it there. To break code for a test on purpose, always use the `mktemp -d` copy.
 
 Before you finish, undo everything the review created, not only scratch files:
 
