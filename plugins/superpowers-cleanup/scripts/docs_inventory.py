@@ -200,10 +200,63 @@ def collect_files(root: Path, specs: str, plans: str, research: str) -> tuple[li
     return files, unreadable, missing
 
 
+def _ref_exists(root: Path, ref: str) -> bool:
+    return _git(root, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}", check=False).returncode == 0
+
+
+def detect_base(root: Path, base: str | None) -> str | None:
+    if base is not None:
+        if not _ref_exists(root, base):
+            raise CliError(f"unknown base ref: {base}")
+        return base
+    head = _git(root, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD", check=False)
+    if head.returncode == 0:
+        ref = head.stdout.strip()
+        if _ref_exists(root, ref):
+            return ref[len("refs/remotes/") :] if ref.startswith("refs/remotes/") else ref
+    for name in ("main", "master"):
+        if _ref_exists(root, f"refs/heads/{name}"):
+            return name
+    return None
+
+
+def current_branch(root: Path) -> str | None:
+    result = _git(root, "symbolic-ref", "--quiet", "--short", "HEAD", check=False)
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def git_facts(root: Path, path: str, base: str | None) -> dict:
+    is_dir = (root / path).is_dir()
+    added = _git(root, "log", "--diff-filter=A", "--format=%ad", "--date=short", "--", path).stdout.split()
+    first_added = added[-1] if added else None
+
+    if is_dir:
+        known = _git(root, "ls-files", "-z", "--", path).stdout.strip("\0")
+        others = _git(root, "ls-files", "-z", "--others", "--exclude-standard", "--", path).stdout.strip("\0")
+        tracked = bool(known) and not others
+    else:
+        tracked = _git(root, "ls-files", "--error-unmatch", "--", path, check=False).returncode == 0
+
+    status = _git(root, "status", "--porcelain=v1", "-z", "--", path).stdout
+    dirty = any(entry[:2] != "??" for entry in status.split("\0") if len(entry) > 3)
+
+    on_base = None
+    if base is not None:
+        in_base = _git(root, "cat-file", "-e", f"{base}:{path}", check=False).returncode == 0
+        same = _git(root, "diff", "--quiet", base, "--", path, check=False).returncode == 0
+        on_base = in_base and tracked and same
+    return {"first_added": first_added, "tracked": tracked, "dirty": dirty, "on_base": on_base}
+
+
 def cmd_inventory(args: argparse.Namespace) -> dict:
     root = repo_root(Path(args.repo))
+    base = detect_base(root, args.base)
     files, unreadable, missing = collect_files(root, args.specs, args.plans, args.research)
+    for item in files:
+        item.update(git_facts(root, item["path"], base))
     return {
+        "base": base,
+        "current_branch": current_branch(root),
         "dirs": {"specs": _posix(args.specs), "plans": _posix(args.plans), "research": _posix(args.research)},
         "missing_dirs": missing,
         "files": files,
