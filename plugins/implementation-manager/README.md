@@ -102,7 +102,7 @@ It exits 0 on success, 1 when a command is refused (one line on stderr, nothing 
 
 | Line | Meaning |
 |---|---|
-| `REQUEST <unit> <sha> <branch>` | A new request in `requests.log`. Every request is reported at once, whatever the queue. Malformed lines are skipped and listed by `status`. |
+| `REQUEST <unit> <sha> <branch>` | A new request in `requests.log`. Every request is reported at once, whatever the queue, except one the manager already answered (`go`, `redo` or `queue` for that sha) before a wait read it. Malformed lines are skipped and listed by `status`. |
 | `PENDING <unit> <sha> <branch>` | The request is still unanswered 15 minutes after its `REQUEST`; reported once per request. |
 | `NEXT <unit> <sha>` | The slot is free and this queued request is first in line. |
 | `READY <unit> <pr> <sha>` | Open, not draft, mergeable, at least one check and every check passed, no unresolved review thread; confirmed by a second poll 30 s later. Not reported while the unit has an unanswered or queued request, while it is pushing after a `go`, or, in serial mode, while another unit holds the slot. |
