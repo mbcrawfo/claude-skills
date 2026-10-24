@@ -51,6 +51,7 @@ The manager merges a PR when all of these hold:
 - The watcher reported `READY` (or `REMIND`) for its head, or `run.py check` printed `READY`.
 - `branch-review:check`, run in the unit's worktree, says the review covers that head commit.
 - The unit has no unanswered or queued request, and in serial mode the slot is free or the unit's own.
+- The unit is not stopped. The watcher never reports `READY` or `REMIND` for a stopped unit.
 
 The child need not be idle: it cannot push without a `go`, and the merge uses `gh pr merge --match-head-commit <sha>`.
 

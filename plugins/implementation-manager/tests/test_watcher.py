@@ -22,6 +22,7 @@ from runstate import (
     record_merged,
     redo,
     set_option,
+    stop_gate,
     yield_slot,
 )
 from watcher import next_event, poll_units, take_request, wait
@@ -455,6 +456,18 @@ class ReadyTests(PrTestCase):
         self.assertEqual(self.wait(gh, sleeps=400), f"REMIND a 7 {HEAD_A}")
         self.assertGreaterEqual(self.clock.t - ready_at, 1800)
         self.assertLess(self.clock.t - ready_at, 1800 + 60)
+        self.assert_quiet(gh, sleeps=400)
+
+    def test_no_ready_for_a_stopped_unit(self):
+        with locked(self.dir) as state:
+            stop_gate(self.dir, state, "a", "cancelled")
+        self.assert_quiet(self.gh_a(make_pr()))
+
+    def test_no_remind_once_the_unit_is_stopped(self):
+        gh = self.gh_a(make_pr())
+        self.assertEqual(self.wait(gh), f"READY a 7 {HEAD_A}")
+        with locked(self.dir) as state:
+            stop_gate(self.dir, state, "a", "cancelled")
         self.assert_quiet(gh, sleeps=400)
 
 

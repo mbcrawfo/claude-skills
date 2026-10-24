@@ -229,6 +229,7 @@ def stop_gate(run_dir: Path, state: dict, unit: str, reason: str) -> None:
     if _holds_slot(state, unit):
         state["slot"] = None
     _drop_entries(state, unit, "pending", "queue")
+    state["marks"].get(unit, {}).pop("go_head", None)  # a stopped unit is not pushing
 
 
 def _refuse_stopped(record: dict, unit: str) -> None:
@@ -341,5 +342,8 @@ def record_closed(state: dict, unit: str, pr: int) -> None:
 
 
 def reportable(state: dict, unit: str) -> bool:
-    """True when the unit may be reported on (READY/REMIND): parallel mode, or the slot is free or its own."""
+    """True when the unit may be reported on (READY/REMIND): it is not stopped, and the run is in parallel mode or
+    the slot is free or its own."""
+    if _unit(state, unit)["gate"] == "stopped":
+        return False
     return state["queue_mode"] == "parallel" or state["slot"] is None or state["slot"]["unit"] == unit

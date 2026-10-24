@@ -622,6 +622,23 @@ class SlotTests(RunStateTestCase):
         state["queue_mode"] = "parallel"
         self.assertTrue(reportable(state, "b"))
 
+    def test_a_stopped_unit_is_never_reportable(self):
+        for mode in ("serial", "parallel"):
+            with self.subTest(mode=mode):
+                self.setUp()
+                state = self.setup_units("a", queue_mode=mode)
+                go(self.dir, state, "a", SHA1, 5.0)
+                stop_gate(self.dir, state, "a", "cancelled")
+                self.assertFalse(reportable(state, "a"))
+
+    def test_stop_drops_the_go_head_mark(self):
+        state = self.setup_units("a")
+        state["marks"]["a"] = {"head": "abc"}
+        go(self.dir, state, "a", SHA1, 5.0)
+        self.assertIn("go_head", state["marks"]["a"])
+        stop_gate(self.dir, state, "a", "cancelled")
+        self.assertNotIn("go_head", state["marks"]["a"])
+
 
 if __name__ == "__main__":
     unittest.main()
