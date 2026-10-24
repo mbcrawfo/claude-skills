@@ -57,11 +57,13 @@ Top level:
 | `repo_key`, `branch` | identity of the reviewed repo and branch |
 | `base_ref` | ref the branch is reviewed against |
 | `intent` | stated intent of the change, or null |
+| `second_opinion` | `{"requested", "skipped"}`, the invoker's choice, set by `begin-round` (see Second opinion); absent in v0.7 state |
+| `generated` | the stored `--generated` globs, normalized like `paths`; absent in v0.7 state |
 | `created`, `updated` | ISO 8601 UTC timestamps |
 | `rounds` | list of round objects |
 | `findings` | list of finding records |
 
-Round object: `number`, `mode` (`deep` or `followup`), `model`, `started`, `snapshot`, `head` (the commit the snapshot was taken on: its parent for a dirty snapshot, else the snapshot itself), `base_ref`, `merge_base` (of `head` and `base_ref`; `begin-round` exits 1 with `base ref not found: <ref>` when the base ref does not resolve), `diff_from`, `diff_to`, `changed_files`, `paths` (normalized: no leading `./`, a directory as `dir/**`; `.`, `./` or `/` means the whole repo and gives an empty list), then filled by `record-findings`: `summary`, `merge_risk`, `intent_check`, `added`. Before recording, `summary` and `merge_risk` are null and `intent_check` and `added` are absent. `added` is the number of new in-change findings the round produced; outside-change entries are not counted.
+Round object: `number`, `mode` (`deep`, `followup` or `merge-check`), `model`, `started`, `snapshot`, `head` (the commit the snapshot was taken on: its parent for a dirty snapshot, else the snapshot itself), `base_ref`, `merge_base` (of `head` and `base_ref`; `begin-round` exits 1 with `base ref not found: <ref>` when the base ref does not resolve), `diff_from`, `diff_to`, `changed_files`, `paths` (normalized: no leading `./`, a directory as `dir/**`; `.`, `./` or `/` means the whole repo and gives an empty list), `focus` (`second-opinion` or null), `mode_reason` (the `--mode-reason` given, `locate`'s reason, or `large-delta`), `conflicts` (merge-check rounds only: the conflicted paths), `plugin_version` (the plugin version that began the round; v0.7 rounds have none), then filled by `record-findings`: `summary`, `merge_risk`, `intent_check`, `added`. Before recording, `summary` and `merge_risk` are null and `intent_check` and `added` are absent. `added` is the number of new in-change findings the round produced; outside-change entries are not counted.
 
 A round with `added` is recorded. A round without it was begun but its reviewer never reported, so it reviewed nothing: it never anchors a follow-up, `begin-round` drops it before adding the next round, and `status` and `summary` exit 1 while it is the last round. `begin-round` never saves an empty round (no changed files): it returns `saved: false`, and creates no state when none existed.
 
@@ -78,7 +80,7 @@ Finding record:
 | `discussion` | list of `{"from", "text", "round"}`; `from` is `orchestrator` or `reviewer` |
 | reviewer fields | `severity`, `category`, `file`, `lines`, `title`, `trigger`, `consequence`, `reachable_now`, `reachable_note`, `evidence`, `fix`, `test`, `source`, `effort` |
 
-Outside-change records carry `file`, `lines`, `title`, `detail`, `severity` and `category` instead of the trigger/consequence fields, with status `deferred`, `round_closed` null and `resolution.note` `"outside the change set"`. A verdict's `reason` is appended to the finding's `discussion` as a `reviewer` entry.
+Outside-change records carry `file`, `lines`, `title`, `detail`, `severity` and `category` instead of the trigger/consequence fields, with status `outside`, `round_closed` null and `resolution` `{"status": "outside", "note": "outside the change set", "by": "reviewer", ...}`. v0.7 stored them as `deferred`; every load maps a finding with scope `outside`, status `deferred` and that note to `outside`, so `deferred` means only a developer's deferral. A verdict's `reason` is appended to the finding's `discussion` as a `reviewer` entry.
 
 ## Statuses and transitions
 
@@ -90,7 +92,8 @@ Outside-change records carry `file`, `lines`, `title`, `detail`, `severity` and 
 | `verified` | reviewer confirmed the fix (terminal) |
 | `invalid` | orchestrator judged it not a real problem (terminal) |
 | `escalated` | needs a developer decision |
-| `deferred` | developer chose not to fix, or it is outside the change (terminal) |
+| `deferred` | developer chose not to fix (terminal) |
+| `outside` | reported in `outside_change`; not part of the fix loop |
 
 Transitions are the ones the review skill follows:
 
@@ -98,6 +101,7 @@ Transitions are the ones the review skill follows:
 - any status back to `open`: `set-status --status open`.
 - `fixed` (or a carried `open` or `still-open`) to `verified` or `still-open`: reviewer verdict. `verified` sets `round_closed`; `still-open` clears it.
 - `escalated` to `open` (decision `fix`) or `deferred` (decision `defer`): `resolve`. `defer` sets `round_closed`.
+- `outside` to `escalated` (the repo forbids deferring without the developer) or `fixed` (a trivial fix, or the developer said to fix it): `set-status`.
 
 The script enforces only part of this: `resolve` works only on an `escalated` finding, a verdict is accepted only for a finding that is `open`, `fixed` or `still-open`, and `set-status` takes only `fixed`, `invalid`, `escalated` or `open` as the target, with the notes above. It does not check the status a `set-status` moves from; following the transitions is the skill's job.
 
@@ -105,7 +109,38 @@ The script enforces only part of this: `resolve` works only on an `escalated` fi
 
 Text arguments have file forms: `set-status --note-file PATH`, `discuss --text-file PATH` and `resolve --note-file PATH` read the text from a UTF-8 file and strip surrounding whitespace. Each is mutually exclusive with its inline form (`--note`, `--text`). `discuss` and `resolve` reject an empty file; for `set-status` an empty file is no note.
 
-`status` reports `continue: true` while any finding is `open`, `fixed` or `still-open` (`open-findings`, or `unverified-fixes` when only `fixed` remain) or when the last round added findings (`new-findings`). It reports `continue: false` with `converged` otherwise. When it would continue but there are six or more rounds numbered above `--since-round N` (default 0, so every round counts), it reports `continue: false` with `max-rounds` instead.
+## status
+
+`status` prints `rounds`, `last_mode`, `counts` (findings per status), `continue`, `reason`, `next_mode`, `next_focus` and `second_opinion_reasons`. The reason is the first that applies:
+
+| reason | continue | when |
+| --- | --- | --- |
+| `open-findings` | true | a finding is `open` or `still-open` |
+| `unverified-fixes` | true | only `fixed` findings are unsettled |
+| `second-opinion` | true | nothing is unsettled and a second opinion is due; `next_mode` is `deep`, `next_focus` is `second-opinion`, and `second_opinion_reasons` says why |
+| `converged` | false | otherwise |
+
+`escalated`, `invalid`, `deferred`, `outside` and `verified` findings never keep the loop going. `next_mode` and `next_focus` are null except as shown here and for `final-verification`; `second_opinion_reasons` is `[]` unless the reason is `second-opinion`.
+
+**Round cap.** The floor is the later of `--since-round N` (default 0) and, when a round's `mode_reason` is a forced deep restart (`snapshot-missing`, `history-rewritten`, `paths-changed`), the round just before the last such restart. The cap counts the rounds numbered above the floor, so the restart itself counts. When the loop would continue and six or more rounds count:
+
+- `unverified-fixes` with exactly six becomes `final-verification` (`continue: true`, `next_mode: followup`): one more follow-up only to verify the claimed fixes;
+- `second-opinion` stays when no second-opinion round has been recorded on the branch;
+- anything else becomes `max-rounds` (`continue: false`).
+
+Merge-check and second-opinion rounds count toward the cap and do not reset it.
+
+## Second opinion
+
+`begin-round --second-opinion` sets `second_opinion` to `{"requested": <this round's number>, "skipped": false}`; `--no-second-opinion` sets `{"requested": null, "skipped": true}`. Either is stored only when the round is saved, and stays until a later run passes the other.
+
+One function decides whether a second opinion is due, from recorded state alone; `status` and `covered` both use it. Its reasons, in this order:
+
+- `requested`: `requested` is set and no second-opinion round numbered `requested` or later is recorded.
+- `merge-risk`: a `deep` round of the current cycle has `merge_risk.level` `moderate` or `high`.
+- `major-finding`: a finding with scope `change`, opened in the current cycle, has severity `critical` or `major`, whatever its status now.
+
+The current cycle starts at the last recorded forced deep restart, else at round 1. `merge-risk` and `major-finding` count only when `skipped` is false and no second-opinion round is recorded on the branch, so they fire at most once per branch. State whose recorded rounds all lack `plugin_version` (v0.7) is never due. While one is due, `covered` lists the reason `second-opinion-pending`, after all its other reasons.
 
 ## Mode selection
 
@@ -117,12 +152,21 @@ Text arguments have file forms: `set-status --note-file PATH`, `discuss --text-f
 | `no-rounds` | deep | no recorded round |
 | `snapshot-missing` | deep | the anchor's snapshot commit is gone |
 | `history-rewritten` | deep | HEAD does not descend from the anchor's HEAD |
-| `base-moved` | deep | the merge base of HEAD and the base ref differs from the anchor's `merge_base`, and merging the base's new commits into the anchor's snapshot conflicts (or git is older than 2.40) |
+| `base-moved` | deep | the merge base of HEAD and the base ref differs from the anchor's `merge_base`, and either HEAD has no merge base with the base ref, or merging the base's new commits into the anchor's snapshot conflicts and the conflicted paths cannot be listed (git older than 2.40) |
 | `paths-changed` | deep | the normalized `--paths` given to `locate` differ from the anchor's `paths` |
+| `base-moved` | merge-check | as deep `base-moved`, but `git merge-tree --write-tree --name-only` lists the conflicted paths; `conflicts` holds them |
 | `base-updated` | followup | the merge base differs from the anchor's `merge_base`, but merging the base's new commits into the anchor's snapshot is clean; the delta excludes the base's code |
 | `continuing` | followup | none of the above |
 
-`open_findings` is returned in every case, so a deep round after an earlier one carries them forward. `locate` and `begin-round` use `--base` / `--base-ref` when given, else the stored `base_ref`, else `origin/HEAD`'s target, else `main`.
+The rows are checked in this order. `locate` prints `repo_key`, `branch`, `base`, `dir`, `exists`, `mode`, `reason`, `rounds` (recorded), `open_findings` and `conflicts` (empty unless the mode is `merge-check`). `open_findings` is returned in every case, so a deep round after an earlier one carries them forward. `locate` and `begin-round` use `--base` / `--base-ref` when given, else the stored `base_ref`, else `origin/HEAD`'s target, else `main`.
+
+## begin-round
+
+`begin-round` prints the new round object plus `dir`, `files` and `lines` (all changed files and lines), `generated` (the changed files counted as generated), `counted_files` and `counted_lines` (the rest), `oversized` (more than 150 counted files or 10,000 counted lines), `empty` and `saved`. A merge-check round also prints `upstream_overlap`.
+
+- **Generated files.** A changed file is generated when it matches the `generated` globs, or when `git check-attr` at the snapshot says `linguist-generated` is set or `diff` is unset (git older than 2.40 reads the working tree's attributes). `--generated GLOB...` replaces the stored globs and absent keeps them; `--generated .` clears them, as `--paths .` does. Generated files stay in `changed_files`; they are left out only of the counted values.
+- **Large-delta promotion.** A `--mode followup` round whose counted delta has 40 or more files, or 2,000 or more lines, is saved as `mode: deep` with `mode_reason: large-delta`, `diff_from` the merge base, `changed_files` the whole change set, and `model` the `--deep-model` value (default `--model`).
+- **Merge-check.** `--mode merge-check` needs a recorded round, and exits 1 when the base update cannot be simulated. `diff_from` is the anchor's snapshot. `changed_files` holds the delta's files that the base did not change since the anchor's merge base or that are in the change set (merge base to snapshot), plus the conflicted files. `upstream_overlap` is the files the base changed since the anchor's merge base that are also in the change set.
 
 ## State dir and cleanup
 

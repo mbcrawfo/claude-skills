@@ -14,29 +14,33 @@ A local, agent-run replacement for CodeRabbit PR reviews that checks a branch be
 Run `/branch-review:review` from the branch once the whole change is complete:
 
 ```
-/branch-review:review [--full] [--model NAME] [--base REF] [--intent TEXT | --intent-file PATH] [--paths GLOB...] [--resolve ID NOTE]
+/branch-review:review [--full] [--model NAME] [--base REF] [--intent TEXT | --intent-file PATH] [--paths GLOB...] [--generated GLOB...] [--second-opinion | --no-second-opinion] [--resolve ID NOTE]
 ```
 
 - `--full`: force a deep review of the whole change set, even if earlier rounds exist.
-- `--model NAME`: model for the reviewer agents, as an Agent-tool model name (`opus`, `sonnet`, `haiku` or `fable`). Defaults to `opus` for a deep round and `sonnet` for a follow-up.
+- `--model NAME`: model for the reviewer agents, as an Agent-tool model name (`opus`, `sonnet`, `haiku` or `fable`). Defaults to `opus` for a deep, second-opinion or merge-check round and `sonnet` for a follow-up.
 - `--base REF`: the ref the change will merge into, overriding the detected default branch. Later runs reuse the stored base.
 - `--intent TEXT` or `--intent-file PATH`: the PR description, meaning what the change is for, what it does and what it deliberately does not do. Later runs reuse the intent stored with the review.
 - `--paths GLOB...`: limit the review to matching files, useful for a change set too large to review at once. A directory, or a pattern ending in `/`, means everything under it; `.` means the whole repo. Changing `--paths` between runs forces a deep review, so no file in the new scope goes unreviewed.
+- `--generated GLOB...`: extra globs for generated files, on top of those `.gitattributes` marks `linguist-generated` or `-diff`. Generated files are still reviewed, but they do not count toward the size warning or the large-delta rule. The globs are stored with the review and reused by later runs; `--generated .` clears them.
+- `--second-opinion`: run a second-opinion deep round once the review converges, whatever the risk signals say.
+- `--no-second-opinion`: skip the automatic second opinion for this branch. It is stored with the review, so `/branch-review:check` does not wait for one, until a later run passes `--second-opinion`.
 - `--resolve ID NOTE`: record your decision on an escalated finding. A note that asks for a fix reopens the finding; one that says to leave it defers it.
 - `--state-dir PATH`: keep state in this absolute directory instead of the plugin data directory. Meant for test harnesses; give `/branch-review:cleanup` the same value.
 
 The loop:
 
-- **Set up.** The state script prunes old state, then locates this branch's earlier recorded rounds. The first review is deep; a later run on a branch that builds on an earlier round is a follow-up, including after the base branch was merged in cleanly (`base-updated`: the delta excludes the base's code). These force a deep review instead, with open findings carried forward for the reviewer to verify:
+- **Set up.** The skill runs the state script through its `rs` wrapper, which fills in the state directory and the repo. It prunes old state, then locates this branch's earlier recorded rounds. The first review is deep; a later run on a branch that builds on an earlier round is a follow-up, including after the base branch was merged in cleanly (`base-updated`: the delta excludes the base's code). When the base was merged in with conflicts, the next round is a **merge-check**: it checks each conflict resolution, the files both sides changed, and the branch's own work since the last round, instead of re-reviewing the whole change. These force a deep review instead, with open findings carried forward for the reviewer to verify:
   - `snapshot-missing` or `history-rewritten`: a rebase, amend or reset that loses the earlier snapshot or rewrites history;
-  - `base-moved`: the base was merged in and the merge had conflicts (or git is older than 2.40), so a delta would show upstream code as the change;
+  - `base-moved` with a deep mode: the base was merged in with conflicts that could not be listed (git older than 2.40);
   - `paths-changed`: `--paths` differs from the earlier round's.
 
-  A round whose reviewer never reported is not recorded and never anchors a follow-up, and a round with no changes is never saved.
-- **Round.** The branch's working tree is snapshotted, and a fresh `branch-review:reviewer` agent reviews the change set against your intent, or verifies the earlier findings and the new delta in a follow-up.
-- **Record and triage.** The reviewer's findings are recorded. For each open one, the orchestrating agent checks the claim against the code, then fixes it with a regression test, disputes it with evidence, or escalates it for a decision.
-- **Repeat.** Each round gets a new reviewer. The loop continues while findings are open, fixes are unverified or new findings appeared, and stops when the state script reports convergence or after six rounds in one run.
-- **Report.** A summary lists findings still open or unverified, then escalated, deferred and invalid ones. Copy the escalated, deferred and invalid sections into the PR description under a "Review notes" heading.
+  A round whose reviewer never reported is not recorded and never anchors a follow-up, and a round with no changes is never saved. Every run, including one after a merge or a redo, starts from set-up and ends with the summary.
+- **Round.** The branch's working tree is snapshotted, and a fresh `branch-review:reviewer` agent reviews the change set against your intent, or verifies the earlier findings and the new delta in a follow-up. A follow-up whose delta reaches 40 non-generated files or 2,000 changed lines becomes a deep round over the whole change set, with Opus unless `--model` says otherwise. The reviewer writes its report to a file outside the repo, which is recorded as it wrote it.
+- **Record and triage.** The reviewer's findings are recorded. For each open one, the orchestrating agent checks the claim against the code and records what it checked, then fixes it with a regression test shown to fail without the fix, disputes it with evidence, or escalates it. A finding whose fix is a choice for the developer is always escalated, unless the intent settles it. Findings outside the change get the status `outside` and stay out of the fix loop, unless the fix is trivial and in changed files or the developer asks for it; when the repo's `AGENTS.md` forbids deferring findings, they are escalated instead.
+- **Second opinion.** When the review first converges, the state script decides whether a second deep round is due, which it is when a deep round rated the merge risk `moderate` or `high` or the review found a critical or major issue. A fresh Opus reviewer then reviews the whole change set once more, putting first the steps a first pass most often skips. Each branch gets at most one automatic second opinion; `--second-opinion` asks for one and `--no-second-opinion` skips it.
+- **Repeat.** Each round gets a new reviewer. The loop continues while findings are open, fixes are unverified or a second opinion is due, and stops when the state script reports convergence. It stops after six rounds, counted from the start of the run or the last forced deep review, whichever is later. At the cap, one more follow-up may run to verify claimed fixes, and a due second opinion still runs.
+- **Report.** A summary lists counts, the findings still open or unverified, an intent check (claims the code does not keep, and behavior the intent does not mention), then the escalated, deferred, invalid, outside-the-change and verified findings. Copy the Escalated, Deferred, Invalid, Outside the change and Intent check sections into the PR description under a "Review notes" heading.
 
 Notes, discussion entries and decisions reach the state script through files (`--note-file`, `--text-file`) rather than quoted shell arguments, since reviewer text can contain quotes, `$` and backticks.
 
@@ -85,8 +89,9 @@ With no scope it prints a table of what exists. `--branch` and `--repo` target t
 - The reviewed snapshot is missing from the repo, or the reviewed head is not an ancestor of the commit (a rebase, amend or reset rewrote history).
 - The base branch was merged in and the merge could not be simulated cleanly, or the base ref does not resolve, so the reviewed code cannot be compared to the commit.
 - The commit's tree differs from what was reviewed. A clean merge of the base branch since the review does not count as a difference.
+- A second opinion is due and has not run yet. Branches whose rounds all predate v0.8 are never held back for one.
 
-The reasons, in the same order, are `no-rounds`, `open-findings`, `unverified-fixes`, `escalated`, `partial-scope`, `snapshot-missing`, `history-rewritten`, `base-conflict` and `changes-since-review`. The command exits 0 whether or not the commit is covered, and exits 1 with one line on stderr on an error such as an unknown commit.
+The reasons, in the same order, are `no-rounds`, `open-findings`, `unverified-fixes`, `escalated`, `partial-scope`, `snapshot-missing`, `history-rewritten`, `base-conflict`, `changes-since-review` and `second-opinion-pending`. The command exits 0 whether or not the commit is covered, and exits 1 with one line on stderr on an error such as an unknown commit.
 
 ## Review guidance in AGENTS.md
 

@@ -8,13 +8,13 @@ argument-hint: "--repo PATH [--commit SHA] [--state-dir PATH]"
 
 Answers one question: has a clean `/branch-review:review` seen everything in this commit? It reads the review state that `/branch-review:review` keeps and prints a verdict. It fixes nothing, records nothing and starts no review.
 
-The state script is run through this prefix. Shell variables do not survive between Bash calls, so write it out in full:
+The state script runs through the `rs` wrapper, by its full path. Write the command out in full; never put it in a shell variable, since variables do not survive between Bash calls and zsh does not split them into words:
 
 ```
-python3 "${CLAUDE_SKILL_DIR}/../../scripts/review_state.py" covered --state-dir "<state>" --repo "<repo>" --commit "<sha>"
+"${CLAUDE_SKILL_DIR}/../../scripts/rs" covered --repo "<repo>" --commit "<sha>"
 ```
 
-- `<state>` is the `--state-dir` value when one was given (the same directory the review ran with), else `${CLAUDE_PLUGIN_DATA}`. The script refuses an empty or relative `--state-dir`; if it reports that and no `--state-dir` was given, `CLAUDE_PLUGIN_DATA` is not set, so stop and report it. Never substitute a directory of your own.
+- The wrapper adds `--state-dir "$CLAUDE_PLUGIN_DATA"`. Add `--state-dir "<path>"` yourself only when one was given (the same directory the review ran with). If the command fails with `error: CLAUDE_PLUGIN_DATA is not set; pass --state-dir`, stop and report it. Never substitute a directory of your own.
 - `<repo>` is the `--repo` value, the path of the repository checkout to check. Without one, use the output of `git rev-parse --show-toplevel` in the current directory; if that fails, report it and stop.
 - `<sha>` is the `--commit` value, any ref that names a commit. Without one, leave `--commit "<sha>"` off the command and the script checks `HEAD` of `<repo>`.
 
@@ -39,5 +39,6 @@ The command exits 0 whether or not the commit is covered, so read `covered` from
 - `history-rewritten`: the reviewed head is not an ancestor of the commit.
 - `base-conflict`: the base branch was merged in and that merge could not be simulated cleanly, or the base ref does not resolve.
 - `changes-since-review`: the commit's tree differs from what was reviewed, allowing for a clean base merge.
+- `second-opinion-pending`: a second deep review is due and has not run. The review's risk signals (a deep round rated `moderate` or `high` merge risk, or a critical or major finding) or the invoker's `--second-opinion` call for it, unless a review run passed `--no-second-opinion`. A branch whose rounds all predate v0.8 is never pending.
 
 `counts` is the number of findings per status and `rounds` the number of recorded rounds. Do not fix any reason yourself; the caller decides what to do, which usually means running `/branch-review:review` again.
