@@ -60,7 +60,16 @@ def _last_go(run_dir: Path, unit: str) -> str | None:
 def _needs(run_dir: Path, state: dict) -> list[str]:
     """What waits on the manager, one line each."""
     units = state["units"]
-    needs = [f"request {e['unit']} {e['sha'][:7]} unanswered since {_clock(e['at'])}" for e in state["pending"]]
+    needs = [
+        f"request {entry['unit']} {entry['sha']} {entry['branch']} unanswered since {_clock(entry['at'])}"
+        for entry in state["pending"]
+    ]
+    try:
+        unread = (run_dir / runstate.REQUESTS).stat().st_size > state["requests_offset"]
+    except FileNotFoundError:
+        unread = False
+    if unread:
+        needs.append("requests.log has lines no wait has read yet: start a wait")
     for name in _units_in_order(state):
         record = units[name]
         marks = state["marks"].get(name, {})
@@ -76,7 +85,7 @@ def _needs(run_dir: Path, state: dict) -> list[str]:
             needs.append(f"push approved for {name} {sha[:7] if sha else '-'}, not seen yet")
     if state["queue_mode"] == "serial" and state["slot"] is None and state["queue"]:
         head = runstate.queue_order(state)[0]
-        needs.append(f"slot free with a queue, next {head['unit']} {head['sha'][:7]}")
+        needs.append(f"slot free with a queue, next {head['unit']} {head['sha']}")
     needs += [f"bad request line: {line}" for line in state["bad_requests"]]
     needs += [f"gate {name} may open" for name in runstate.openable(state)]
     return needs
@@ -100,7 +109,9 @@ def _status(run_dir: Path, state: dict) -> str:
         record = units[name]
         if record["done"]:
             continue
-        if record["gate"] == "open":
+        if record["gate"] == "stopped":
+            gated.append(f"{name} stopped")
+        elif record["gate"] == "open":
             prs = [pr for pr, status in record["prs"].items() if status == "OPEN"]
             open_units.append(f"{name} PR #{max(prs, key=int)}" if prs else f"{name} working")
         else:

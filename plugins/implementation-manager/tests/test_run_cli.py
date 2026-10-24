@@ -127,6 +127,14 @@ class SetupTests(CliTestCase):
         self.ok("stop", str(self.dir), "a", "dropped", "by", "the", "owner")
         self.assertEqual(self.read("gates.log"), "a open\na stop dropped by the owner\n")
 
+    def test_stopped_unit_stays_closed(self):
+        self.init()
+        self.ok("unit", str(self.dir), "a")
+        self.ok("stop", str(self.dir), "a", "dropped")
+        self.assertEqual(self.ok("open-ready", str(self.dir)), "")
+        self.assertEqual(self.read("gates.log"), "a stop dropped\n")
+        self.assertIn("- gated: a stopped", self.ok("status", str(self.dir)).splitlines())
+
 
 class PushTests(CliTestCase):
     def setUp(self):
@@ -211,11 +219,21 @@ class StatusTests(CliTestCase):
         self.assertIn("- queue: empty", lines)
         self.assertIn("- needs the manager:", lines)
         needs = lines[lines.index("- needs the manager:") + 1 :]
-        self.assertRegex(needs[0], r"^  - request a 1111111 unanswered since \d\d:\d\d$")
+        self.assertRegex(needs[0], rf"^  - request a {SHA1} feat/a unanswered since \d\d:\d\d$")
         self.assertIn("  - bad request line: not a request", needs)
         self.assertIn("  - gate a may open", needs)
         self.assertNotIn("  - gate b may open", needs)  # WIP 1 leaves room for one
         self.assertIn("- gated: a may open, b on WIP", lines)
+
+    def test_status_lists_unread_requests(self):
+        self.init()
+        self.ok("unit", str(self.dir), "a")
+        self.ok("open", str(self.dir), "a")
+        self.append_request(f"a push {SHA1} feat/a\n")
+        lines = self.ok("status", str(self.dir)).splitlines()
+        self.assertEqual(lines[-1], "  - requests.log has lines no wait has read yet: start a wait")
+        self.ok("wait", str(self.dir))
+        self.assertNotIn("requests.log", self.ok("status", str(self.dir)))
 
     def test_status_tracker_lines(self):
         self.init()
@@ -266,7 +284,7 @@ class StatusTests(CliTestCase):
         self.ok("queue", str(self.dir), "a", SHA1)
         lines = self.ok("status", str(self.dir)).splitlines()
         self.assertIn("- gated: b on WIP", lines)
-        self.assertIn("  - slot free with a queue, next a 1111111", lines)
+        self.assertIn(f"  - slot free with a queue, next a {SHA1}", lines)
 
     def test_status_ready_pr(self):
         self.init()

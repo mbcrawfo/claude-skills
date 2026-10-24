@@ -295,6 +295,20 @@ class GateTests(RunStateTestCase):
         stop_gate(self.dir, state, "a", "x")
         self.assertEqual((self.dir / "gates.log").read_text(), "a open\na stop x\n")
 
+    def test_stopped_unit_is_never_openable_and_frees_wip(self):
+        state = self.init(wip=1)
+        add(state, "a")
+        add(state, "b")
+        add(state, "c", prereqs=["b"])
+        self.open_unit(state, "a")
+        stop_gate(self.dir, state, "a", "dropped")
+        stop_gate(self.dir, state, "b", "dropped")
+        self.assertEqual(state["units"]["a"]["gate"], "stopped")
+        self.assertEqual(state["units"]["b"]["gate"], "stopped")
+        self.assertEqual(openable(state), [])  # b is never reopened; c waits on b; a no longer fills the WIP
+        add(state, "d")
+        self.assertEqual(openable(state), ["d"])
+
     def test_stop_gate_rejects_unknown_unit_and_multiline_reason(self):
         state = self.init()
         add(state, "a")

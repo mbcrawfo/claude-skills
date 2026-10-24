@@ -188,11 +188,12 @@ def open_gate(run_dir: Path, state: dict, unit: str, now: float) -> None:
 
 
 def stop_gate(run_dir: Path, state: dict, unit: str, reason: str) -> None:
-    """Log that a unit has stopped, with a one-line reason."""
-    _unit(state, unit)
+    """Log that a unit stopped, with a one-line reason. Its gate is now `stopped`: it never opens or counts to WIP."""
+    record = _unit(state, unit)
     if "\n" in reason or "\r" in reason:
         raise RunError("a stop reason must be a single line")
     _append(run_dir, GATES, f"{unit} stop {reason}\n")
+    record["gate"] = "stopped"
 
 
 def has_open_pr(state: dict, unit: str) -> bool:
