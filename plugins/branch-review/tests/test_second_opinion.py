@@ -189,6 +189,39 @@ class SecondOpinionTest(LedgerHarness, unittest.TestCase):
         self.assertEqual(covered["reasons"], ["changes-since-review"])
         self.assertNotIn("second-opinion-pending", covered["reasons"])
 
+    def test_v07_state_honors_a_request(self):
+        self.deep(merge_risk=MODERATE)
+        path = self.review_json
+        data = json.loads(path.read_text())
+        data.pop("second_opinion")
+        for rnd in data["rounds"]:
+            for key in ("plugin_version", "focus", "mode_reason"):
+                rnd.pop(key)
+        path.write_text(json.dumps(data))
+        self.assertEqual(self.status_of()["reason"], "converged")
+        self.begin_empty_followup("--second-opinion")
+        # The request counts; the moderate risk is still exempt.
+        self.assert_second_opinion(self.status_of(), ["requested"])
+        self.assertIn("second-opinion-pending", self.cli("covered")["reasons"])
+
+    def test_repeat_request_at_cap_runs_then_cap_stops(self):
+        self.deep("--focus", "second-opinion")
+        for _ in range(4):
+            self.begin("followup")
+            self.record(output(findings=[]))
+        self.begin("followup", "--second-opinion")
+        self.record(output(findings=[]))
+        result = self.status_of()
+        self.assertEqual(result["rounds"], 6)
+        self.assert_second_opinion(result, ["requested"])
+        self.assertIn("second-opinion-pending", self.cli("covered")["reasons"])
+        # The past-cap second opinion finds something: the cap now stops the loop.
+        self.begin("deep", "--focus", "second-opinion")
+        self.record(output(findings=[finding()]))
+        result = self.status_of()
+        self.assertFalse(result["continue"])
+        self.assertEqual(result["reason"], "max-rounds")
+
     def test_forced_deep_starts_new_cycle(self):
         self.deep(merge_risk=MODERATE)
         self.assertEqual(review_state.second_opinion_due(self.state()), (True, ["merge-risk"]))

@@ -157,6 +157,18 @@ class LedgerTest(LedgerHarness, unittest.TestCase):
         self.record(output(findings=[]))
         self.assertIn("last deep (second opinion) with", self.cli("summary")["text"])
 
+    def test_summary_lists_every_round(self):
+        self.begin()
+        self.record(output(findings=[finding(severity="major")]))
+        self.set_status("R1-F1", "escalated", "--note", "needs a decision")
+        self.begin("deep", "--focus", "second-opinion")
+        self.record(output(findings=[]))
+        self.begin("followup")
+        self.record(output(findings=[]))
+        lines = self.cli("summary")["text"].splitlines()
+        self.assertIn("last followup with", lines[0])
+        self.assertEqual(lines[2], "Rounds: 1 deep (m), 2 deep (second opinion) (m), 3 followup (m)")
+
     def assert_rejected(self, text_or_data, **kw):
         self.begin()
         before = self.review_json.read_bytes()

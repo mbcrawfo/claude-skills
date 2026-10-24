@@ -612,7 +612,7 @@ def cmd_begin_round(args: argparse.Namespace) -> dict:
             if tree is None:
                 raise StateError(
                     f"cannot start a follow-up round: the base update since round {anchor.get('number', '?')} "
-                    "has conflicts; run a deep round"
+                    "has conflicts; run a merge-check round (or deep if merge-check is unavailable)"
                 )
             # The anchor's snapshot with the base's new commits merged in, so
             # the delta shows only the branch's own work.
@@ -1103,18 +1103,17 @@ def _cycle_start(rounds: list) -> int:
 def second_opinion_due(state: dict) -> tuple[bool, list[str]]:
     """Whether the recorded state calls for a second-opinion round, and why.
 
-    State from v0.7 (no round carries `plugin_version`) is exempt.
+    State from v0.7 (no round carries `plugin_version`) is exempt from the
+    automatic reasons; a `--second-opinion` request still counts.
     """
     rounds = [r for r in _recorded(state.get("rounds", [])) if isinstance(r, dict)]
-    if not any("plugin_version" in r for r in rounds):
-        return False, []
     opinions = [r.get("number", 0) for r in rounds if r.get("focus") == SECOND_OPINION_FOCUS]
     flags = state.get("second_opinion") or {}
     reasons: list[str] = []
     requested = flags.get("requested")
     if requested is not None and not any(n >= requested for n in opinions):
         reasons.append("requested")
-    if flags.get("skipped") or opinions:
+    if flags.get("skipped") or opinions or not any("plugin_version" in r for r in rounds):
         return bool(reasons), reasons
     start = _cycle_start(rounds)
     cycle = [r for r in rounds if r.get("number", 0) >= start]
@@ -1165,10 +1164,9 @@ def cmd_status(args: argparse.Namespace) -> dict:
     floor = _cap_floor(rounds, args.since_round)
     run_rounds = sum(1 for r in rounds if r.get("number", 0) > floor)
     if cont and run_rounds >= MAX_ROUNDS:
-        opinion_ran = any(r.get("focus") == SECOND_OPINION_FOCUS for r in rounds)
         if reason == "unverified-fixes" and run_rounds == MAX_ROUNDS:
             reason = "final-verification"
-        elif reason != "second-opinion" or opinion_ran:
+        elif reason != "second-opinion":
             cont, reason = False, "max-rounds"
     second = reason == "second-opinion"
     return {
@@ -1338,6 +1336,14 @@ def _intent_check_lines(state: dict) -> list[str]:
     return lines
 
 
+def _round_mode(rnd: dict) -> str:
+    """A round's mode as the summary shows it, naming a second opinion."""
+    mode = str(rnd.get("mode"))
+    if rnd.get("focus") == SECOND_OPINION_FOCUS:
+        mode += " (second opinion)"
+    return mode
+
+
 def render_summary(state: dict) -> str:
     rounds = state["rounds"]
     findings = state.get("findings", [])
@@ -1350,18 +1356,16 @@ def render_summary(state: dict) -> str:
     if risk:
         risk_text = f"{risk.get('level')} ({_one_line(risk.get('reason'))})"
     plural = "" if len(rounds) == 1 else "s"
-    last_mode = str(last.get("mode"))
-    if last.get("focus") == SECOND_OPINION_FOCUS:
-        last_mode += " (second opinion)"
     header = (
         f"# Review of `{state.get('branch')}` ({state.get('repo_key')}): {len(rounds)} round{plural}, "
-        f"last {last_mode} with {last.get('model')}, merge risk {risk_text}"
+        f"last {_round_mode(last)} with {last.get('model')}, merge risk {risk_text}"
     )
 
     counts = {s: 0 for s in STATUSES}
     for f in findings:
         counts[f.get("status")] = counts.get(f.get("status"), 0) + 1
-    out = [header, "", "## Counts", "", "| Status | Count |", "| --- | --- |"]
+    listed = ", ".join(f"{r.get('number')} {_round_mode(r)} ({r.get('model')})" for r in rounds)
+    out = [header, "", f"Rounds: {listed}", "", "## Counts", "", "| Status | Count |", "| --- | --- |"]
     out.extend(f"| {s} | {n} |" for s, n in counts.items())
 
     sections = (

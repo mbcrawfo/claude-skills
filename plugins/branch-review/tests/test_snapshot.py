@@ -638,6 +638,7 @@ class SnapshotTest(unittest.TestCase):
         )
         self.assertEqual(code, 1)
         self.assertIn("conflicts", err)
+        self.assertIn("run a merge-check round (or deep if merge-check is unavailable)", err)
 
     def test_simulate_base_update_without_merge_tree_support_is_none(self):
         self.begin()

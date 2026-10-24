@@ -125,7 +125,7 @@ Text arguments have file forms: `set-status --note-file PATH`, `discuss --text-f
 **Round cap.** The floor is the later of `--since-round N` (default 0) and, when a round's `mode_reason` is a forced deep restart (`snapshot-missing`, `history-rewritten`, `paths-changed`), the round just before the last such restart. The cap counts the rounds numbered above the floor, so the restart itself counts. When the loop would continue and six or more rounds count:
 
 - `unverified-fixes` with exactly six becomes `final-verification` (`continue: true`, `next_mode: followup`): one more follow-up only to verify the claimed fixes;
-- `second-opinion` stays when no second-opinion round has been recorded on the branch;
+- `second-opinion` stays, so a due second opinion still runs; once one is recorded it is no longer due, and the cap applies to whatever follows;
 - anything else becomes `max-rounds` (`continue: false`).
 
 Merge-check and second-opinion rounds count toward the cap and do not reset it.
@@ -140,7 +140,7 @@ One function decides whether a second opinion is due, from recorded state alone;
 - `merge-risk`: a `deep` round of the current cycle has `merge_risk.level` `moderate` or `high`.
 - `major-finding`: a finding with scope `change`, opened in the current cycle, has severity `critical` or `major`, whatever its status now.
 
-The current cycle starts at the last recorded forced deep restart, else at round 1. `merge-risk` and `major-finding` count only when `skipped` is false and no second-opinion round is recorded on the branch, so they fire at most once per branch. State whose recorded rounds all lack `plugin_version` (v0.7) is never due. While one is due, `covered` lists the reason `second-opinion-pending`, after all its other reasons.
+The current cycle starts at the last recorded forced deep restart, else at round 1. `merge-risk` and `major-finding` count only when `skipped` is false and no second-opinion round is recorded on the branch, so they fire at most once per branch. State whose recorded rounds all lack `plugin_version` (v0.7) never gets `merge-risk` or `major-finding`; `requested` still applies. While one is due, `covered` lists the reason `second-opinion-pending`, after all its other reasons.
 
 ## Mode selection
 

@@ -39,6 +39,6 @@ The command exits 0 whether or not the commit is covered, so read `covered` from
 - `history-rewritten`: the reviewed head is not an ancestor of the commit.
 - `base-conflict`: the base branch was merged in and that merge could not be simulated cleanly, or the base ref does not resolve.
 - `changes-since-review`: the commit's tree differs from what was reviewed, allowing for a clean base merge.
-- `second-opinion-pending`: a second deep review is due and has not run. The review's risk signals (a deep round rated `moderate` or `high` merge risk, or a critical or major finding) or the invoker's `--second-opinion` call for it, unless a review run passed `--no-second-opinion`. A branch whose rounds all predate v0.8 is never pending.
+- `second-opinion-pending`: a second deep review is due and has not run. The review's risk signals (a deep round rated `moderate` or `high` merge risk, or a critical or major finding) or the invoker's `--second-opinion` call for it, unless a review run passed `--no-second-opinion`. A branch whose rounds all predate v0.8 is pending only when `--second-opinion` asked for one.
 
 `counts` is the number of findings per status and `rounds` the number of recorded rounds. Do not fix any reason yourself; the caller decides what to do, which usually means running `/branch-review:review` again.
