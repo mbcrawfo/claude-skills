@@ -202,6 +202,19 @@ class NextTests(WatcherTestCase):
             yield_slot(state, "c", "done", NOW + 7)
         self.assertEqual(run_wait(self.dir), f"NEXT b {SHA2}")
 
+    def test_next_reported_again_when_the_slot_was_held_only_between_waits(self):
+        self.hold_a_queue_b()
+        with locked(self.dir) as state:
+            yield_slot(state, "a", "behind", NOW + 2)
+        self.assertEqual(run_wait(self.dir), f"NEXT b {SHA2}")
+        with locked(self.dir) as state:
+            go(self.dir, state, "b", SHA2, NOW + 3)
+            yield_slot(state, "b", "behind", NOW + 4)
+            go(self.dir, state, "c", SHA3, NOW + 5)
+            enqueue(state, "b", SHA2, NOW + 6)
+            yield_slot(state, "c", "done", NOW + 7)
+        self.assertEqual(run_wait(self.dir), f"NEXT b {SHA2}")
+
     def test_next_reported_again_for_a_new_head(self):
         self.hold_a_queue_b()
         with locked(self.dir) as state:

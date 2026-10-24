@@ -16,6 +16,9 @@ REQUESTS = "requests.log"
 PUSHES = "pushes.log"
 GATES = "gates.log"
 
+# The watcher's mark for the last NEXT it reported; not a unit name, since unit names start with a letter or digit.
+NEXT_MARK = "_next"
+
 UNIT_RE = r"[A-Za-z0-9][A-Za-z0-9._-]*"
 SHA_RE = r"[0-9a-f]{40}"
 
@@ -225,6 +228,8 @@ def go(run_dir: Path, state: dict, unit: str, sha: str, now: float) -> None:
     record["yielded"] = None
     if state["queue_mode"] == "serial":
         state["slot"] = {"unit": unit, "sha": sha, "at": now, "head": state["marks"].get(unit, {}).get("head")}
+        # The watcher's last NEXT has been answered; when the slot frees, the queue head is reported afresh.
+        state["marks"].pop(NEXT_MARK, None)
 
 
 def redo(run_dir: Path, state: dict, unit: str, sha: str, reasons: str) -> None:

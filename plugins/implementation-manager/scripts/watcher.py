@@ -6,13 +6,12 @@ from pathlib import Path
 import re
 from typing import Callable
 
-from runstate import REQUESTS, SHA_RE, UNIT_RE, locked, queue_order
+from runstate import NEXT_MARK, REQUESTS, SHA_RE, UNIT_RE, locked, queue_order
 
 # The branch is printable non-space characters: no whitespace or control characters.
 REQUEST_RE = rf"^({UNIT_RE}) push ({SHA_RE}) ([^\s\x00-\x1f\x7f]+)$"
 
 BAD_REQUESTS_KEPT = 20
-NEXT_MARK = "_next"
 
 
 def _note_bad(state: dict, line: str) -> None:

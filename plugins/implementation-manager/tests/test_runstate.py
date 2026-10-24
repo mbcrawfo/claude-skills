@@ -321,6 +321,18 @@ class SlotTests(RunStateTestCase):
         self.assertEqual(state["slot"], {"unit": "a", "sha": SHA1, "at": 5.0, "head": "abc"})
         self.assertEqual(self.pushes(), f"a go {SHA1}\n")
 
+    def test_go_taking_the_slot_drops_the_next_mark(self):
+        state = self.setup_units("a")
+        state["marks"]["_next"] = ["a", SHA1]
+        go(self.dir, state, "a", SHA1, 5.0)
+        self.assertNotIn("_next", state["marks"])
+
+    def test_go_in_parallel_mode_keeps_the_next_mark(self):
+        state = self.setup_units("a", queue_mode="parallel")
+        state["marks"]["_next"] = ["a", SHA1]
+        go(self.dir, state, "a", SHA1, 5.0)
+        self.assertEqual(state["marks"]["_next"], ["a", SHA1])
+
     def test_go_without_head_mark_stores_none(self):
         state = self.setup_units("a")
         go(self.dir, state, "a", SHA1, 5.0)
