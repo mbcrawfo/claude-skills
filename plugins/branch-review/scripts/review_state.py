@@ -29,6 +29,8 @@ STATE_FILE = "review.json"
 OPEN_STATUSES = ("open", "fixed", "still-open")
 MAX_FILES = 150
 MAX_LINES = 10000
+LARGE_FILES = 40
+LARGE_LINES = 2000
 SNAPSHOT_MESSAGE = "branch-review snapshot"
 FORCED_DEEP = ("snapshot-missing", "history-rewritten", "paths-changed")
 SECOND_OPINION_FOCUS = "second-opinion"
@@ -458,6 +460,48 @@ def _numstat(repo: Path, diff_from: str, diff_to: str) -> list[tuple[str, int]]:
     return entries
 
 
+def _check_attr(repo: Path, files: list[str], source: str | None) -> str:
+    """`git check-attr -z` output for the generated-file attributes of `files`.
+
+    Paths go in on stdin, NUL-separated, so a long list and any file name
+    (spaces, non-ASCII, quotes) pass through unchanged.
+    """
+    cmd = ["git", "check-attr", "-z"]
+    if source is not None:
+        cmd.append(f"--source={source}")
+    cmd += ["--stdin", "linguist-generated", "diff"]
+    stdin = b"".join(os.fsencode(f) + b"\0" for f in files)
+    result = subprocess.run(cmd, cwd=str(repo), input=stdin, check=True, capture_output=True)
+    return os.fsdecode(result.stdout)
+
+
+def generated_files(repo: Path, snapshot: str, files: list[str], globs: list[str]) -> set[str]:
+    """The subset of `files` that is generated.
+
+    A file is generated when it matches one of `globs`, or when its attributes
+    in `snapshot` say `linguist-generated` is set or `diff` is unset. Git older
+    than 2.40 has no `check-attr --source`, so the attributes then come from
+    the working tree.
+    """
+    found = {f for f in files if path_matches(f, globs)}
+    rest = [f for f in files if f not in found]
+    if not rest:
+        return found
+    try:
+        out = _check_attr(repo, rest, snapshot)
+    except subprocess.CalledProcessError:
+        try:
+            out = _check_attr(repo, rest, None)
+        except subprocess.CalledProcessError:
+            return found
+    fields = out.split("\0")
+    for i in range(0, len(fields) - 2, 3):
+        path, attr, value = fields[i : i + 3]
+        if (attr == "linguist-generated" and value in ("set", "true")) or (attr == "diff" and value == "unset"):
+            found.add(path)
+    return found
+
+
 def cmd_begin_round(args: argparse.Namespace) -> dict:
     repo = Path(args.repo)
     rkey, branch, directory = _locate_keys(Path(args.state_dir).expanduser(), repo)
@@ -527,17 +571,34 @@ def cmd_begin_round(args: argparse.Namespace) -> dict:
         state["intent"] = _read_text_file(args.intent_file)
 
     paths = normalize_paths(repo, args.paths)
-    entries = _numstat(repo, diff_from, diff_to)
-    if paths:
-        entries = [(f, n) for f, n in entries if path_matches(f, paths)]
-    changed = [f for f, _ in entries]
-    lines = sum(n for _, n in entries)
+    if args.generated is not None:
+        state["generated"] = normalize_paths(repo, args.generated)
+    globs = state.setdefault("generated", [])
+
+    def measure(start: str) -> tuple[list[str], int, set[str], int, int]:
+        """Changed files and lines since `start`, and the part that counts (not generated)."""
+        entries = _numstat(repo, start, diff_to)
+        if paths:
+            entries = [(f, n) for f, n in entries if path_matches(f, paths)]
+        names = [f for f, _ in entries]
+        generated = generated_files(repo, diff_to, names, globs)
+        counted = [n for f, n in entries if f not in generated]
+        return names, sum(n for _, n in entries), generated, len(counted), sum(counted)
+
+    changed, lines, generated, counted_files, counted_lines = measure(diff_from)
+    mode, model, mode_reason = args.mode, args.model, args.mode_reason
+    if mode == "followup" and (counted_files >= LARGE_FILES or counted_lines >= LARGE_LINES):
+        # Too much changed since the last round to re-check by delta: review the
+        # whole change set from the merge base with the deep model.
+        mode, model, mode_reason = "deep", args.deep_model or args.model, "large-delta"
+        diff_from = merge_base
+        changed, lines, generated, counted_files, counted_lines = measure(diff_from)
     files = len(changed)
 
     rnd = {
         "number": len(rounds) + 1,
-        "mode": args.mode,
-        "model": args.model,
+        "mode": mode,
+        "model": model,
         "started": _now(),
         "snapshot": diff_to,
         "head": head,
@@ -550,7 +611,7 @@ def cmd_begin_round(args: argparse.Namespace) -> dict:
         "summary": None,
         "merge_risk": None,
         "focus": args.focus,
-        "mode_reason": args.mode_reason,
+        "mode_reason": mode_reason,
         "plugin_version": PLUGIN_VERSION,
     }
     # An empty round has nothing for a reviewer, so it is never saved. Existing
@@ -574,7 +635,10 @@ def cmd_begin_round(args: argparse.Namespace) -> dict:
             "dir": str(directory),
             "files": files,
             "lines": lines,
-            "oversized": files > MAX_FILES or lines > MAX_LINES,
+            "generated": sorted(generated),
+            "counted_files": counted_files,
+            "counted_lines": counted_lines,
+            "oversized": counted_files > MAX_FILES or counted_lines > MAX_LINES,
             "empty": files == 0,
             "saved": saved,
         }
@@ -1534,6 +1598,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="what the round is for; second-opinion is the independent re-review of a risky change",
     )
     begin.add_argument("--mode-reason", help="why the mode was chosen, as `locate` reported it")
+    begin.add_argument(
+        "--generated",
+        nargs="+",
+        help="globs for generated files, kept out of the size checks; stored, and reused when absent",
+    )
+    begin.add_argument(
+        "--deep-model",
+        help="model for a follow-up promoted to a deep round (default: the --model value)",
+    )
     opinion = begin.add_mutually_exclusive_group()
     opinion.add_argument(
         "--second-opinion",
