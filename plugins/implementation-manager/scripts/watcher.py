@@ -108,7 +108,8 @@ def poll_units(state: dict, *, gh: Callable[[list[str]], str]) -> dict[str, Summ
     """Poll the PR of every unit with a branch that is not done; a unit maps to None when it has no open PR.
 
     The unit's PR is its recorded `OPEN` PR not yet reported ended; failing that, the branch's open PR, which
-    is recorded as `OPEN`. The PR number and the head seen go to `marks[unit]["pr"]` and `["head"]`.
+    is recorded as `OPEN` unless the manager recorded it `MERGED`. The PR number and the head seen go to
+    `marks[unit]["pr"]` and `["head"]`.
     Raises GhError on the first failing gh call.
     """
     polled: dict[str, Summary | None] = {}
@@ -123,7 +124,8 @@ def poll_units(state: dict, *, gh: Callable[[list[str]], str]) -> dict[str, Summ
         if pr is None:
             polled[unit] = None
             continue
-        record["prs"][str(pr)] = "OPEN"
+        if record["prs"].get(str(pr)) != "MERGED":  # a merged PR never reopens; a closed one may
+            record["prs"][str(pr)] = "OPEN"
         summary = poll_pr(state["repo"], pr, gh)
         marks["pr"] = pr
         marks["head"] = summary.head
@@ -164,9 +166,10 @@ def _unit_events(
     pr = marks["pr"]
     key_pr = str(pr)
     ended = marks.setdefault("ended", [])
-    if summary.state != "OPEN":
+    recorded = state["units"][unit]["prs"].get(key_pr)
+    if summary.state != "OPEN" or recorded == "MERGED":
         if key_pr not in ended:
-            if state["units"][unit]["prs"].get(key_pr) == "OPEN":
+            if recorded == "OPEN":
                 events.append((ENDED, f"{summary.state} {unit} {pr}", lambda: ended.append(key_pr)))
             else:
                 ended.append(key_pr)  # the manager recorded it first
@@ -175,11 +178,17 @@ def _unit_events(
         ended.remove(key_pr)  # reopened
 
     head = summary.head
+    ready_key = f"{pr} {head}"
     reasons = summary.reasons()
     waiting = pending or any(entry["unit"] == unit for entry in state["queue"])
-    may_report = not waiting and reportable(state, unit)
+    if "go_head" in marks and marks["go_head"] != head:
+        marks.pop("go_head")  # the push after the last go has landed
+    # After a go, the old head is not READY: the child is about to push.
+    pushing = "go_head" in marks
+    may_report = not waiting and not pushing and reportable(state, unit)
 
-    if reasons:
+    if reasons or waiting:
+        # A request makes the unit's head stale, so a candidate seen meanwhile does not count afterwards.
         marks.pop("candidate", None)
     else:
         seen = asdict(summary)
@@ -187,11 +196,12 @@ def _unit_events(
         if candidate is None or candidate["pr"] != pr or candidate["summary"] != seen:
             candidate = marks["candidate"] = {"pr": pr, "summary": seen, "at": now}
         confirmed = now - candidate["at"] >= timings.confirm_seconds
-        if marks.get("ready_head") != head:
+        if marks.get("ready_head") != ready_key:
             if confirmed and may_report:
-                events.append((READY, f"READY {unit} {pr} {head}", _setter(marks, ready_head=head, ready_at=now)))
-        elif may_report and now - marks["ready_at"] >= timings.remind_seconds and marks.get("remind_head") != head:
-            events.append((REMIND, f"REMIND {unit} {pr} {head}", _setter(marks, remind_head=head)))
+                mark = _setter(marks, ready_head=ready_key, ready_at=now)
+                events.append((READY, f"READY {unit} {pr} {head}", mark))
+        elif may_report and now - marks["ready_at"] >= timings.remind_seconds and marks.get("remind_head") != ready_key:
+            events.append((REMIND, f"REMIND {unit} {pr} {head}", _setter(marks, remind_head=ready_key)))
 
     if responsible and summary.merge == "BEHIND" and marks.get("behind_head") != head:
         events.append((BEHIND, f"BEHIND {unit} {pr} {head}", _setter(marks, behind_head=head)))
@@ -341,7 +351,10 @@ def wait(
                 line = next_event(state)
             else:
                 kept = _apply_poll(state, *poll)
-                line = pr_event(state, kept, polled_at, timings=timings, before_behind=lambda: next_event(state))
+                # A request that arrived during the gh round comes first, and its pending entry holds READY.
+                line = take_request(run_dir, state, now())
+                if not line:
+                    line = pr_event(state, kept, polled_at, timings=timings, before_behind=lambda: next_event(state))
                 next_poll_at = _next_poll_at(state, polled_at, poll_seconds, confirm_seconds)
         if line:
             return line

@@ -226,8 +226,15 @@ def go(run_dir: Path, state: dict, unit: str, sha: str, now: float) -> None:
     _append(run_dir, PUSHES, f"{unit} go {sha}\n")
     _drop_entries(state, unit, "pending", "queue")
     record["yielded"] = None
+    marks = state["marks"].setdefault(unit, {})
+    if marks.get("head") == sha:
+        # The approved commit is already the PR's head: there is nothing new to wait for.
+        marks.pop("go_head", None)
+    else:
+        # The watcher holds READY and REMIND while the PR's head is still this one, until the push lands.
+        marks["go_head"] = marks.get("head")
     if state["queue_mode"] == "serial":
-        state["slot"] = {"unit": unit, "sha": sha, "at": now, "head": state["marks"].get(unit, {}).get("head")}
+        state["slot"] = {"unit": unit, "sha": sha, "at": now, "head": marks.get("head")}
         # The watcher's last NEXT has been answered; when the slot frees, the queue head is reported afresh.
         state["marks"].pop(NEXT_MARK, None)
 

@@ -338,6 +338,29 @@ class SlotTests(RunStateTestCase):
         go(self.dir, state, "a", SHA1, 5.0)
         self.assertIsNone(state["slot"]["head"])
 
+    def test_go_records_the_head_it_was_given_over(self):
+        state = self.setup_units("a")
+        state["marks"]["a"] = {"head": SHA2}
+        go(self.dir, state, "a", SHA1, 5.0)
+        self.assertEqual(state["marks"]["a"]["go_head"], SHA2)
+
+    def test_go_in_parallel_mode_records_the_head_it_was_given_over(self):
+        state = self.setup_units("a", queue_mode="parallel")
+        state["marks"]["a"] = {"head": SHA2}
+        go(self.dir, state, "a", SHA1, 5.0)
+        self.assertEqual(state["marks"]["a"]["go_head"], SHA2)
+
+    def test_go_records_none_without_a_head_mark(self):
+        state = self.setup_units("a")
+        go(self.dir, state, "a", SHA1, 5.0)
+        self.assertIsNone(state["marks"]["a"]["go_head"])
+
+    def test_go_for_the_head_already_pushed_holds_nothing(self):
+        state = self.setup_units("a")
+        state["marks"]["a"] = {"head": SHA1, "go_head": SHA2}
+        go(self.dir, state, "a", SHA1, 5.0)
+        self.assertNotIn("go_head", state["marks"]["a"])
+
     def test_go_refused_while_other_holds(self):
         state = self.setup_units("a", "b")
         go(self.dir, state, "a", SHA1, 5.0)

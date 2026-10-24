@@ -18,7 +18,9 @@ from runstate import (
     init_run,
     load,
     locked,
+    record_closed,
     record_merged,
+    redo,
     set_option,
     yield_slot,
 )
@@ -321,7 +323,7 @@ class ReadyTests(PrTestCase):
         self.assertEqual(gh.count(["api", "graphql"]), 2)
         state = load(self.dir)
         self.assertEqual(state["units"]["a"]["prs"], {"7": "OPEN"})
-        self.assertEqual(state["marks"]["a"]["ready_head"], HEAD_A)
+        self.assertEqual(state["marks"]["a"]["ready_head"], f"7 {HEAD_A}")
         self.assertEqual(state["marks"]["a"]["head"], HEAD_A)
 
     def test_ready_needs_two_equal_clean_polls(self):
@@ -344,7 +346,84 @@ class ReadyTests(PrTestCase):
         self.assert_quiet(gh)
         with locked(self.dir) as state:
             go(self.dir, state, "a", HEAD_B, self.clock.now())
+        # The go answers a new commit: the old head is not READY until the push lands and is confirmed.
+        self.assert_quiet(gh)
+        gh.polls[7] = [make_pr(head=HEAD_B)]
+        pushed_at = self.clock.t
+        self.assertEqual(self.wait(gh), f"READY a 7 {HEAD_B}")
+        self.assertGreaterEqual(self.clock.t - pushed_at, 30)
+
+    def go_over_clean_head_a(self, mode="serial"):
+        """a's PR is clean on HEAD_A while a asks to push a new commit HEAD_B; then a gets go."""
+        if mode == "parallel":
+            with locked(self.dir) as state:
+                yield_slot(state, "a", "test", self.clock.now())
+                set_option(state, "queue", "parallel")
+        append(self.dir, f"a push {HEAD_B} feat/a\n")
+        gh = self.gh_a(make_pr())
+        self.assertEqual(self.wait(gh), f"REQUEST a {HEAD_B} feat/a")
+        self.assert_quiet(gh)
+        with locked(self.dir) as state:
+            go(self.dir, state, "a", HEAD_B, self.clock.now())
+        return gh
+
+    def test_no_ready_after_go_while_head_unchanged(self):
+        for mode in ("serial", "parallel"):
+            with self.subTest(mode=mode):
+                self.setUp()
+                gh = self.go_over_clean_head_a(mode)
+                self.assert_quiet(gh, sleeps=300)  # 25 minutes, short of the no-push STUCK
+
+    def test_ready_after_go_once_new_head_is_confirmed(self):
+        for mode in ("serial", "parallel"):
+            with self.subTest(mode=mode):
+                self.setUp()
+                gh = self.go_over_clean_head_a(mode)
+                self.assert_quiet(gh)
+                gh.polls[7] = [make_pr(head=HEAD_B)]
+                pushed_at = self.clock.t
+                self.assertEqual(self.wait(gh), f"READY a 7 {HEAD_B}")
+                self.assertGreaterEqual(self.clock.t - pushed_at, 30)
+                self.assertNotIn("go_head", load(self.dir)["marks"]["a"])
+
+    def test_ready_after_a_request_needs_a_fresh_confirm(self):
+        append(self.dir, f"a push {HEAD_B} feat/a\n")
+        gh = self.gh_a(make_pr())
+        self.assertEqual(self.wait(gh), f"REQUEST a {HEAD_B} feat/a")
+        self.assert_quiet(gh)
+        with locked(self.dir) as state:
+            redo(self.dir, state, "a", HEAD_B, "not-covered")  # also frees a's slot
+        answered_at = self.clock.t
         self.assertEqual(self.wait(gh), f"READY a 7 {HEAD_A}")
+        self.assertGreaterEqual(self.clock.t - answered_at, 30)
+
+    def test_go_for_the_pushed_head_does_not_hold_ready(self):
+        with locked(self.dir) as state:
+            yield_slot(state, "a", "test", self.clock.now())
+        gh = self.gh_a(make_pr())
+        self.assert_quiet(gh, sleeps=1)
+        with locked(self.dir) as state:
+            go(self.dir, state, "a", HEAD_A, self.clock.now())
+        self.assertEqual(self.wait(gh), f"READY a 7 {HEAD_A}")
+
+    def test_request_during_poll_comes_before_ready(self):
+        inner = self.gh_a(make_pr())
+
+        def gh(args):
+            if args[:2] == ["api", "graphql"] and inner.count(["api", "graphql"]) == 1:
+                append(self.dir, f"a push {HEAD_B} feat/a\n")
+            return inner(args)
+
+        self.assertEqual(self.wait(gh), f"REQUEST a {HEAD_B} feat/a")
+        self.assertEqual(inner.count(["api", "graphql"]), 2)
+        self.assert_quiet(gh)
+
+    def test_ready_for_a_new_pr_on_the_same_head(self):
+        gh = FakeGh({"feat/a": [PR7, PR8]}, {7: [make_pr()], 8: [make_pr()]})
+        self.assertEqual(self.wait(gh), f"READY a 7 {HEAD_A}")
+        with locked(self.dir) as state:
+            record_closed(state, "a", 7)
+        self.assertEqual(self.wait(gh), f"READY a 8 {HEAD_A}")
 
     def test_ready_held_for_non_holder_until_slot_frees(self):
         with locked(self.dir) as state:
@@ -401,6 +480,13 @@ class EndedTests(PrTestCase):
 
         self.assert_quiet(manager_records_merge)
         self.assertEqual(load(self.dir)["units"]["b"]["prs"], {"8": "MERGED"})
+
+    def test_recorded_merged_pr_is_not_reopened_or_reported(self):
+        with locked(self.dir) as state:
+            record_merged(state, "a", 7, more=True)
+        gh = FakeGh({"feat/a": [PR7]}, {7: [make_pr(state="MERGED")]})
+        self.assert_quiet(gh)
+        self.assertEqual(load(self.dir)["units"]["a"]["prs"], {"7": "MERGED"})
 
     def test_closed_reported(self):
         gh = FakeGh({"feat/a": [PR7, NO_PR]}, {7: [make_pr(state="CLOSED")]})
