@@ -41,17 +41,26 @@ class FakeGh:
 
     An item is a str (returned), a dict (a pullRequest, wrapped and dumped) or an exception (raised).
     The last `pr list` answer repeats; running out of graphql answers fails the test.
+
+    For several PRs, `pr_list` may be a dict from branch to answers and `polls` a dict from PR number to
+    answers. In a dict, each queue's last answer repeats.
     """
 
     def __init__(self, pr_list, polls=()):
-        self.pr_list = list(pr_list)
-        self.polls = list(polls)
+        self.pr_list = {k: list(v) for k, v in pr_list.items()} if isinstance(pr_list, dict) else list(pr_list)
+        self.polls = {k: list(v) for k, v in polls.items()} if isinstance(polls, dict) else list(polls)
         self.calls = []
 
     def __call__(self, args):
         self.calls.append(list(args))
         if args[:2] == ["pr", "list"]:
-            item = self.pr_list.pop(0) if len(self.pr_list) > 1 else self.pr_list[0]
+            queue = self.pr_list
+            if isinstance(queue, dict):
+                queue = queue[args[args.index("--head") + 1]]
+            item = queue.pop(0) if len(queue) > 1 else queue[0]
+        elif args[:2] == ["api", "graphql"] and isinstance(self.polls, dict):
+            queue = self.polls[int(next(arg[2:] for arg in args if arg.startswith("p=")))]
+            item = queue.pop(0) if len(queue) > 1 else queue[0]
         elif args[:2] == ["api", "graphql"]:
             if not self.polls:
                 raise AssertionError("unexpected extra graphql call")
@@ -67,6 +76,7 @@ class FakeGh:
 
 
 PR7 = json.dumps([{"number": 7}])
+PR8 = json.dumps([{"number": 8}])
 NO_PR = "[]"
 
 

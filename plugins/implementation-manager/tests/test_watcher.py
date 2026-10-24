@@ -1,4 +1,4 @@
-"""Tests for the run watcher: push requests and queue turns."""
+"""Tests for the run watcher: push requests, queue turns and PR events."""
 
 from __future__ import annotations
 
@@ -7,10 +7,22 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from fakes import FakeClock, FakeGh
+from fakes import HEAD_A, HEAD_B, NO_PR, PR7, PR8, FakeClock, FakeGh, check_run, make_pr
 import helpers  # noqa: F401  (puts the scripts dir on sys.path)
-from runstate import LOCK_FILE, add_unit, enqueue, go, init_run, load, locked, record_merged, yield_slot
-from watcher import next_event, take_request, wait
+from prstate import GhError
+from runstate import (
+    LOCK_FILE,
+    add_unit,
+    enqueue,
+    go,
+    init_run,
+    load,
+    locked,
+    record_merged,
+    set_option,
+    yield_slot,
+)
+from watcher import next_event, poll_units, take_request, wait
 
 NOW = 1000.0
 SHA1 = "1" * 40
@@ -36,6 +48,10 @@ class StopClock(FakeClock):
         super().sleep(seconds)
         if self.hook:
             self.hook(len(self.sleeps))
+
+    def allow(self, sleeps):
+        """Let the next wait sleep `sleeps` more times before Timeout; time keeps running across waits."""
+        self.limit = len(self.sleeps) + sleeps
 
 
 def append(run_dir: Path, text: str) -> None:
@@ -261,6 +277,275 @@ class ConcurrencyTests(WatcherTestCase):
         state = load(self.dir)
         self.assertEqual(state["slot"]["unit"], "a")
         self.assertEqual(state["slot"]["sha"], SHA1)
+
+
+RUNNING = [check_run(status="IN_PROGRESS", conclusion=None)]
+FAILING = [check_run(conclusion="FAILURE")]
+SHA_A7 = HEAD_A[:7]
+
+
+class PrTestCase(WatcherTestCase):
+    """Unit `a` has branch feat/a and holds the slot, taken before any poll, so its no-push baseline is None."""
+
+    def setUp(self):
+        super().setUp()
+        self.clock = StopClock(limit=0)
+        with locked(self.dir) as state:
+            add_unit(state, "a", prereqs=None, branch="feat/a", worktree=None, specs=None)
+            go(self.dir, state, "a", HEAD_A, self.clock.now())
+
+    def wait(self, gh, sleeps=40, **timings):
+        self.clock.allow(sleeps)
+        return wait(self.dir, gh=gh, sleep=self.clock.sleep, now=self.clock.now, **timings)
+
+    def assert_quiet(self, gh, sleeps=40, **timings):
+        with self.assertRaises(Timeout):
+            self.wait(gh, sleeps, **timings)
+
+    def gh_a(self, *polls):
+        return FakeGh({"feat/a": [PR7]}, {7: list(polls)})
+
+    def add_b(self, *, holds=False):
+        with locked(self.dir) as state:
+            add_unit(state, "b", prereqs=None, branch="feat/b", worktree=None, specs=None)
+            if holds:
+                yield_slot(state, "a", "test", self.clock.now())
+                go(self.dir, state, "b", HEAD_B, self.clock.now())
+
+
+class ReadyTests(PrTestCase):
+    def test_ready_after_confirm_poll(self):
+        gh = self.gh_a(make_pr())
+        self.assertEqual(self.wait(gh), f"READY a 7 {HEAD_A}")
+        self.assertEqual(self.clock.sleeps, [5.0] * 6)
+        self.assertEqual(gh.count(["api", "graphql"]), 2)
+        state = load(self.dir)
+        self.assertEqual(state["units"]["a"]["prs"], {"7": "OPEN"})
+        self.assertEqual(state["marks"]["a"]["ready_head"], HEAD_A)
+        self.assertEqual(state["marks"]["a"]["head"], HEAD_A)
+
+    def test_ready_needs_two_equal_clean_polls(self):
+        two_checks = make_pr(checks=[check_run(), check_run(name="lint")])
+        gh = self.gh_a(make_pr(), two_checks, two_checks)
+        self.assertEqual(self.wait(gh), f"READY a 7 {HEAD_A}")
+        self.assertEqual(gh.count(["api", "graphql"]), 3)
+
+    def test_ready_not_repeated_for_same_head(self):
+        gh = self.gh_a(make_pr())
+        self.assertEqual(self.wait(gh), f"READY a 7 {HEAD_A}")
+        self.assert_quiet(gh)
+        gh.polls[7] = [make_pr(head=HEAD_B)]
+        self.assertEqual(self.wait(gh), f"READY a 7 {HEAD_B}")
+
+    def test_ready_suppressed_while_request_pending(self):
+        append(self.dir, f"a push {HEAD_B} feat/a\n")
+        gh = self.gh_a(make_pr())
+        self.assertEqual(self.wait(gh), f"REQUEST a {HEAD_B} feat/a")
+        self.assert_quiet(gh)
+        with locked(self.dir) as state:
+            go(self.dir, state, "a", HEAD_B, self.clock.now())
+        self.assertEqual(self.wait(gh), f"READY a 7 {HEAD_A}")
+
+    def test_ready_held_for_non_holder_until_slot_frees(self):
+        with locked(self.dir) as state:
+            yield_slot(state, "a", "test", self.clock.now())
+            go(self.dir, state, "b", HEAD_B, self.clock.now())
+        gh = self.gh_a(make_pr())
+        self.assert_quiet(gh)
+        with locked(self.dir) as state:
+            yield_slot(state, "b", "test", self.clock.now())
+        self.assertEqual(self.wait(gh), f"READY a 7 {HEAD_A}")
+
+    def test_ready_comes_before_next(self):
+        # c holds the slot while a's PR is confirmed clean; then the slot frees with b queued.
+        with locked(self.dir) as state:
+            yield_slot(state, "a", "test", self.clock.now())
+            go(self.dir, state, "c", HEAD_B, self.clock.now())
+        gh = self.gh_a(make_pr())
+        self.assert_quiet(gh)
+        with locked(self.dir) as state:
+            enqueue(state, "b", HEAD_B, self.clock.now())
+            yield_slot(state, "c", "test", self.clock.now())
+        self.assertEqual(self.wait(gh), f"READY a 7 {HEAD_A}")
+        self.assertEqual(self.wait(gh), f"NEXT b {HEAD_B}")
+
+    def test_remind_after_thirty_minutes(self):
+        gh = self.gh_a(make_pr())
+        self.assertEqual(self.wait(gh), f"READY a 7 {HEAD_A}")
+        ready_at = self.clock.t
+        self.assertEqual(self.wait(gh, sleeps=400), f"REMIND a 7 {HEAD_A}")
+        self.assertGreaterEqual(self.clock.t - ready_at, 1800)
+        self.assertLess(self.clock.t - ready_at, 1800 + 60)
+        self.assert_quiet(gh, sleeps=400)
+
+
+class EndedTests(PrTestCase):
+    def test_merged_reported_once_and_skipped_if_recorded(self):
+        gh = FakeGh({"feat/a": [PR7, NO_PR]}, {7: [make_pr(checks=RUNNING), make_pr(state="MERGED")]})
+        self.assertEqual(self.wait(gh), "MERGED a 7")
+        self.assert_quiet(gh)
+        self.assertEqual(load(self.dir)["units"]["a"]["prs"], {"7": "OPEN"})
+
+        # Unit b's PR merges and the manager records it while the watcher's poll is out.
+        self.add_b()
+        gh = FakeGh(
+            {"feat/a": [NO_PR], "feat/b": [PR8, NO_PR]}, {8: [make_pr(checks=RUNNING), make_pr(state="MERGED")]}
+        )
+        self.assert_quiet(gh, sleeps=1)
+
+        def manager_records_merge(args):
+            if args[:2] == ["api", "graphql"]:
+                with locked(self.dir) as state:
+                    record_merged(state, "b", 8, more=True)
+            return gh(args)
+
+        self.assert_quiet(manager_records_merge)
+        self.assertEqual(load(self.dir)["units"]["b"]["prs"], {"8": "MERGED"})
+
+    def test_closed_reported(self):
+        gh = FakeGh({"feat/a": [PR7, NO_PR]}, {7: [make_pr(state="CLOSED")]})
+        self.assertEqual(self.wait(gh), "CLOSED a 7")
+
+
+class BehindStuckStalledTests(PrTestCase):
+    def test_behind_only_for_holder(self):
+        self.add_b()
+        gh = FakeGh(
+            {"feat/a": [PR7], "feat/b": [PR8]},
+            {7: [make_pr(checks=RUNNING)], 8: [make_pr(merge="BEHIND", head=HEAD_B)]},
+        )
+        self.assert_quiet(gh)
+        gh.polls[7] = [make_pr(merge="BEHIND")]
+        self.assertEqual(self.wait(gh), f"BEHIND a 7 {HEAD_A}")
+        self.assert_quiet(gh)
+
+    def test_parallel_mode_reports_behind_for_all(self):
+        self.add_b()
+        with locked(self.dir) as state:
+            yield_slot(state, "a", "test", self.clock.now())
+            set_option(state, "queue", "parallel")
+        gh = FakeGh(
+            {"feat/a": [PR7], "feat/b": [PR8]},
+            {7: [make_pr(merge="BEHIND")], 8: [make_pr(merge="BEHIND", head=HEAD_B)]},
+        )
+        self.assertEqual(self.wait(gh), f"BEHIND a 7 {HEAD_A}")
+        self.assertEqual(self.wait(gh), f"BEHIND b 8 {HEAD_B}")
+        self.assert_quiet(gh)
+
+    def test_stuck_after_twenty_minutes_failing(self):
+        start = self.clock.t
+        gh = self.gh_a(make_pr(checks=FAILING))
+        self.assertEqual(self.wait(gh, sleeps=400), "STUCK a 7 checks-failed=1")
+        self.assertGreaterEqual(self.clock.t - start, 1200)
+        self.assertLess(self.clock.t - start, 1200 + 60)
+        self.assert_quiet(gh, sleeps=400)
+
+    def test_stuck_failing_waits_for_pending_request(self):
+        append(self.dir, f"a push {HEAD_B} feat/a\n")
+        gh = self.gh_a(make_pr(checks=FAILING))
+        self.assertEqual(self.wait(gh), f"REQUEST a {HEAD_B} feat/a")
+        self.assert_quiet(gh, sleeps=400)
+
+    def test_stuck_not_for_non_holder(self):
+        with locked(self.dir) as state:
+            yield_slot(state, "a", "test", self.clock.now())
+        self.assert_quiet(self.gh_a(make_pr(checks=FAILING)), sleeps=400)
+
+    def test_stuck_no_push(self):
+        gh = self.gh_a(make_pr(checks=RUNNING))
+        with locked(self.dir) as state:
+            yield_slot(state, "a", "test", self.clock.now())
+        self.assert_quiet(gh, sleeps=1)
+        start = self.clock.t
+        with locked(self.dir) as state:
+            go(self.dir, state, "a", HEAD_A, start)
+            self.assertEqual(state["slot"]["head"], HEAD_A)
+        self.assertEqual(self.wait(gh, sleeps=400), "STUCK a 7 no-push")
+        self.assertGreaterEqual(self.clock.t - start, 1800)
+        self.assertLess(self.clock.t - start, 1800 + 60)
+        self.assert_quiet(gh, sleeps=400)
+
+    def test_no_stuck_after_a_push(self):
+        gh = self.gh_a(make_pr(checks=RUNNING))
+        with locked(self.dir) as state:
+            yield_slot(state, "a", "test", self.clock.now())
+        self.assert_quiet(gh, sleeps=1)
+        with locked(self.dir) as state:
+            go(self.dir, state, "a", HEAD_A, self.clock.now())
+        gh.polls[7] = [make_pr(head=HEAD_B, checks=RUNNING)]
+        self.assert_quiet(gh, sleeps=400)
+
+    def test_stuck_no_push_without_pr(self):
+        gh = FakeGh({"feat/a": [NO_PR]})
+        self.assertEqual(self.wait(gh, sleeps=400), "STUCK a - no-push")
+
+    def test_stalled_after_three_hours(self):
+        with locked(self.dir) as state:
+            yield_slot(state, "a", "test", self.clock.now())
+        start = self.clock.t
+        gh = self.gh_a(make_pr(checks=RUNNING))
+        # A restart in between keeps the time the signature was first seen.
+        self.assert_quiet(gh, sleeps=1000)
+        self.assertEqual(self.wait(gh, sleeps=2000), f"STALLED a 7 head={SHA_A7} checks-running=1")
+        self.assertGreaterEqual(self.clock.t - start, 10800)
+        self.assertLess(self.clock.t - start, 10800 + 60)
+        self.assert_quiet(gh, sleeps=1000)
+
+
+class GhFailureTests(PrTestCase):
+    def test_requests_reported_while_gh_fails(self):
+        gh = FakeGh({"feat/a": [GhError("boom")]})
+
+        def hook(count):
+            if self.clock.t - start >= 540:  # the tenth poll is due
+                append(self.dir, f"a push {HEAD_B} feat/a\n")
+
+        start = self.clock.t
+        self.clock.hook = hook
+        self.assertEqual(self.wait(gh, sleeps=200), f"REQUEST a {HEAD_B} feat/a")
+        self.assertEqual(gh.count(["pr", "list"]), 9)
+
+    def test_error_after_ten_failures(self):
+        gh = FakeGh({"feat/a": [GhError("boom\nsecond line")]})
+        line = self.wait(gh, sleeps=200)
+        self.assertTrue(line.startswith("ERROR"), line)
+        self.assertIn("boom second line", line)
+        self.assertEqual(gh.count(["pr", "list"]), 10)
+
+    def test_successful_poll_resets_failure_count(self):
+        boom = GhError("boom")
+        gh = FakeGh({"feat/a": [PR7]}, {7: [boom] * 9 + [make_pr(checks=RUNNING)] + [boom]})
+        # 9 failures, a success, then the tenth failure in a row on the 20th poll.
+        self.assertEqual(self.wait(gh, sleeps=400).split()[0], "ERROR")
+        self.assertEqual(gh.count(["api", "graphql"]), 20)
+
+
+class PollTests(PrTestCase):
+    def test_poll_units_records_found_pr_and_head(self):
+        self.add_b()
+        with locked(self.dir) as state:
+            record_merged(state, "b", 8, more=False)
+            polled = poll_units(state, gh=self.gh_a(make_pr(checks=RUNNING)))
+            self.assertEqual(list(polled), ["a"])
+            self.assertEqual(polled["a"].head, HEAD_A)
+            self.assertEqual(state["units"]["a"]["prs"], {"7": "OPEN"})
+            self.assertEqual(state["marks"]["a"]["pr"], 7)
+            self.assertEqual(state["marks"]["a"]["head"], HEAD_A)
+
+    def test_recorded_open_pr_is_polled_without_a_search(self):
+        gh = self.gh_a(make_pr(checks=RUNNING))
+        self.assert_quiet(gh, sleeps=30)
+        self.assertEqual(gh.count(["pr", "list"]), 1)
+        self.assertEqual(gh.count(["api", "graphql"]), 3)
+
+    def test_lock_is_free_during_gh_calls(self):
+        inner = self.gh_a(make_pr())
+
+        def gh(args):
+            assert_unlocked(self.dir)
+            return inner(args)
+
+        self.assertEqual(self.wait(gh), f"READY a 7 {HEAD_A}")
 
 
 if __name__ == "__main__":
