@@ -58,7 +58,7 @@ The child need not be idle: it cannot push without a `go`, an outstanding `go` h
 
 ## Run folder
 
-Each run keeps its coordination files in `~/.claude/implementation-manager/<owner>-<repo>/<run>/`:
+Each run keeps its coordination files in the plugin's data folder, `${CLAUDE_PLUGIN_DATA}/<owner>-<repo>/<run>/` (for a marketplace install, `~/.claude/plugins/data/implementation-manager-mbcrawfo-skills/<owner>-<repo>/<run>/`). Runs from 0.1.0 used `~/.claude/implementation-manager/`; nothing reads that folder any more, so delete it once no run there is still going:
 
 ```
 run.json      # the run's state: units, gates, PRs, the slot and the queue, the watcher's marks; written only by the script

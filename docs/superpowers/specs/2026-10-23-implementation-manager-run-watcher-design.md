@@ -75,7 +75,7 @@ How the manager learns that something needs it:
 
 ### Run folder
 
-`~/.claude/implementation-manager/<owner>-<repo>/<run>/` (unchanged location):
+`${CLAUDE_PLUGIN_DATA}/<owner>-<repo>/<run>/`, the plugin's own data folder (changed in review from 0.1.0's `~/.claude/implementation-manager/`):
 
 ```
 run.json      # the run's state; written only by the script (new)
