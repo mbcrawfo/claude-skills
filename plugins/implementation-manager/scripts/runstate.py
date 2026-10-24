@@ -190,3 +190,100 @@ def stop_gate(run_dir: Path, state: dict, unit: str, reason: str) -> None:
     if "\n" in reason or "\r" in reason:
         raise RunError("a stop reason must be a single line")
     _append(run_dir, GATES, f"{unit} stop {reason}\n")
+
+
+def has_open_pr(state: dict, unit: str) -> bool:
+    """True when any of the unit's PRs is still open."""
+    return any(status == "OPEN" for status in _unit(state, unit)["prs"].values())
+
+
+def _check_sha(sha: str) -> None:
+    if not re.fullmatch(SHA_RE, sha):
+        raise RunError(f"sha must be a full 40-character lowercase hex commit id, got {sha!r}")
+
+
+def _drop_entries(state: dict, unit: str, *keys: str) -> None:
+    for key in keys:
+        state[key] = [entry for entry in state[key] if entry["unit"] != unit]
+
+
+def _holds_slot(state: dict, unit: str) -> bool:
+    return state["slot"] is not None and state["slot"]["unit"] == unit
+
+
+def go(run_dir: Path, state: dict, unit: str, sha: str, now: float) -> None:
+    """Answer a push request with `go`: log it and, in serial mode, take the slot."""
+    record = _unit(state, unit)
+    _check_sha(sha)
+    if record["done"]:
+        raise RunError(f"unit {unit!r} is done; answer its push requests with: redo <sha> pr-merged")
+    holder = state["slot"]["unit"] if state["slot"] else None
+    if state["queue_mode"] == "serial" and holder not in (None, unit):
+        raise RunError(f"the push slot is held by {holder!r}; use queue to line {unit!r} up behind it")
+    _append(run_dir, PUSHES, f"{unit} go {sha}\n")
+    _drop_entries(state, unit, "pending", "queue")
+    record["yielded"] = None
+    if state["queue_mode"] == "serial":
+        state["slot"] = {"unit": unit, "sha": sha, "at": now, "head": state["marks"].get(unit, {}).get("head")}
+
+
+def redo(run_dir: Path, state: dict, unit: str, sha: str, reasons: str) -> None:
+    """Answer a push request with `redo` and one line of reasons; the unit gives up the slot."""
+    record = _unit(state, unit)
+    _check_sha(sha)
+    if not reasons.strip() or "\n" in reasons or "\r" in reasons:
+        raise RunError("redo reasons must be a single non-empty line")
+    _append(run_dir, PUSHES, f"{unit} redo {sha} {reasons}\n")
+    _drop_entries(state, unit, "pending", "queue")
+    if _holds_slot(state, unit):
+        state["slot"] = None
+        record["yielded"] = "redo"
+
+
+def enqueue(state: dict, unit: str, sha: str, now: float) -> None:
+    """Line a unit's push request up behind the slot holder, replacing any earlier entry."""
+    _unit(state, unit)
+    _check_sha(sha)
+    if state["queue_mode"] == "parallel":
+        raise RunError("queue is not used in parallel mode; answer with go")
+    if _holds_slot(state, unit):
+        raise RunError(f"unit {unit!r} already holds the push slot")
+    _drop_entries(state, unit, "pending", "queue")
+    state["queue"].append({"unit": unit, "sha": sha, "at": now, "front": has_open_pr(state, unit)})
+
+
+def queue_order(state: dict) -> list[dict]:
+    """Queue entries in service order: units with an open PR first, then the rest, each by time."""
+    entries = sorted(state["queue"], key=lambda entry: entry["at"])
+    return [e for e in entries if e["front"]] + [e for e in entries if not e["front"]]
+
+
+def yield_slot(state: dict, unit: str, reason: str, now: float) -> None:
+    """The slot holder gives the slot up and remembers why. `now` is accepted for call symmetry and unused."""
+    record = _unit(state, unit)
+    if not _holds_slot(state, unit):
+        raise RunError(f"unit {unit!r} does not hold the push slot")
+    state["slot"] = None
+    record["yielded"] = reason
+
+
+def record_merged(state: dict, unit: str, pr: int, *, more: bool) -> None:
+    """Note a merged PR: free the slot if held, and mark the unit done unless more PRs are coming."""
+    record = _unit(state, unit)
+    record["prs"][str(pr)] = "MERGED"
+    if _holds_slot(state, unit):
+        state["slot"] = None
+    record["done"] = not more
+
+
+def record_closed(state: dict, unit: str, pr: int) -> None:
+    """Note a PR closed without merging, and free the slot if the unit holds it."""
+    record = _unit(state, unit)
+    record["prs"][str(pr)] = "CLOSED"
+    if _holds_slot(state, unit):
+        state["slot"] = None
+
+
+def reportable(state: dict, unit: str) -> bool:
+    """True when the unit may be reported on (READY/REMIND): parallel mode, or the slot is free or its own."""
+    return state["queue_mode"] == "parallel" or state["slot"] is None or state["slot"]["unit"] == unit

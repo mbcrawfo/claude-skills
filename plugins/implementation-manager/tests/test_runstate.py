@@ -8,9 +8,30 @@ import tempfile
 import unittest
 
 import helpers  # noqa: F401  (puts the scripts dir on sys.path)
-from runstate import RunError, add_unit, init_run, load, locked, open_gate, openable, set_option, stop_gate
+from runstate import (
+    RunError,
+    add_unit,
+    enqueue,
+    go,
+    has_open_pr,
+    init_run,
+    load,
+    locked,
+    open_gate,
+    openable,
+    queue_order,
+    record_closed,
+    record_merged,
+    redo,
+    reportable,
+    set_option,
+    stop_gate,
+    yield_slot,
+)
 
 NOW = 1000.0
+SHA1 = "1" * 40
+SHA2 = "2" * 40
 
 
 def add(state, name, prereqs=(), specs=False):
@@ -281,6 +302,221 @@ class GateTests(RunStateTestCase):
             stop_gate(self.dir, state, "zz", "r")
         with self.assertRaises(RunError):
             stop_gate(self.dir, state, "a", "two\nlines")
+
+
+class SlotTests(RunStateTestCase):
+    def setup_units(self, *names, queue_mode="serial"):
+        state = self.init(queue_mode=queue_mode)
+        for name in names:
+            add(state, name)
+        return state
+
+    def pushes(self):
+        return (self.dir / "pushes.log").read_text()
+
+    def test_go_takes_free_slot(self):
+        state = self.setup_units("a")
+        state["marks"]["a"] = {"head": "abc"}
+        go(self.dir, state, "a", SHA1, 5.0)
+        self.assertEqual(state["slot"], {"unit": "a", "sha": SHA1, "at": 5.0, "head": "abc"})
+        self.assertEqual(self.pushes(), f"a go {SHA1}\n")
+
+    def test_go_without_head_mark_stores_none(self):
+        state = self.setup_units("a")
+        go(self.dir, state, "a", SHA1, 5.0)
+        self.assertIsNone(state["slot"]["head"])
+
+    def test_go_refused_while_other_holds(self):
+        state = self.setup_units("a", "b")
+        go(self.dir, state, "a", SHA1, 5.0)
+        with self.assertRaises(RunError) as ctx:
+            go(self.dir, state, "b", SHA2, 6.0)
+        self.assertIn("a", str(ctx.exception))
+        self.assertIn("queue", str(ctx.exception))
+        self.assertEqual(state["slot"]["unit"], "a")
+        self.assertEqual(self.pushes(), f"a go {SHA1}\n")
+
+    def test_holder_go_again_keeps_slot(self):
+        state = self.setup_units("a")
+        go(self.dir, state, "a", SHA1, 5.0)
+        go(self.dir, state, "a", SHA2, 6.0)
+        self.assertEqual(state["slot"]["unit"], "a")
+        self.assertEqual(state["slot"]["sha"], SHA2)
+        self.assertEqual(self.pushes(), f"a go {SHA1}\na go {SHA2}\n")
+
+    def test_parallel_go_never_takes_slot(self):
+        state = self.setup_units("a", "b", queue_mode="parallel")
+        go(self.dir, state, "a", SHA1, 5.0)
+        go(self.dir, state, "b", SHA2, 6.0)
+        self.assertIsNone(state["slot"])
+        self.assertEqual(self.pushes(), f"a go {SHA1}\nb go {SHA2}\n")
+
+    def test_go_refused_for_done_unit(self):
+        state = self.setup_units("a")
+        state["units"]["a"]["done"] = True
+        with self.assertRaises(RunError) as ctx:
+            go(self.dir, state, "a", SHA1, 5.0)
+        self.assertIn("pr-merged", str(ctx.exception))
+        self.assertEqual(self.pushes(), "")
+
+    def test_go_validates_unit_and_sha_and_writes_nothing(self):
+        state = self.setup_units("a")
+        with self.assertRaises(RunError):
+            go(self.dir, state, "zz", SHA1, 5.0)
+        with self.assertRaises(RunError):
+            go(self.dir, state, "a", "abc123", 5.0)
+        self.assertEqual(self.pushes(), "")
+        self.assertIsNone(state["slot"])
+
+    def test_go_clears_pending_queue_and_yielded(self):
+        state = self.setup_units("a", "b")
+        state["units"]["a"]["yielded"] = "owner-wait"
+        state["pending"] = [
+            {"unit": "a", "sha": SHA1, "branch": "x", "at": 1},
+            {"unit": "b", "sha": SHA1, "branch": "y", "at": 1},
+        ]
+        state["queue"] = [
+            {"unit": "a", "sha": SHA1, "at": 1, "front": False},
+            {"unit": "b", "sha": SHA1, "at": 2, "front": False},
+        ]
+        go(self.dir, state, "a", SHA2, 5.0)
+        self.assertEqual([e["unit"] for e in state["pending"]], ["b"])
+        self.assertEqual([e["unit"] for e in state["queue"]], ["b"])
+        self.assertIsNone(state["units"]["a"]["yielded"])
+
+    def test_redo_frees_holders_slot(self):
+        state = self.setup_units("a")
+        go(self.dir, state, "a", SHA1, 5.0)
+        redo(self.dir, state, "a", SHA2, "pr-merged")
+        self.assertIsNone(state["slot"])
+        self.assertEqual(state["units"]["a"]["yielded"], "redo")
+
+    def test_redo_leaves_other_holder_alone(self):
+        state = self.setup_units("a", "b")
+        go(self.dir, state, "a", SHA1, 5.0)
+        redo(self.dir, state, "b", SHA2, "nope")
+        self.assertEqual(state["slot"]["unit"], "a")
+        self.assertIsNone(state["units"]["b"]["yielded"])
+
+    def test_redo_line_format(self):
+        state = self.setup_units("b")
+        redo(self.dir, state, "b", SHA1, "changes-since-review, escalated")
+        self.assertEqual(self.pushes(), f"b redo {SHA1} changes-since-review, escalated\n")
+
+    def test_redo_removes_pending_and_queue_entries(self):
+        state = self.setup_units("b")
+        state["pending"] = [{"unit": "b", "sha": SHA1, "branch": "y", "at": 1}]
+        state["queue"] = [{"unit": "b", "sha": SHA1, "at": 2, "front": False}]
+        redo(self.dir, state, "b", SHA2, "r")
+        self.assertEqual(state["pending"], [])
+        self.assertEqual(state["queue"], [])
+
+    def test_redo_rejects_bad_input_and_writes_nothing(self):
+        state = self.setup_units("b")
+        for sha, reasons in ((SHA1, ""), (SHA1, "two\nlines"), ("short", "r")):
+            with self.assertRaises(RunError):
+                redo(self.dir, state, "b", sha, reasons)
+        with self.assertRaises(RunError):
+            redo(self.dir, state, "zz", SHA1, "r")
+        self.assertEqual(self.pushes(), "")
+
+    def test_has_open_pr(self):
+        state = self.setup_units("a")
+        self.assertFalse(has_open_pr(state, "a"))
+        state["units"]["a"]["prs"] = {"4": "MERGED"}
+        self.assertFalse(has_open_pr(state, "a"))
+        state["units"]["a"]["prs"]["5"] = "OPEN"
+        self.assertTrue(has_open_pr(state, "a"))
+
+    def test_queue_order_open_pr_first(self):
+        state = self.setup_units("a", "b", "c")
+        state["units"]["b"]["prs"] = {"5": "OPEN"}
+        enqueue(state, "c", SHA1, 1.0)
+        enqueue(state, "b", SHA1, 2.0)
+        self.assertEqual([e["unit"] for e in queue_order(state)], ["b", "c"])
+
+    def test_queue_order_by_time_within_group(self):
+        state = self.setup_units("a", "b", "c")
+        enqueue(state, "c", SHA1, 3.0)
+        enqueue(state, "a", SHA1, 1.0)
+        enqueue(state, "b", SHA1, 2.0)
+        self.assertEqual([e["unit"] for e in queue_order(state)], ["a", "b", "c"])
+
+    def test_enqueue_replaces_units_entry(self):
+        state = self.setup_units("a")
+        enqueue(state, "a", SHA1, 1.0)
+        enqueue(state, "a", SHA2, 2.0)
+        self.assertEqual(state["queue"], [{"unit": "a", "sha": SHA2, "at": 2.0, "front": False}])
+
+    def test_enqueue_removes_pending_entry(self):
+        state = self.setup_units("a")
+        state["pending"] = [{"unit": "a", "sha": SHA1, "branch": "x", "at": 1}]
+        enqueue(state, "a", SHA1, 2.0)
+        self.assertEqual(state["pending"], [])
+
+    def test_enqueue_refusals(self):
+        state = self.setup_units("a", "b")
+        go(self.dir, state, "a", SHA1, 5.0)
+        with self.assertRaises(RunError):
+            enqueue(state, "a", SHA2, 6.0)
+        with self.assertRaises(RunError):
+            enqueue(state, "b", "bad", 6.0)
+        with self.assertRaises(RunError):
+            enqueue(state, "zz", SHA2, 6.0)
+        self.assertEqual(state["queue"], [])
+        state["queue_mode"] = "parallel"
+        with self.assertRaises(RunError):
+            enqueue(state, "b", SHA2, 6.0)
+
+    def test_yield_requires_holder(self):
+        state = self.setup_units("a", "b")
+        with self.assertRaises(RunError):
+            yield_slot(state, "a", "owner-wait", 5.0)
+        go(self.dir, state, "a", SHA1, 5.0)
+        with self.assertRaises(RunError):
+            yield_slot(state, "b", "owner-wait", 6.0)
+        yield_slot(state, "a", "owner-wait", 7.0)
+        self.assertIsNone(state["slot"])
+        self.assertEqual(state["units"]["a"]["yielded"], "owner-wait")
+
+    def test_merged_frees_slot_and_marks_done(self):
+        state = self.setup_units("a")
+        go(self.dir, state, "a", SHA1, 5.0)
+        record_merged(state, "a", 7, more=False)
+        self.assertEqual(state["units"]["a"]["prs"]["7"], "MERGED")
+        self.assertTrue(state["units"]["a"]["done"])
+        self.assertIsNone(state["slot"])
+
+    def test_merged_part_keeps_unit_open(self):
+        state = self.setup_units("a")
+        go(self.dir, state, "a", SHA1, 5.0)
+        record_merged(state, "a", 7, more=True)
+        self.assertFalse(state["units"]["a"]["done"])
+        self.assertIsNone(state["slot"])
+
+    def test_merged_by_non_holder_keeps_slot(self):
+        state = self.setup_units("a", "b")
+        go(self.dir, state, "a", SHA1, 5.0)
+        record_merged(state, "b", 7, more=False)
+        self.assertEqual(state["slot"]["unit"], "a")
+
+    def test_closed_frees_slot_and_does_not_finish(self):
+        state = self.setup_units("a")
+        go(self.dir, state, "a", SHA1, 5.0)
+        record_closed(state, "a", 8)
+        self.assertEqual(state["units"]["a"]["prs"]["8"], "CLOSED")
+        self.assertFalse(state["units"]["a"]["done"])
+        self.assertIsNone(state["slot"])
+
+    def test_reportable(self):
+        state = self.setup_units("a", "b")
+        self.assertTrue(reportable(state, "a"))
+        self.assertTrue(reportable(state, "b"))
+        go(self.dir, state, "a", SHA1, 5.0)
+        self.assertTrue(reportable(state, "a"))
+        self.assertFalse(reportable(state, "b"))
+        state["queue_mode"] = "parallel"
+        self.assertTrue(reportable(state, "b"))
 
 
 if __name__ == "__main__":
