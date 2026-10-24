@@ -26,7 +26,12 @@ class RefsTest(unittest.TestCase):
     def test_patterns(self):
         self.assertEqual(
             docs_inventory.ref_patterns(SPEC),
-            {"path": SPEC, "filename": "2020-01-15-retry-design.md", "stem": "retry-design"},
+            {
+                "path": SPEC,
+                "filename": "2020-01-15-retry-design.md",
+                "name": "2020-01-15-retry-design",
+                "stem": "retry-design",
+            },
         )
         self.assertEqual(
             docs_inventory.ref_patterns("docs/notes.md"),
@@ -122,6 +127,14 @@ class RefsTest(unittest.TestCase):
         write(self.repo, "ext.md", "see retry.md\n")
         files = {m["file"]: m["match"] for m in self.matches(self.refs(target), target) if not m["in_target"]}
         self.assertEqual(files, {"link.md": "stem", "ext.md": "stem"})
+
+    def test_dated_name_without_extension(self):
+        write(self.repo, "link.md", "[spec](../specs/2020-01-15-retry-design)\n")
+        write(self.repo, "wiki.md", "See [[2020-01-15-retry-design]]\n")
+        write(self.repo, "src/a.py", "# see spec 2020-01-15-retry-design\n")
+        write(self.repo, "longer.md", "see 2020-01-15-retry-design-v2\n")
+        files = {m["file"]: m["match"] for m in self.matches(self.refs(SPEC)) if not m["in_target"]}
+        self.assertEqual(files, {"link.md": "filename", "wiki.md": "filename", "src/a.py": "filename"})
 
     def test_no_matches(self):
         write(self.repo, f"{SPECS}/2020-02-02-lonely.md", "# Lonely\n")

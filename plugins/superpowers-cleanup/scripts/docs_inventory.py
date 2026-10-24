@@ -7,7 +7,8 @@ stderr. The script only reads: it never writes, deletes or edits anything.
 
 Commands:
   inventory  every spec, plan and research entry, with dates, links and git state
-  refs       every line in the repo that mentions given files, by path, filename or stem
+  refs       every line in the repo that mentions given files, by path, filename (with or
+             without .md) or stem
 """
 
 from __future__ import annotations
@@ -315,6 +316,10 @@ def ref_patterns(target: str) -> dict[str, str]:
     if stem.endswith(".md"):
         stem = stem[: -len(".md")]
     patterns = {"path": path, "filename": filename}
+    # The dated name without its extension, as in `[spec](../specs/2020-01-15-x)`.
+    name = filename[: -len(".md")] if filename.endswith(".md") else filename
+    if name != filename and name != stem:
+        patterns["name"] = name
     if stem and stem != filename:
         patterns["stem"] = stem
     return patterns
@@ -349,6 +354,11 @@ def find_refs(root: Path, targets: list[str]) -> list[dict]:
             first = (result.stderr.strip().splitlines() or ["git grep failed"])[0]
             raise CliError(first)
         stem_re = _stem_regex(patterns["stem"]) if "stem" in patterns else None
+        name_re = (
+            re.compile(r"(?<![A-Za-z0-9_.-])" + re.escape(patterns["name"]) + r"(?![A-Za-z0-9_-])")
+            if "name" in patterns
+            else None
+        )
         matches = []
         for line in result.stdout.split("\n"):
             parts = line.split("\0", 2)
@@ -356,6 +366,8 @@ def find_refs(root: Path, targets: list[str]) -> list[dict]:
                 continue
             file, lineno, text = parts
             found = [k for k in ("path", "filename") if patterns[k] in text]
+            if name_re is not None and name_re.search(text):
+                found.append("filename")
             if stem_re is not None and stem_re.search(text):
                 found.append("stem")
             kind = min(found, key=_KIND_RANK.__getitem__, default=None)

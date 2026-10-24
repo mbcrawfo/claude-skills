@@ -65,6 +65,11 @@ class SkillMdTest(unittest.TestCase):
         text = SKILL.read_text(encoding="utf-8")
         self.assertLess(text.index("## 1. Find the folders"), text.index("## 2. Read the request"))
 
+    def test_never_committed_paths(self):
+        text = SKILL.read_text(encoding="utf-8")
+        self.assertIn("`tracked` is false or `first_added` is null", text)
+        self.assertIn("git cat-file -e HEAD:<path>", text)
+
     def test_reply_rules_default_to_not_approved(self):
         self.assertIn("Anything else is not approval", SKILL.read_text(encoding="utf-8"))
 

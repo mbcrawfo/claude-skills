@@ -67,7 +67,7 @@ Plan checkboxes are not a progress signal: finished plans are routinely left wit
 
 A spec and its plans stand or fall together. An unfinished plan holds back its spec, and a held-back spec holds back all its plans. Never remove a spec while one of its plans stays, or the reverse, through this rule.
 
-Unfinished candidates, and the files they hold back, go in the table's *Needs your confirmation* group, each with one line of reasons. A held-back file's reason is "held back with `<file>`". They are kept unless the user confirms them, and confirming a spec confirms its plans. Any file with `tracked: false` also gets the warning "not in git, deletion is permanent".
+Unfinished candidates, and the files they hold back, go in the table's *Needs your confirmation* group, each with one line of reasons. A held-back file's reason is "held back with `<file>`". They are kept unless the user confirms them, and confirming a spec confirms its plans. Any file where `tracked` is false or `first_added` is null was never committed, so git history can't bring it back. It gets the warning "not in git, deletion is permanent", whether or not it is staged.
 
 ## 6. Find references
 
@@ -125,7 +125,7 @@ Close by asking the user to answer the questions and approve, drop items, or cha
 
 ## 9. Apply
 
-1. For every path with tracked content, including a confirmed dirty file and a research folder that is only partly tracked, run `GIT_LITERAL_PATHSPECS=1 git rm -r -f -q -- <path>`. The literal setting stops a name like `what[1].md` from matching `what1.md`. Then delete whatever is left on disk at that path with `rm -r -- <path>`. Do this only for paths whose "permanent" warning was in the approved table.
+1. For every path with tracked content, including a confirmed dirty file and a research folder that is only partly tracked, run `GIT_LITERAL_PATHSPECS=1 git rm -r -f -q -- <path>`. The literal setting stops a name like `what[1].md` from matching `what1.md`. Then delete whatever is left on disk at that path with `rm -r -- <path>`. A path that was never committed is deleted only when its "permanent" warning was in the approved table.
 2. Make the approved reference edits exactly as shown, and add the policy line if the user accepted it.
 3. If anything fails, stop and report what was done and what wasn't.
 
@@ -134,7 +134,7 @@ Close by asking the user to answer the questions and approve, drop items, or cha
 1. **Branch check:** if `current_branch` equals `base_branch`, or HEAD is detached, ask before committing and stop until the user answers.
 2. **Stage** only the paths this run removed or edited, with `GIT_LITERAL_PATHSPECS=1 git add -- <paths>` for edited files (removals are already staged). Never use `git add -A` or `git commit -a`.
 3. **Message:** follow the repo's style from `git log --oneline -20`, for example `docs: remove specs older than two weeks`. The body lists the removed files, then the edited references (`file: inline` or `file: remove`). End with the attribution lines your instructions give for commits, if any.
-4. **Commit only those paths:** `GIT_LITERAL_PATHSPECS=1 git commit -F <message file> -- <paths>`, listing every removed and edited path. The pathspec keeps anything the user had already staged out of this commit, and leaves it staged. Write the message file outside the repo, or delete it afterwards.
+4. **Commit only those paths:** `GIT_LITERAL_PATHSPECS=1 git commit -F <message file> -- <paths>`, listing every edited path and every removed path that exists in HEAD (check each with `git cat-file -e HEAD:<path>`). A never-committed removal has nothing to commit, and naming it makes git reject the whole commit. If no path is left to commit, skip the commit and say so. The pathspec keeps anything the user had already staged out of this commit, and leaves it staged. Write the message file outside the repo, or delete it afterwards.
 5. **Report:** give the commit hash and a one-line summary. Never push.
 
 ## 11. Nothing matched
