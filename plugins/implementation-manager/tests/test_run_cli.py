@@ -1,0 +1,352 @@
+"""Tests for the run.py command line, run as a subprocess against temporary run folders."""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import unittest
+
+from fakes import HEAD_A, make_pr
+import helpers
+
+RUN_PY = helpers.SCRIPTS_DIR / "run.py"
+SHA1 = "1" * 40
+SHA2 = "2" * 40
+
+FAKE_GH = """#!{python}
+import json, os, sys
+with open(os.environ["FAKE_GH_DATA"]) as f:
+    data = json.load(f)
+if sys.argv[1:3] == ["pr", "list"]:
+    print(json.dumps(data["pr_list"]))
+elif sys.argv[1:3] == ["api", "graphql"]:
+    print(json.dumps(data["graphql"]))
+else:
+    print("unexpected: " + " ".join(sys.argv[1:]), file=sys.stderr)
+    sys.exit(1)
+"""
+
+
+class CliTestCase(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = Path(tmp.name)
+        self.dir = self.tmp / "my-run"
+        self.env = dict(os.environ)
+
+    def run_cli(self, *args):
+        return subprocess.run(
+            [sys.executable, str(RUN_PY), *args], capture_output=True, text=True, env=self.env, timeout=60
+        )
+
+    def ok(self, *args):
+        result = self.run_cli(*args)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, "")
+        return result.stdout
+
+    def init(self, *extra):
+        self.ok("init", str(self.dir), "--repo", "owner/repo", "--base", "main", "--method", "squash", *extra)
+
+    def read(self, name):
+        return (self.dir / name).read_text(encoding="utf-8")
+
+    def state(self):
+        return json.loads(self.read("run.json"))
+
+    def append_request(self, text):
+        with open(self.dir / "requests.log", "a", encoding="utf-8") as f:
+            f.write(text)
+
+    def fake_gh(self, data):
+        bin_dir = self.tmp / "bin"
+        bin_dir.mkdir()
+        gh = bin_dir / "gh"
+        gh.write_text(FAKE_GH.format(python=sys.executable))
+        gh.chmod(0o755)
+        data_file = self.tmp / "gh.json"
+        data_file.write_text(json.dumps(data))
+        self.env["PATH"] = f"{bin_dir}{os.pathsep}{self.env['PATH']}"
+        self.env["FAKE_GH_DATA"] = str(data_file)
+
+
+class SetupTests(CliTestCase):
+    def test_init_unit_open_ready_flow(self):
+        self.init("--wip", "1")
+        self.ok("unit", str(self.dir), "a")
+        self.ok("unit", str(self.dir), "b", "--prereq", "a")
+        self.assertEqual(self.ok("open-ready", str(self.dir)), "a\n")
+        self.assertEqual(self.read("gates.log"), "a open\n")
+        state = self.state()
+        self.assertEqual(state["wip"], 1)
+        self.assertEqual(state["units"]["b"]["prereqs"], ["a"])
+
+    def test_init_creates_the_files(self):
+        self.init()
+        for name in ("run.json", "requests.log", "pushes.log", "gates.log"):
+            self.assertTrue((self.dir / name).exists(), name)
+        state = self.state()
+        self.assertEqual((state["repo"], state["base"], state["method"]), ("owner/repo", "main", "squash"))
+        self.assertEqual((state["queue_mode"], state["wip"]), ("serial", None))
+
+    def test_init_twice_exit_1(self):
+        self.init()
+        result = self.run_cli("init", str(self.dir), "--repo", "o/r", "--base", "main", "--method", "merge")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(len(result.stderr.splitlines()), 1)
+        self.assertIn("already exists", result.stderr)
+
+    def test_unit_records_branch_worktree_and_specs(self):
+        self.init()
+        self.ok("unit", str(self.dir), "specs", "--specs")
+        self.ok("unit", str(self.dir), "a", "--prereq", "specs", "--branch", "feat/a", "--worktree", "/w/a")
+        self.ok("unit", str(self.dir), "a", "--branch", "feat/a2")
+        unit = self.state()["units"]["a"]
+        self.assertEqual((unit["branch"], unit["worktree"], unit["prereqs"]), ("feat/a2", "/w/a", ["specs"]))
+        self.assertTrue(self.state()["units"]["specs"]["specs"])
+        self.assertFalse(unit["specs"])
+
+    def test_set_wip_and_queue(self):
+        self.init("--wip", "2")
+        self.ok("set", str(self.dir), "wip", "none")
+        self.ok("set", str(self.dir), "queue", "parallel")
+        state = self.state()
+        self.assertEqual((state["wip"], state["queue_mode"]), (None, "parallel"))
+        result = self.run_cli("set", str(self.dir), "wip", "0")
+        self.assertEqual(result.returncode, 1)
+
+    def test_open_and_stop_write_gates_log(self):
+        self.init()
+        self.ok("unit", str(self.dir), "a")
+        self.ok("open", str(self.dir), "a")
+        self.ok("stop", str(self.dir), "a", "dropped", "by", "the", "owner")
+        self.assertEqual(self.read("gates.log"), "a open\na stop dropped by the owner\n")
+
+
+class PushTests(CliTestCase):
+    def setUp(self):
+        super().setUp()
+        self.init()
+        self.ok("unit", str(self.dir), "a")
+        self.ok("unit", str(self.dir), "b")
+
+    def test_go_then_queue_then_yield_then_wait_next(self):
+        self.ok("go", str(self.dir), "a", SHA1)
+        self.ok("queue", str(self.dir), "b", SHA2)
+        self.ok("yield", str(self.dir), "a", "owner", "question")
+        self.assertEqual(self.ok("wait", str(self.dir)), f"NEXT b {SHA2}\n")
+        self.assertEqual(self.read("pushes.log"), f"a go {SHA1}\n")
+        self.assertEqual(self.state()["units"]["a"]["yielded"], "owner question")
+
+    def test_go_refused_exit_1(self):
+        self.ok("go", str(self.dir), "a", SHA1)
+        result = self.run_cli("go", str(self.dir), "b", SHA2)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(len(result.stderr.splitlines()), 1)
+        self.assertIn("held by 'a'", result.stderr)
+        self.assertEqual(self.read("pushes.log"), f"a go {SHA1}\n")
+
+    def test_redo_reasons_joined(self):
+        self.ok("redo", str(self.dir), "b", SHA1, "changes-since-review, escalated")
+        self.ok("redo", str(self.dir), "a", SHA2, "wrong-branch", "feat/x")
+        self.assertEqual(
+            self.read("pushes.log"),
+            f"b redo {SHA1} changes-since-review, escalated\na redo {SHA2} wrong-branch feat/x\n",
+        )
+
+    def test_bad_sha_exit_1(self):
+        result = self.run_cli("go", str(self.dir), "a", "abc1234")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("40-character", result.stderr)
+
+    def test_wait_prints_request(self):
+        self.append_request(f"a push {SHA1} feat/a\n")
+        result = self.run_cli("wait", str(self.dir))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, f"REQUEST a {SHA1} feat/a\n")
+
+    def test_merged_more_keeps_unit(self):
+        self.ok("unit", str(self.dir), "c", "--prereq", "a")
+        self.ok("open-ready", str(self.dir))
+        self.ok("go", str(self.dir), "a", SHA1)
+        self.assertEqual(self.ok("merged", str(self.dir), "a", "7", "--more"), "")
+        state = self.state()
+        self.assertFalse(state["units"]["a"]["done"])
+        self.assertEqual(state["units"]["a"]["prs"], {"7": "MERGED"})
+        self.assertIsNone(state["slot"])
+        self.assertEqual(self.ok("merged", str(self.dir), "a", "9"), "c\n")
+        self.assertTrue(self.state()["units"]["a"]["done"])
+        self.assertEqual(self.read("gates.log"), "a open\nb open\n")  # merged only prints; open-ready opens
+
+    def test_closed_frees_the_slot(self):
+        self.ok("go", str(self.dir), "a", SHA1)
+        self.ok("closed", str(self.dir), "a", "7")
+        state = self.state()
+        self.assertIsNone(state["slot"])
+        self.assertEqual(state["units"]["a"]["prs"], {"7": "CLOSED"})
+
+    def test_go_for_a_done_unit_exit_1(self):
+        self.ok("merged", str(self.dir), "a", "7")
+        result = self.run_cli("go", str(self.dir), "a", SHA1)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("pr-merged", result.stderr)
+
+
+class StatusTests(CliTestCase):
+    def test_status_lists_pending_and_bad(self):
+        self.init("--wip", "1")
+        self.ok("unit", str(self.dir), "a")
+        self.ok("unit", str(self.dir), "b")
+        self.append_request(f"not a request\na push {SHA1} feat/a\n")
+        self.assertEqual(self.ok("wait", str(self.dir)), f"REQUEST a {SHA1} feat/a\n")
+        lines = self.ok("status", str(self.dir)).splitlines()
+        self.assertEqual(lines[0], "Run my-run (owner/repo), queue serial, WIP 1")
+        self.assertIn("- slot: free", lines)
+        self.assertIn("- queue: empty", lines)
+        self.assertIn("- needs the manager:", lines)
+        needs = lines[lines.index("- needs the manager:") + 1 :]
+        self.assertRegex(needs[0], r"^  - request a 1111111 unanswered since \d\d:\d\d$")
+        self.assertIn("  - bad request line: not a request", needs)
+        self.assertIn("  - gate a may open", needs)
+        self.assertNotIn("  - gate b may open", needs)  # WIP 1 leaves room for one
+        self.assertIn("- gated: a may open, b on WIP", lines)
+
+    def test_status_tracker_lines(self):
+        self.init()
+        self.ok("unit", str(self.dir), "a")
+        self.ok("unit", str(self.dir), "b", "--prereq", "a")
+        self.ok("unit", str(self.dir), "c")
+        self.ok("unit", str(self.dir), "d")
+        self.ok("open", str(self.dir), "a")
+        self.ok("open", str(self.dir), "c")
+        self.ok("open", str(self.dir), "d")
+        self.ok("go", str(self.dir), "c", SHA1)
+        self.ok("merged", str(self.dir), "c", "4")
+        self.ok("go", str(self.dir), "a", SHA1)
+        self.ok("queue", str(self.dir), "d", SHA2)
+        lines = self.ok("status", str(self.dir)).splitlines()
+        self.assertEqual(lines[0], "Run my-run (owner/repo), queue serial, WIP none")
+        self.assertRegex(lines[1], r"^- slot: a 1111111 since \d\d:\d\d$")
+        self.assertEqual(lines[2], "- queue: d 2222222")
+        self.assertEqual(lines[3], "- merged: c #4")
+        self.assertEqual(lines[4], "- open: a working, d working")
+        self.assertEqual(lines[5], "- gated: b on a")
+        self.assertEqual(lines[6], "- needs the manager:")
+        self.assertEqual(lines[7:], ["  - push approved for a 1111111, not seen yet"])
+
+    def test_status_nothing_needed(self):
+        self.init()
+        self.ok("unit", str(self.dir), "a")
+        self.ok("open-ready", str(self.dir))
+        lines = self.ok("status", str(self.dir)).splitlines()
+        self.assertEqual(
+            lines,
+            [
+                "Run my-run (owner/repo), queue serial, WIP none",
+                "- slot: free",
+                "- queue: empty",
+                "- merged: none",
+                "- open: a working",
+                "- gated: none",
+                "- needs the manager: nothing",
+            ],
+        )
+
+    def test_status_gated_by_wip_and_slot_free_with_queue(self):
+        self.init("--wip", "1")
+        self.ok("unit", str(self.dir), "a")
+        self.ok("unit", str(self.dir), "b")
+        self.ok("open-ready", str(self.dir))
+        self.ok("queue", str(self.dir), "a", SHA1)
+        lines = self.ok("status", str(self.dir)).splitlines()
+        self.assertIn("- gated: b on WIP", lines)
+        self.assertIn("  - slot free with a queue, next a 1111111", lines)
+
+    def test_status_ready_pr(self):
+        self.init()
+        self.ok("unit", str(self.dir), "a", "--branch", "feat/a")
+        self.ok("unit", str(self.dir), "b")
+        self.ok("open", str(self.dir), "a")
+        state = self.state()  # as the watcher leaves it after reporting READY
+        state["units"]["a"]["prs"] = {"7": "OPEN"}
+        state["marks"]["a"] = {"pr": 7, "head": HEAD_A, "ready_head": f"7 {HEAD_A}", "ready_at": 1000.0}
+        (self.dir / "run.json").write_text(json.dumps(state))
+        lines = self.ok("status", str(self.dir)).splitlines()
+        self.assertIn("- open: a PR #7", lines)
+        self.assertIn("- gated: b may open", lines)
+        self.assertRegex(lines[-2], r"^  - a PR #7 ready since \d\d:\d\d$")
+        self.assertEqual(lines[-1], "  - gate b may open")
+
+    def test_status_ready_pr_with_a_newer_head_is_not_listed(self):
+        self.init()
+        self.ok("unit", str(self.dir), "a", "--branch", "feat/a")
+        self.ok("open", str(self.dir), "a")
+        state = self.state()
+        state["units"]["a"]["prs"] = {"7": "OPEN"}
+        state["marks"]["a"] = {"pr": 7, "head": SHA2, "ready_head": f"7 {HEAD_A}", "ready_at": 1000.0}
+        (self.dir / "run.json").write_text(json.dumps(state))
+        self.assertIn("- needs the manager: nothing", self.ok("status", str(self.dir)).splitlines())
+
+
+class ErrorTests(CliTestCase):
+    def test_usage_exit_2(self):
+        for args in ([], ["frob"], ["go", "dir", "a"], ["init", "dir"], ["set", "dir", "colour", "red"]):
+            with self.subTest(args=args):
+                result = self.run_cli(*args)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertEqual(result.stdout, "")
+
+    def test_missing_run_exit_1(self):
+        result = self.run_cli("status", str(self.dir))
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(len(result.stderr.splitlines()), 1)
+        self.assertIn("no run in", result.stderr)
+
+    def test_corrupt_run_json_exit_1(self):
+        self.init()
+        (self.dir / "run.json").write_text("{not json")
+        for args in (["status", str(self.dir)], ["go", str(self.dir), "a", SHA1]):
+            with self.subTest(args=args[0]):
+                result = self.run_cli(*args)
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(len(result.stderr.splitlines()), 1, result.stderr)
+                self.assertIn("run.json", result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+
+    def test_wait_on_a_broken_run_prints_error_and_exits_0(self):
+        result = self.run_cli("wait", str(self.dir))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(result.stdout.startswith("ERROR "), result.stdout)
+        self.assertEqual(len(result.stdout.splitlines()), 1)
+
+    def test_check_needs_a_branch(self):
+        self.init()
+        self.ok("unit", str(self.dir), "a")
+        result = self.run_cli("check", str(self.dir), "a")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("no branch", result.stderr)
+
+
+class GhTests(CliTestCase):
+    def test_check_runs_on_the_units_branch(self):
+        self.fake_gh({"pr_list": [], "graphql": None})
+        self.init()
+        self.ok("unit", str(self.dir), "a", "--branch", "feat/a")
+        self.assertEqual(self.ok("check", str(self.dir), "a"), "NOT-READY - no open PR from feat/a\n")
+
+    def test_wait_polls_prs_with_gh(self):
+        merged = make_pr(state="MERGED")
+        self.fake_gh({"pr_list": [{"number": 7}], "graphql": {"data": {"repository": {"pullRequest": merged}}}})
+        self.init()
+        self.ok("unit", str(self.dir), "a", "--branch", "feat/a")
+        self.assertEqual(self.ok("wait", str(self.dir), "--stall-hours", "1"), "MERGED a 7\n")
+
+
+if __name__ == "__main__":
+    unittest.main()
