@@ -123,6 +123,8 @@ One stdlib script with subcommands. It replaces `wait_pr_ready.py` and reuses it
 | `STUCK <unit> <pr> <reasons>` | The slot holder's PR has had failing checks, unresolved threads or a conflict for 20 minutes, with no new request from the unit. |
 | `STALLED <unit> <pr> <reasons>` | Any open PR with nothing changed for the stall period (default 3 hours). |
 | `ERROR <message>` | `gh` failed 10 polls in a row, or the run folder is unreadable. |
+| `PENDING <unit> <sha> <branch>` | Added in review: a request still unanswered 15 minutes after it was reported, re-reported once. Handled like `REQUEST`. |
+| `ORPHAN <unit> <pr>` | Added in review: a new open PR on the branch of a unit that is done (for example a push that landed after its PR merged). The manager tells the owner. |
 
 Polling (Claude's call):
 - `requests.log` is checked every 5 s.
@@ -135,7 +137,7 @@ A PR is found by its unit's branch in `run.json`. One branch per unit; parts reu
 
 - **The slot.** At most one unit holds it: from the `go` that opens or updates its PR until that PR merges, closes, or the unit yields.
 - **A request from the slot holder** (a fix to its open PR) is answered at once: covered gets `go`, not covered gets `redo`.
-- **A request from any other unit**: not covered gets `redo` at once, so the child can fix it while it waits. Covered gets `go` if the slot is free, and otherwise is queued.
+- **A request from any other unit**: not covered gets `redo` at once, so the child can fix it while it waits. Covered gets `go` if the slot is free and no other unit is first in the queue, and otherwise is queued (added in review, so a new request never jumps ahead of queued or yielded units).
 - **Queue order.** First, units that already have an open PR and gave up the slot, in the order they asked. Then everyone else in the order they asked. *Claude's call:* this is how "goes to the front" is applied when several yielded units return.
 - **Giving up the slot.** The manager runs `yield` when:
   - it relays a question or escalated finding from the slot holder to the owner;
