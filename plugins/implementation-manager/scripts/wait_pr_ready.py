@@ -50,7 +50,7 @@ def watch(
 ) -> str:
     """Polls until there is something to report and returns that line."""
     if once:
-        return check_once(repo, branch, gh=gh, sleep=sleep, confirm_seconds=ONCE_POLL_SECONDS, skip_head=skip_head)
+        return check_once(repo, branch, gh=gh, sleep=sleep, confirm_seconds=ONCE_POLL_SECONDS)
     failures = 0
     pr: int | None = None
     last_sig = ""

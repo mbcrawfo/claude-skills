@@ -72,16 +72,6 @@ class AttentionTests(unittest.TestCase):
         line, _ = run_watch(gh)
         self.assertEqual(line, f"ATTENTION 7 {HEAD_A} behind-base")
 
-    def test_skip_head_suppresses_attention_and_ready(self):
-        # Behind-base on the skipped head is not reported (once mode shows the poll's reasons).
-        gh = FakeGh([PR7], [make_pr(merge="BEHIND")] * 2)
-        line, _ = run_watch(gh, skip_head=HEAD_A[:7], once=True)
-        self.assertEqual(line, "NOT-READY 7 head=aaaaaaa merge=BEHIND")
-        # A clean skipped head never reports READY; it says why.
-        gh = FakeGh([PR7], [make_pr()] * 2)
-        line, _ = run_watch(gh, skip_head=HEAD_A[:7], once=True)
-        self.assertEqual(line, "NOT-READY 7 head=aaaaaaa skip-head")
-
     def test_skip_head_does_not_cover_other_heads(self):
         gh = FakeGh([PR7], [make_pr(merge="BEHIND", head=HEAD_B)])
         line, _ = run_watch(gh, skip_head=HEAD_A[:7])

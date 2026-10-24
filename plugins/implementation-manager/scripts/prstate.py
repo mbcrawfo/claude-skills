@@ -131,13 +131,14 @@ def check_once(
     gh: Callable[[list[str]], str],
     sleep: Callable[[float], None],
     confirm_seconds: float = 30,
-    skip_head: str = "",
 ) -> str:
-    """Checks the branch's PR now and returns one line: READY, NOT-READY or ERROR.
+    """Checks the branch's PR now and returns exactly one line:
 
-    READY needs two identical clean polls `confirm_seconds` apart. The first failing gh call returns ERROR.
-    A PR seen merged or closed returns `MERGED <pr>` or `CLOSED <pr>`, and one behind its base (unless its head
-    starts with `skip_head`) returns `ATTENTION <pr> <head> behind-base`.
+    READY <pr> <head-sha>                    two identical clean polls `confirm_seconds` apart
+    NOT-READY <pr> head=<sha7><reasons>      open but not ready; a PR behind its base says `merge=BEHIND`
+    NOT-READY - no open PR from <branch>
+    MERGED <pr> | CLOSED <pr>                the PR was seen in that state
+    ERROR <message>                          the first failing gh call
     """
     try:
         pr = find_open_pr(repo, branch, gh)
@@ -154,12 +155,7 @@ def check_once(
             return f"ERROR gh api graphql on PR {pr}: {exc}"
         if s.state in ("MERGED", "CLOSED"):
             return f"{s.state} {pr}"
-        skipped = bool(skip_head) and s.head.startswith(skip_head)
-        if not skipped and s.merge == "BEHIND":
-            return f"ATTENTION {pr} {s.head} behind-base"
         reasons = s.reasons()
-        if not reasons and skipped:
-            reasons = " skip-head"
         polls += 1
         if not reasons:
             if prev == s:

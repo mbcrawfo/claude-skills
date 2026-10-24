@@ -121,10 +121,27 @@ class CheckOnceTests(unittest.TestCase):
         self.assertEqual(line, "NOT-READY 7 head=aaaaaaa checks-running=1 unresolved-threads=1")
         self.assertEqual(clock.sleeps, [30])
 
+    def test_check_once_merged_and_closed(self):
+        for state in ("MERGED", "CLOSED"):
+            with self.subTest(state=state):
+                gh = FakeGh([PR7], [make_pr(state=state)])
+                self.assertEqual(check_once("owner/repo", "feat/x", gh=gh, sleep=FakeClock().sleep), f"{state} 7")
+
+    def test_check_once_behind_base_is_not_ready(self):
+        gh = FakeGh([PR7], [make_pr(merge="BEHIND")] * 2)
+        line = check_once("owner/repo", "feat/x", gh=gh, sleep=FakeClock().sleep)
+        self.assertEqual(line, "NOT-READY 7 head=aaaaaaa merge=BEHIND")
+
     def test_check_once_confirm_seconds_sets_the_gap(self):
         clock = FakeClock()
         check_once("owner/repo", "feat/x", gh=FakeGh([PR7], [make_pr()] * 2), sleep=clock.sleep, confirm_seconds=5)
         self.assertEqual(clock.sleeps, [5])
+
+    def test_check_once_error_on_first_failure_does_not_sleep(self):
+        clock = FakeClock()
+        line = check_once("owner/repo", "feat/x", gh=FakeGh([PR7], [GhError("boom")]), sleep=clock.sleep)
+        self.assertEqual(line, "ERROR gh api graphql on PR 7: boom")
+        self.assertEqual(clock.sleeps, [])
 
     def test_check_once_errors_name_the_failing_call(self):
         line = check_once("owner/repo", "feat/x", gh=FakeGh([GhError("boom")]), sleep=FakeClock().sleep)
