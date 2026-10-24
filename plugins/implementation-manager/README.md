@@ -23,43 +23,92 @@ Ask a session to be the implementation manager, either right after planning the 
 /implementation-manager:implementation-manager [spec, plan or epic path]
 ```
 
-Invoking it authorizes starting the child sessions and merging the run's PRs once they meet the merge bar: the watch reports the PR ready, the child is idle with nothing left to do, and `branch-review:check` says the review covers the PR's head commit.
+Invoking it authorizes starting the child sessions and merging the run's PRs once they meet the merge bar (below). It authorizes nothing else.
 
-Pushes go through the manager. A child reviews its change with `/branch-review:review` until it converges, then asks to push by ending its turn with `[push-request] <sha>`. The manager runs `branch-review:check` on that commit in the child's worktree and appends `<unit> go <sha>`, or `<unit> redo <sha> <reasons>` with the check's reasons joined by `, `, to the run's `pushes.log`. The child's poll reads only lines added after it starts, so it can ask again with the same sha. An Auto-fix wake-up in a child (CI failure, review comment, merge conflict) is never permission to push.
+Pushes go through the manager. A child reviews its change with `/branch-review:review` until it converges, then asks to push by appending `<unit> push <sha> <branch>` to the run's `requests.log` and ending its turn with `[push-request] <sha>`. The run watcher reports the request; the manager runs `branch-review:check` on that commit in the child's worktree and answers through the run script, which appends `<unit> go <sha>`, or `<unit> redo <sha> <reasons>` with the check's reasons joined by `, `, to `pushes.log`. The child's poll reads only lines added after it asked, so it can ask again with the same sha. An Auto-fix wake-up in a child (CI failure, review comment, merge conflict) is never permission to push.
+
+On `go`, the child syncs with the base right before it pushes. A clean merge is pushed after validation, with no new request; the review check counts a clean base merge as covered. A conflicting merge, or a failed validation, sends the child back to ask again.
+
+Child notes can be held by the app for hours, so nothing in the protocol waits on one: requests are lines in a file, and the manager learns everything from the run watcher.
+
+## Push queue
+
+By default only one unit's PR is in flight at a time, so every other open PR doesn't sync and run CI again after each merge. That unit holds the *slot*, from the `go` that opens or updates its PR until the PR merges or closes, or the unit gives the slot up.
+
+- A covered request from the slot holder gets `go` at once. A covered request from any other unit gets `go` if the slot is free, and is queued otherwise. A request that is not covered gets `redo` at once, wherever the unit stands, so it can fix things while it waits.
+- The queue serves units that already have an open PR and gave up the slot first, then everyone else, each in the order they asked.
+- The holder gives up the slot (`yield`) when the manager relays its question or escalated finding to the owner, when it reports `[blocked]`, and when the watcher reports it `STUCK`. A `redo` to the holder frees the slot too. Its PR stays open, and it goes to the front of the queue when it asks again; after an owner answer, it always asks again.
+- When the slot frees, the watcher reports `NEXT` for the first queued request. The manager checks it again and answers `go`; the child's sync on `go` keeps the waiting request from going stale.
+- A request after the unit's last PR merged gets `redo <sha> pr-merged`, and the manager asks the owner whether it becomes a follow-up.
+- Parallel mode (`set queue parallel`, only when the owner asks) answers every covered request with `go` at once.
+
+A WIP limit (`init --wip N` or `set wip N|none`) caps the units whose gate is open and that have not merged. Every unit is gated, so a lower limit holds back units that have not started; it never stops one that has. The manager's own `specs` unit is not counted.
+
+## Merge bar
+
+The manager merges a PR when all of these hold:
+
+- The watcher reported `READY` (or `REMIND`) for its head, or `run.py check` printed `READY`.
+- `branch-review:check`, run in the unit's worktree, says the review covers that head commit.
+- The unit has no unanswered or queued request, and in serial mode the slot is free or the unit's own.
+
+The child need not be idle: it cannot push without a `go`, and the merge uses `gh pr merge --match-head-commit <sha>`.
 
 ## Run folder
 
 Each run keeps its coordination files in `~/.claude/implementation-manager/<owner>-<repo>/<run>/`:
 
 ```
-gates.log    # <unit> open | <unit> stop <reason>: when a gated child may start
-pushes.log   # <unit> go <sha> | <unit> redo <sha> <reasons>: push permission per commit
-notes.md     # the units table, and what each merged unit left for later ones
+run.json      # the run's state: units, gates, PRs, the slot and the queue, the watcher's marks; written only by the script
+requests.log  # <unit> push <sha> <branch>: appended by children
+pushes.log    # <unit> go <sha> | <unit> redo <sha> <reasons>: written only by the script
+gates.log     # <unit> open | <unit> stop <reason>: written only by the script
+notes.md      # the units table, decisions, and what each merged unit left for later ones; written by the manager
 ```
 
-Only the manager writes `gates.log` and `pushes.log`. Children poll them, since the app stops delivering a session's messages after 10 sends without the user typing in it.
+Children poll `gates.log` and `pushes.log` and append to `requests.log` with `printf`, since the app stops delivering a session's messages after 10 sends without the user typing in it.
 
-## Watch script
-
-Nothing notifies the manager when a PR is ready or merged, so it runs one watch per open unit in the background:
+## Run script
 
 ```
-python3 scripts/wait_pr_ready.py <owner/repo> <branch> [stall-hours, default 3]
+python3 scripts/run.py <command> <run folder> [args]
 ```
 
-It prints one line and exits:
+| Command | Does |
+|---|---|
+| `init <dir> --repo O/R --base B --method merge\|squash\|rebase [--wip N] [--queue serial\|parallel]` | Creates the run folder and its files. |
+| `unit <dir> <name> [--prereq U ...] [--branch B] [--worktree P] [--specs]` | Adds a unit, or updates the fields given. |
+| `set <dir> wip <N\|none>`, `set <dir> queue <serial\|parallel>` | Changes the WIP limit or the queue mode. |
+| `open <dir> <unit>`, `open-ready <dir>` | Opens one gate, or every gate that may open now (prerequisites merged, within the WIP limit), printing one name per line. |
+| `stop <dir> <unit> <reason...>` | Tells a unit to stop; its gate never opens again. |
+| `go <dir> <unit> <sha>` | Allows the push. In serial mode it takes the slot, and refuses while another unit holds it. |
+| `redo <dir> <unit> <sha> <reasons...>` | Refuses the push with one line of reasons. |
+| `queue <dir> <unit> <sha>` | Holds a covered request until the slot frees. |
+| `yield <dir> <unit> <reason...>` | The slot holder gives up the slot. |
+| `merged <dir> <unit> <pr> [--more]` | Records a merge and frees the slot; `--more` keeps the unit open for its next part. Prints the gates that may open now. |
+| `closed <dir> <unit> <pr>` | Records a PR closed without merging and frees the slot. |
+| `status <dir>` | The slot, the queue, merged, open and gated units, and everything waiting on the manager. |
+| `check <dir> <unit>` | Checks the unit's PR now: `READY <pr> <sha>` (two equal clean polls 30 s apart), `NOT-READY <pr> head=<sha7><reasons>`, `NOT-READY - no open PR from <branch>`, `MERGED <pr>`, `CLOSED <pr>` or `ERROR <message>`. |
+| `wait <dir> [--stall-hours N]` | Blocks until one event, prints it as one line and exits 0, also on error. |
 
-- `READY <pr> <sha>`: open, not draft, mergeable, at least one check and every check passed, no unresolved review thread, the same on two polls in a row.
-- `ATTENTION <pr> <sha> behind-base`: the repo requires up-to-date branches and this one is behind.
-- `MERGED <pr>` or `CLOSED <pr>`: only for the PR this watch saw open.
-- `STALLED <pr> head=<sha7><reasons>`: nothing changed for the stall period.
-- `ERROR <message>`: `gh` failed 10 polls in a row.
+It exits 0 on success, 1 when a command is refused (one line on stderr, nothing changed) and 2 on a usage error.
 
-Environment:
+`wait` prints one of:
 
-- `POLL_SECONDS`: seconds between polls, default 120.
-- `SKIP_HEAD=<sha>`: never report `READY` or `ATTENTION` for a head starting with this.
-- `ONCE=1`: check now (two polls 30 s apart), print `READY` or `NOT-READY <pr> head=<sha7><reasons>` (or `NOT-READY - no open PR from <branch>`), and exit.
+| Line | Meaning |
+|---|---|
+| `REQUEST <unit> <sha> <branch>` | A new request in `requests.log`. Every request is reported at once, whatever the queue. Malformed lines are skipped and listed by `status`. |
+| `NEXT <unit> <sha>` | The slot is free and this queued request is first in line. |
+| `READY <unit> <pr> <sha>` | Open, not draft, mergeable, at least one check and every check passed, no unresolved review thread; confirmed by a second poll 30 s later. Not reported while the unit has an unanswered or queued request, while it is pushing after a `go`, or, in serial mode, while another unit holds the slot. |
+| `REMIND <unit> <pr> <sha>` | Still ready and unmerged 30 minutes after `READY`. |
+| `MERGED <unit> <pr>`, `CLOSED <unit> <pr>` | Only for a PR the watcher saw open and the manager has not recorded. |
+| `BEHIND <unit> <pr> <sha>` | The slot holder's PR (every open PR in parallel mode) is behind the base and the repository requires up-to-date branches. |
+| `STUCK <unit> <pr> <reasons>` | The slot holder's PR has had failing checks, unresolved threads or a conflict for 20 minutes, with no new request. |
+| `STUCK <unit> - no-push` | The holder got `go` but no new head appeared within 30 minutes (the PR number, when it has one, takes the place of `-`). |
+| `STALLED <unit> <pr> head=<sha7><reasons>` | An open PR with nothing changed for the stall period (default 3 hours). |
+| `ERROR <message>` | `gh` failed 10 PR polls in a row, or the run folder could not be read. |
+
+Timings: `requests.log` is checked every 5 s and PRs are polled every 60 s. Each event is reported once, across restarts of `wait`.
 
 ## Tests
 

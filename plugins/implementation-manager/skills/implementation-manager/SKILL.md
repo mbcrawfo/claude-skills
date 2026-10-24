@@ -14,21 +14,42 @@ This session takes planned work from spec to merged code. It starts one child se
 
 Arguments: `$ARGUMENTS`
 
-## Three constraints that shape everything
+## Four constraints that shape everything
 
-1. **Sessions can only be started on the user's own turn.** `start_session` with `"user_asked"` is refused on a turn started by a background task, a child's note or another session's message; it degrades to a card the user must click. So **start every child in the first turn**, and hold back the ones with unmerged prerequisites with a *gate* (a file the child polls), not by starting them later.
-2. **Messages are a scarce budget.** The app stops delivering a session's messages after 10 sends without the user typing in it. Coordinate through files in the run folder (gates, push permissions), never through status messages.
-3. **Nothing notifies you when a child's PR is ready or merged.** A passing check sends no event, and Auto-fix in a child wakes the child, not you. The watch, `python3 ${CLAUDE_SKILL_DIR}/../../scripts/wait_pr_ready.py` (read its header for its outputs), is your only signal for PR readiness; run one per open unit at all times.
+1. **Sessions can only be started on the user's own turn.** `start_session` with `"user_asked"` is refused on a turn started by a background task, a child's note or another session's message; it degrades to a card the user must click. So **start every child in the first turn**, and hold each one back with a *gate* (a file the child polls), not by starting it later.
+2. **Messages are a scarce budget.** The app stops delivering a session's messages after 10 sends without the user typing in it. Coordinate through files in the run folder (gates, push requests and answers), never through status messages.
+3. **Nothing notifies you of a push request, a ready PR or a merge** except the run watcher: `python3 ${CLAUDE_SKILL_DIR}/../../scripts/run.py wait <run>` with `run_in_background`. It prints one event line and exits. Handle the event, then start it again before ending the turn. With open units and no `wait` running, the run is deaf.
+4. **Child notes can be held for hours.** The app may hold a child's end-of-turn notes until the user types. Nothing waits on a note: children write push requests to `<run>/requests.log`, and you act on the watcher's lines and `run.py status`.
+
+## The run script
+
+`run.py <command> <args>` below is short for `python3 ${CLAUDE_SKILL_DIR}/../../scripts/run.py <command> <run> <args>`: the absolute run folder always comes right after the command. Write it out in full each time; shell variables do not survive between Bash calls. Only the script writes `run.json`, `gates.log` and `pushes.log`; never write them yourself. A refused command exits 1 with one line on stderr and changes nothing.
+
+| Command | Does |
+|---|---|
+| `init --repo <owner/repo> --base <base> --method <merge\|squash\|rebase> [--wip N]` | Creates the run folder. The queue is `serial` (one PR in flight) unless the owner asks for `--queue parallel`. |
+| `unit <name> [--prereq U ...] [--branch B] [--worktree P] [--specs]` | Adds a unit, or updates the fields given. |
+| `set wip <N\|none>`, `set queue <serial\|parallel>` | The owner's changes mid-run. |
+| `open-ready` | Opens every gate that may open now (prerequisites merged, within the WIP limit) and prints their names. |
+| `open <unit>`, `stop <unit> <reason>` | Opens one gate; tells a unit to stop. |
+| `go <unit> <sha>` | Allows the push. In serial mode it also gives the unit the slot, and refuses while another unit holds it. |
+| `queue <unit> <sha>` | Holds a covered request until the slot frees; the watcher then reports `NEXT`. |
+| `redo <unit> <sha> <reasons>` | Refuses the push with one line of reasons. A slot holder gives up the slot. |
+| `yield <unit> <reason>` | The slot holder gives up the slot. Its PR stays open; it returns to the front of the queue when it asks again. |
+| `merged <unit> <pr> [--more]`, `closed <unit> <pr>` | Records a merge (`--more`: a part k of N with k < N) or a close, and frees the slot. |
+| `status` | The tracker and every line under "needs the manager". |
+| `check <unit>` | One readiness check of the unit's PR now: `READY <pr> <sha>`, `NOT-READY …`, `MERGED <pr>`, `CLOSED <pr>` or `ERROR …`. |
+| `wait [--stall-hours N]` | Blocks until one event, prints it, exits 0. Always with `run_in_background`. |
 
 ## Setup (first turn)
 
-1. **The work breakdown.** Use this conversation's plan if it has one; otherwise read the spec, plan or epic named in the arguments. List the units: name (short, e.g. `5-3`), title, spec path, prerequisites, and a `branch_name` you choose. Take order and dependencies from the docs; units the docs allow side by side run in parallel. If this session has its own open PR the units need (e.g. the specs), it is a unit named `specs` with no child, and every unit depends on it, so even the first unit is gated.
+1. **The work breakdown.** Use this conversation's plan if it has one; otherwise read the spec, plan or epic named in the arguments. List the units: name (short, e.g. `5-3`), title, spec path, prerequisites, and a `branch_name` you choose. Take order and dependencies from the docs; units the docs allow side by side run in parallel. If this session has its own open PR the units need (e.g. the specs), it is a unit named `specs` with no child, and every unit depends on it.
 2. **Repository facts and review tools:** `owner/repo`, base branch, and merge method (the repository's instructions; otherwise `gh repo view --json mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed`, and if more than one is allowed and nothing says which, ask). Confirm `branch-review:check` and `branch-review:review` are among your available skills. If either is missing, stop and tell the user to install branch-review (`/plugin install branch-review@mbcrawfo-skills`).
-3. **The run folder:** `~/.claude/implementation-manager/<owner>-<repo>/<run>/`, `<run>` a slug of the work (e.g. `query-gen-phase-5`). Create `gates.log` and `pushes.log` (both empty), and `notes.md` holding the units table (name, title, spec, prerequisites, session, branch, PRs). Only you write `gates.log` and `pushes.log`.
+3. **The run folder:** `<run>` is the absolute path of `~/.claude/implementation-manager/<owner>-<repo>/<slug>/`, `<slug>` a slug of the work (e.g. `query-gen-phase-5`). Run `run.py init` with the facts from step 2 and `--wip N` if the owner gave a WIP limit. Then `run.py unit <name> --prereq <units>` for each unit in table order (`run.py unit specs --specs` first if there is a `specs` unit). Write `<run>/notes.md` with the units table: name, title, spec, prerequisites, session, branch, PRs.
 4. **Go or ask.** If the breakdown and dependencies are stated in the docs or were agreed in this conversation, continue. If you inferred any dependency, or anything in steps 1–2 is ambiguous, show the units table and ask; start everything on the user's answer.
-5. **Start every child now** (see "Starting children"). If any start comes back as a card instead, say so and list it under "Waiting on you" in the tracker.
-6. **Watch.** `get_session` on each child for its actual branch (the app adds a prefix and suffix; if it is not set yet, check again next turn) and fill in the table. Start `python3 ${CLAUDE_SKILL_DIR}/../../scripts/wait_pr_ready.py <owner/repo> <branch>` with `run_in_background` for every child branch, and for this session's branch if there is a `specs` unit.
-7. Open the gate of every unit whose prerequisites are all merged (see "After a merge") and reply with the tracker.
+5. **Start every child now** (see "Starting children"). Every child's prompt carries its gate. If any start comes back as a card instead, say so and list it under "Waiting on you" in the tracker.
+6. **Record and watch.** `get_session` on each child for its actual branch (the app adds a prefix and suffix) and working directory, and run `run.py unit <name> --branch <branch> --worktree <path>`; if either is not set yet, do it next turn. For `specs`, record this session's own branch and working directory. Then start one `run.py wait` with `run_in_background`.
+7. Run `run.py open-ready` and reply with the tracker.
 
 ## Starting children
 
@@ -36,64 +57,112 @@ If this session already did other work, call `mcp__ccd_session__mark_chapter` fi
 
 The child prompt has these parts, in this order:
 
-1. **Goal:** implement `<unit title>` as specified in `<spec path>`, delivered as one PR to `<base>` on `<owner/repo>`. If the repository's PR size rule forces several, they land in order, each from this session's worktree, each titled with `(part k of N)`.
-2. **Gate** (only for a unit with prerequisites): "The work you build on is not merged yet. Run this with Bash `run_in_background`, then end your turn with `[gated]`; it prints when you may start: `f=<run>/gates.log; until l=$(grep -E '^<name> (open|stop)' "$f" 2>/dev/null | tail -1) && [ -n "$l" ]; do sleep 60; done; echo "$l"`. On `open`, continue with the next step. On `stop`, do nothing and end your turn quoting the line." Use the absolute run-folder path.
+1. **Goal:** implement `<unit title>` as specified in `<spec path>`, delivered as one PR to `<base>` on `<owner/repo>`. If the repository's PR size rule forces several, they land in order, one at a time, each titled with `(part k of N)` (part 11 says how).
+2. **Gate:** "Do not start yet. Run this with Bash `run_in_background`, then end your turn with `[gated]`; it prints when you may start: `f=<run>/gates.log; until l=$(grep -E '^<name> (open|stop)' "$f" 2>/dev/null | tail -1) && [ -n "$l" ]; do sleep 60; done; echo "$l"`. On `open`, continue with the next step. On `stop`, do nothing and end your turn quoting the line." Use the absolute run-folder path and the unit name.
 3. **Start:** bring the branch up to date with `<base>` (ccd_host `sync_with_base_branch`); confirm the prerequisites' code is in the tree, and stop and say so if not; read `<run>/notes.md`, which records what earlier units actually merged.
 4. **Read:** the repository's agent instructions (root and every folder touched), the spec, and the parts of the epic or parent docs it names. Repository rules win over any skill's defaults. Where merged code differs from the spec's assumptions, follow the code and say so in the plan.
 5. **Plan and build:** write the plan with superpowers:writing-plans where the repository keeps plans, then implement it, preferably with superpowers:subagent-driven-development, validating every commit and push the way the repository requires.
 6. **Unit-specific instructions:** the owner's decisions and constraints for this unit; for a parallel sibling, which other unit is running, which shared files you both touch, and to keep those changes small.
 7. **Pull request:** follow the repository's PR rules; open the PR and push only with permission, as the next part says; once the PR is open, turn on Auto-fix with the ccd_pr tools; address every review finding, including ones in a review's body (nitpicks, outside-diff comments), batching fixes into one push. Do not merge: the implementation manager merges once every check passes, no thread is unresolved, and the review covers the head commit, so resolve a thread only after its fix is pushed or after replying with the reason you are not acting on it.
-8. **Review and push permission**, written out in full. `<run>`, `<name>` and `<sha>` in the poll are placeholders: write the absolute run-folder path and the unit name into the prompt; `<sha>` is the full sha the child asks about, which it fills in.
-   - Review: when the change is complete and its tests pass, run `/branch-review:review --base origin/<base>` with the unit's intent (the spec's goal, which becomes the PR description) and continue until it converges. Later runs reuse the stored base. Run it yourself, not from a subagent implementing a slice.
-   - Escalations: send all the escalated findings of a converged review to the implementation manager in one message (each message spends the 10-send budget), each with the question, the finding id and your recommendation. When it forwards the owner's answer, record it with `/branch-review:review --resolve <id> "<the owner's quoted words>"`, then run the review to convergence again.
-   - Ask to push, before opening the PR and before every later push: commit everything; sync with `<base>` (ccd_host `sync_with_base_branch`); run the review again if anything but a clean base update changed since it last converged; then, in this order, start this poll with Bash `run_in_background` and end your turn with `[push-request] <sha>`, the full sha of HEAD: `f=<run>/pushes.log; n=$(cat "$f" 2>/dev/null | wc -l); until l=$(tail -n +"$((n + 1))" "$f" 2>/dev/null | grep -E '^<name> (go|redo) <sha>( |$)' | tail -1) && [ -n "$l" ]; do sleep 30; done; echo "$l"`. The poll reads only lines added after it starts, so asking again with the same sha is fine.
-   - On `go <sha>`: push exactly that commit (open a PR when none is open for the branch). If HEAD has moved since, do not push; ask again.
-   - On `redo <sha> <reasons>`: fix what the reasons say (usually: run the review), commit if anything changed, and ask again, with the same sha if nothing did. `changes-since-review` right after a review that found nothing to review means the working tree holds files the commit lacks: commit or remove them, then ask again. `escalated` means wait for the owner's answer (`[waiting]`), not re-review. Reasons that name no problem in your branch (`no-worktree-path`, `check-error`) are the manager's: end your turn with `[waiting]` and ask again when it tells you to.
-   - If the manager tells you to read `<run>/pushes.log`, act on its last line for your sha.
-   - An Auto-fix wake-up (CI failure, review comment, merge conflict) is never permission to push. Fix it locally, commit, and ask.
-   - Put the review summary's Escalated, Deferred and Invalid sections in the PR description under "Review notes".
-9. **Status token:** "Begin every turn's recap with one of `[gated]`, `[building]`, `[reviewing]` (running `/branch-review:review`), `[fixing]`, `[push-request] <sha>` (asking to push that full sha), `[waiting]` (on a decision or the manager), `[blocked]`, or `[review]` (PR open and nothing left for you to do unless review or CI reports something)."
-10. **Questions only:** "Do not send the implementation manager (`<your id>`) progress or merge reports. Message it only for a decision the owner must make, an escalated review finding included: the question, your recommended default, and what you will do meanwhile."
+
+Parts 8 to 11 follow, word for word. Replace `<run>` (the absolute run folder), `<name>` (the unit), `<base>` and `<manager id>` (your session id); leave `<sha>`, `<branch>`, `<reasons>`, `<id>` and `k` for the child.
+
+```
+8. Review and push permission.
+- Review: when the change is complete and its tests pass, run `/branch-review:review --base origin/<base>` with the unit's intent (the spec's goal, which becomes the PR description) and continue until it converges. Later runs reuse the stored base. Run it yourself, not from a subagent implementing a slice. Run it again when a later change is complete or a `redo` from the manager says so; never decide on your own that a sync from the base needs one.
+- Escalations: send all the escalated findings of a converged review to the implementation manager in one message (each message spends the 10-send budget), each with the question, the finding id and your recommendation. When it forwards the owner's answer, record it with `/branch-review:review --resolve <id> "<the owner's quoted words>"`, then run the review to convergence again.
+- Ask to push, before opening the PR and before every later push: commit everything. Then start this command with Bash `run_in_background`; it records your request and prints the manager's answer. `<sha>` is the full sha of HEAD and `<branch>` the output of `git branch --show-current`: `f=<run>/pushes.log; n=$(cat "$f" 2>/dev/null | wc -l); printf '%s push %s %s\n' '<name>' '<sha>' '<branch>' >> <run>/requests.log; until l=$(tail -n +"$((n + 1))" "$f" 2>/dev/null | grep -E '^<name> (go|redo) <sha>( |$)' | tail -1) && [ -n "$l" ]; do sleep 30; done; echo "$l"`. Then end your turn with `[push-request] <sha>`. The answer counts only lines added after the command starts, so asking again with the same sha is fine.
+- On `go <sha>`:
+  1. If HEAD is no longer that sha, do not push; ask again.
+  2. Sync with `<base>` (ccd_host `sync_with_base_branch`).
+  3. A clean merge, or nothing to merge: run the validation the repository requires before a push; if it passes, push HEAD (open the PR if none is open for the branch). HEAD may be the clean merge commit rather than `<sha>`; that is expected and needs no new request.
+  4. The merge conflicts: resolve it, commit, and ask again. The manager's answer says whether a review is needed.
+  5. Validation fails: fix it, commit, and ask again.
+- On `redo <sha> <reasons>`: fix what the reasons say, commit if anything changed, and ask again, with the same sha if nothing did.
+  - `changes-since-review`, `open-findings`, `unverified-fixes`, `base-conflict`, `no-rounds`, `partial-scope`, `history-rewritten`, `snapshot-missing`: run the review to convergence. `changes-since-review` right after a review that found nothing to review means the working tree holds files the commit lacks: commit or remove them.
+  - `escalated`: wait for the owner's answer (`[waiting]`); do not review again.
+  - `wrong-branch`: the request's branch is not the one checked out in this session's own worktree, or that is not this session's branch. Get back to this session's own worktree and branch, then ask again.
+  - `pr-merged`: your unit's last PR has already merged. Push nothing; end your turn with `[waiting]`, saying in the recap what the change is and whether it still matters.
+  - `no-worktree-path`, `check-error`: the manager's problem, not your branch's. End your turn with `[waiting]` and ask again when it tells you to.
+- After the manager forwards an owner answer while your PR is open, always ask again once you have applied it, with the same sha if nothing changed. This is how your PR gets back in line.
+- If the manager tells you to read `<run>/pushes.log`, act on its last line for your sha.
+- An Auto-fix wake-up (CI failure, review comment, merge conflict) is never permission to push. Fix it locally, commit, and ask.
+- Put the review summary's Escalated, Deferred and Invalid sections in the PR description under "Review notes".
+
+9. Status token. Every turn's final message begins with one of `[gated]`, `[building]`, `[reviewing]` (running `/branch-review:review`), `[fixing]`, `[push-request] <sha>` (asking to push that full sha), `[waiting]` (on a decision or the manager), `[blocked]`, or `[review]` (PR open and nothing left for you to do unless review or CI reports something). This includes turns woken by a subagent's hand-back or a background task. A turn that applies a message from the manager says which after the token, for example `[reviewing] owner answer applied`. A wake-up for bot-only PR comments (coverage reports, "Review skipped" notices, anything with nothing to fix) ends the turn at once with your previous token unchanged, and sends no message.
+
+10. Questions only. Do not send the implementation manager (<manager id>) progress or merge reports. Message it only for a decision the owner must make, an escalated review finding included: the question, your recommended default, and what you will do meanwhile.
+
+11. One open PR at a time, and scope. Build every part in this session's own worktree, on its own branch. While part k's PR is open, you may plan part k+1 but commit nothing for it; start its code only after the manager tells you part k merged, then sync with `<base>` first. Never use a second branch, worktree or checkout. A review finding outside this unit's scope is escalated with the review's other escalations; never record it as new tech debt or a follow-up without the owner's answer.
+```
 
 ## Event handling
 
-Every turn after setup, handle the turn's event; take the first row that matches. Unless the row says otherwise, the whole reply is one short line, with nothing about a child's progress.
+Every turn: handle what woke you, then make sure exactly one `run.py wait` is running before you end the turn (start one when the last one has printed its line, or when you cannot tell whether it survived an app restart). Take the first row that matches. Unless the row says otherwise, the whole reply is one short line, with nothing about a child's progress.
+
+**On every user message,** before anything else: run `run.py status` and act on each line under "needs the manager":
+- `request <unit> <sha> <branch> unanswered since …`: handle it as `REQUEST`.
+- `<unit> PR #<pr> ready since …`: run `run.py check <unit>`; on `READY <pr> <sha>`, handle it as `READY`.
+- `push approved for <unit> <sha7>, not seen yet`: `list_events` on the child (limit 5). Idle, with its latest note `[push-request]` for that sha: its answer poll died; send it one message to read `<run>/pushes.log`. Otherwise nothing; it is syncing, validating or fixing.
+- `slot free with a queue, next <unit> <sha>`: handle it as `NEXT`.
+- `requests.log has lines no wait has read yet`: start a `wait`; it reports them.
+- `bad request line: …`: if a child wrote it, send that child one message with the exact request line format. Tell the user in one line otherwise. Handle each line once.
+- `gate <unit> may open`: run `run.py open-ready`.
 
 | Event | Do |
 |---|---|
-| Work outside every unit turns up (in a note, message or PR) | Propose it as a card (`own_initiative`), once, its prompt built from the child prompt's parts without the gate. It merges like any unit and gates nothing. |
-| The app reports the user started a card from this run | `get_session` it for its branch, fill in the table, start its watch. |
-| Child note begins `[push-request] <sha>` | Invoke `branch-review:check --repo <worktree> --commit <sha>`, `<worktree>` being the child's working directory from `get_session`. Covered: `printf '%s go %s\n' '<unit>' '<sha>' >> <run>/pushes.log`. Not covered: `printf '%s redo %s %s\n' '<unit>' '<sha>' '<reasons>' >> <run>/pushes.log`, `<reasons>` being the JSON's `reasons` joined by `, ` (no `not covered: ` prefix). `get_session` shows no working directory: `printf '%s redo %s %s\n' '<unit>' '<sha>' 'no-worktree-path' >> <run>/pushes.log` and tell the user in one line. The check errors (exit 1): `printf '%s redo %s %s\n' '<unit>' '<sha>' 'check-error' >> <run>/pushes.log` and tell the user its stderr line. Once either is sorted, send the child one message to ask again. Never send a `go` or `redo` by message. |
-| Watch: `READY <pr> <sha>`, or a child's note begins `[review]` | Check the merge bar (below; for a `[review]` note, run the script with `ONCE=1` first, and on `NOT-READY` do nothing: the running watch covers it). Met: merge. Not met because the child is running or not at `[review]`: restart the watch with `SKIP_HEAD=<sha>`; the child's next `[review]` note brings you back. Not met because the check says not covered: send the child one message with the reasons, telling it to review and ask to push; restart the watch with `SKIP_HEAD=<sha>`. Not met because the check errors or `get_session` shows no working directory: tell the user in one line. |
-| Watch: `MERGED <pr>` | If the table already records that merge (you merged it), ignore it. Otherwise someone else merged it: confirm with `gh`, then "After a merge". |
-| Watch: `ATTENTION <pr> <sha> behind-base` | Send the child one message: sync with `<base>` and ask to push. Restart the watch with `SKIP_HEAD=<sha>`. |
-| Watch: `CLOSED <pr>` | Tell the user; ask whether the unit is dropped or redone. Its dependents stay gated meanwhile. |
-| Watch: `STALLED …` or `ERROR …` | Read the child's last few events (`list_events`, limit 5). An unanswered `[push-request] <sha>`: handle it as the `[push-request]` row, then restart the watch. Legitimately waiting (on a decision, a review still running, CI queued) or a passing hiccup: restart the watch. Otherwise tell the user what is stuck, in two lines. |
-| Child note `[blocked]`, or a question to the owner | Relay it, as for a message. |
-| Child message with an escalated review finding | Give the user the finding, the child's recommendation and yours, then wait. Forward the answer in one message, quoting the user's words; the child records it with `--resolve`. |
-| Child message with a question | Give the user the question, the child's default and your recommendation, then wait. Forward the answer in one message, quoting the user's words, and add the decision to `notes.md` if later units need it. |
+| `REQUEST <unit> <sha> <branch>` | "Answering a push request", below. Send the child no message. |
+| `NEXT <unit> <sha>` | The slot is free and this queued request is first. Answer it again (the child may have changed something): covered gets `go`, not covered gets `redo`. Do not tell the child to sync first; the `go` covers it. |
+| `READY <unit> <pr> <sha>` or `REMIND <unit> <pr> <sha>` | Apply the merge bar (below) and merge. The child may be running; that does not matter. |
+| `MERGED <unit> <pr>` | If you already ran `run.py merged` for that PR, ignore it. Otherwise someone else merged it: confirm with `gh pr view`, then "After a merge". |
+| `CLOSED <unit> <pr>` | `run.py closed <unit> <pr>`. Tell the user; ask whether the unit is dropped or redone. Its dependents stay gated meanwhile. |
+| `BEHIND <unit> <pr> <sha>` | Send the child one message: sync with `<base>` and ask to push. |
+| `STUCK <unit> <pr> <reasons>` or `STUCK <unit> - no-push` | Serial mode: `run.py yield <unit> stuck`. `list_events` on the child (limit 5). Idle with an unanswered `[push-request]` for a sha that has a `go` in `pushes.log`: its poll died; one message to read `pushes.log`. A cause the owner must decide: tell the user in one line. Otherwise nothing; it asks again when it is ready. |
+| `STALLED <unit> <pr> head=<sha7><reasons>` | `list_events` on the child (limit 5). Legitimately waiting (on a decision, a review still running, CI queued): nothing. Otherwise tell the user what is stuck, in two lines. |
+| `ERROR <message>` | Tell the user the line. `gh` failures: start the `wait` again. A run folder it cannot read: run `run.py status` for the cause, and fix it or wait for the user before starting the `wait` again. |
+| Child message with an escalated review finding or a question, or a `[blocked]` note | Give the user the finding or question, the child's recommendation and yours, in the reply text, and list it under "Waiting on you". If the unit holds the slot, `run.py yield <unit> owner question`. |
+| The user answers a question you relayed | Forward the answer to the child in one message, quoting the user's words (an escalated finding: the child records it with `--resolve`; it then asks to push again). Add the decision to `notes.md` if later units need it. |
 | Any other child note | Nothing. |
-| The user changes the plan | Update the table in `notes.md`. To cancel a gated unit, append `<name> stop <reason>` to `gates.log`. A new unit needs a session: start it now (this is the user's turn) and watch it. |
-| The user's message after an app restart or a long gap | Restart a watch for every open unit; background tasks may not have survived. For every child whose latest note begins `[push-request] <sha>`: no line for that sha in `pushes.log` since the request, handle it as the `[push-request]` row; a `go` or `redo` line already there, send the child one message to read `pushes.log`. |
+| Work outside every unit turns up (in a note, message or PR) | Propose it as a card (`own_initiative`), once, its prompt built from the child prompt's parts, gate included, and `run.py unit <name>` for it. It merges like any unit and gates nothing. |
+| The app reports the user started a card from this run | `get_session` it; `run.py unit <name> --branch <branch> --worktree <path>`, then `run.py open-ready`; fill in the table. |
+| The user changes the plan | WIP limit: `run.py set wip <N\|none>`; lowering it never stops a unit already open. Queue mode: `run.py set queue parallel` only when the owner asks. Cancel a unit: `run.py stop <unit> <reason>`. A new unit: start its session now (this is the user's turn), `run.py unit` it with its prerequisites, record its branch and worktree, and run `run.py open-ready`. Update the table in `notes.md`. |
 
-**The merge bar,** all of:
-- the watch printed `READY` for that head (or `ONCE=1` did);
-- `get_session` on the child shows `isRunning: false` and its latest note begins `[review]`;
-- `branch-review:check --repo <worktree> --commit <sha>` on the PR's head commit says covered.
+**Answering a push request** (`REQUEST <unit> <sha> <branch>`, or `NEXT <unit> <sha>` with the unit's branch from `run.json` as `<branch>`). Work through these steps in order; the first `redo`, `go` or `queue` you run ends it:
+1. The unit is done (you ran `run.py merged` for its last PR; `run.py go` refuses it too): `run.py redo <unit> <sha> pr-merged`, then ask the owner whether the change becomes a follow-up (`list_events` on the child shows what it is).
+2. Read the unit's branch and worktree from `<run>/run.json` (under `units`). Either missing: `get_session` on the child and record them with `run.py unit <unit> --branch <branch> --worktree <path>`. Still no working directory: `run.py redo <unit> <sha> no-worktree-path` and tell the user in one line.
+3. Invoke `branch-review:check --repo <worktree> --commit <sha>`. It errors (exit 1): `run.py redo <unit> <sha> check-error` and tell the user its stderr line.
+4. The check JSON's `branch` differs from the request's branch or from the unit's branch in `run.json`: `run.py redo <unit> <sha> wrong-branch`.
+5. Covered: `run.py go <unit> <sha>`. If it refuses because another unit holds the slot: `run.py queue <unit> <sha>`.
+6. Not covered: `run.py redo <unit> <sha> '<reasons>'`, `<reasons>` the JSON's `reasons` joined by `, ` (no `not covered: ` prefix).
 
-For the `specs` unit, the bar is: the watch's `READY`, no unpushed fix in this session, and `branch-review:check` covered on the PR's head, with `--repo` this session's own working directory. Before each push of its branch, run `/branch-review:review --base origin/<base>` on it to convergence (escalated findings go straight to the user; later runs reuse the stored base), then push only when `branch-review:check` says covered for that commit. The rows above that message or restart a child apply to this session's own work instead.
+Once a `no-worktree-path` or `check-error` is sorted out, send the child one message to ask again.
 
-**Merge:** `gh pr merge <pr> -R <repo> --<method> --match-head-commit <sha>`, then confirm `MERGED` with `gh pr view` and record it in the table. If it fails because the head moved, restart the watch; for anything else (approval required, conflicts, branch protection), tell the user.
+**Questions to the owner** go in the reply text, with the child's recommendation and yours, and under "Waiting on you" in the tracker. Never use the pop-up question tool: while it waits, no event is handled. The answer arrives as a normal user message.
+
+**Messages** go to a child only for what no file carries: an owner answer, a `BEHIND` sync, a merged part k of N, a dead poll, a request format fix, a merge bar the check failed. Never send one alongside a `go`, `redo`, `open` or `stop`: the child's poll reads the file within a minute. Never mention reviews; `redo` reasons say when one is needed. A gated child gets a message only if it is still `[gated]` 5 minutes or more after its gate opened: its gate loop died, so tell it its gate is open.
+
+## The merge bar
+
+All of:
+- `READY` or `REMIND` for that PR and head, or `run.py check <unit>` printing `READY <pr> <sha>`;
+- `branch-review:check --repo <worktree> --commit <sha>` covered on that head, `<worktree>` the unit's worktree;
+- no unanswered or queued request from that unit, and in serial mode the slot is free or held by that unit (`run.py status` shows both).
+
+The child being idle is not required: it cannot push without a `go`, and `--match-head-commit` guards the merge.
+
+Not met because the check says not covered: send the child one message: its PR head `<sha7>` is not covered (`<reasons>`); fix that and ask to push. Not met because the check errors or the unit has no worktree: tell the user in one line. An unanswered request: answer it first. A queued request or another unit's slot: do nothing; the unit's turn comes through `NEXT` or its next request.
+
+**Merge:** `gh pr merge <pr> -R <repo> --<method> --match-head-commit <sha>`, then confirm `MERGED` with `gh pr view`. If it fails because the head moved, do nothing more: the watcher reports the new head. For anything else (approval required, conflicts, branch protection), tell the user.
 
 **After a merge:**
-1. If the PR's title says `(part k of N)` with k < N, the unit isn't done: send the child one message that part k merged (it can't learn this otherwise), restart the watch on the child's current branch (`get_session`), and skip to step 4.
-2. Read the child's latest note and the PR description. Append a section for the unit to `notes.md`: its PRs, and what later units must know that the specs don't say (owner decisions, changed names or ids, new mechanisms, limits found).
-3. Open every gate whose prerequisites are now all merged: `printf '%s open\n' '<name>' >> <run>/gates.log`.
-4. Reply with the tracker. Send no message to the child.
+1. If the PR's title says `(part k of N)` with k < N: `run.py merged <unit> <pr> --more`, send the child one message that part k merged and it may start part k+1, and skip to step 4.
+2. `run.py merged <unit> <pr>`.
+3. Read the PR description (and the child's latest note, if one arrived). Append a section for the unit to `notes.md`: its PRs, and what later units must know that the specs don't say (owner decisions, changed names or ids, new mechanisms, limits found). Then `run.py open-ready`.
+4. Reply with the tracker. Send no other message to the child.
 
-**A gate opened but its child never woke:** if a later turn finds a child still `[gated]` more than 15 minutes after its gate opened, its gate loop died; send it one message saying its gate is open.
+## The `specs` unit
 
-**A push request never answered:** if a later turn finds a child still at `[push-request] <sha>` more than 15 minutes after the request, check `pushes.log`. A line for that sha since the request: its poll died; send it one message to read `pushes.log`. No line: handle it as the `[push-request]` row now.
+This session's own PR goes through the same queue. Before each push of its branch, run `/branch-review:review --base origin/<base>` on it to convergence (escalated findings go straight to the user; later runs reuse the stored base). Then handle it as a `REQUEST` for `specs` with this session's own working directory: covered gets `run.py go specs <sha>` or `run.py queue specs <sha>`; once it has the `go` (at once, or after `NEXT specs`), sync with `<base>`, validate, and push, as a child does on `go`. Its merge bar is the same. The rows that message a child apply to this session's own work instead.
 
 ## Finishing
 
@@ -101,12 +170,14 @@ When every unit is merged: confirm with `gh` that each PR merged into the base, 
 
 ## Tracker
 
-After setup, after every merge, and whenever something waits on the user, end the reply with:
+After setup, after every merge, and whenever something waits on the user, end the reply with this, built from `run.py status`:
 
 ```
 Run <run> (<owner/repo>)
+- Slot: <unit> since <HH:MM> | free
+- Queue: <unit> · <unit> | empty
 - <unit> merged #<pr> · <unit> merged #<pr>
-- <unit> PR #<pr> open, watching · <unit> building
+- <unit> PR #<pr> open · <unit> building
 - <unit> gated on <units>
 - Waiting on you: nothing | <what>
 ```
@@ -116,15 +187,19 @@ Run <run> (<owner/repo>)
 | Thought | Reality |
 |---|---|
 | "I'll start the next unit when this one merges" | That turn is a background event; the start becomes a card. Start everything now, gated. |
-| "The child will tell me when its PR is up" | Watch its branch from the start. Notes get missed. |
-| "Merges notify me" | They don't, and passing checks don't either. Only the watch tells you. |
-| "All checks pass, merge" | Also: no unresolved thread, child idle at `[review]`, and `branch-review:check` covered on *this* head. |
+| "I'll wait for the child's note" | Notes can be held for hours. Act on the watcher's lines and `run.py status`. |
+| "Merges notify me" | They don't, and passing checks don't either. Only `run.py wait` tells you. |
+| "The wait printed its line; I'll restart it later" | Restart it before ending the turn. Without it the run hears nothing. |
+| "I'll ask the owner with the question tool" | It blocks every event behind it. Ask in the reply text. |
+| "All checks pass, merge" | Also: `branch-review:check` covered on *this* head, and no unanswered request. |
+| "The PR is ready but the child is running" | Merge if the bar is met. The child cannot push without a `go`. |
 | "The child says its review is clean" | Run `branch-review:check` yourself. |
+| "It's only a clean sync, it needs a review" or "it's only a merge from the base, no check needed" | The check decides both: a clean base merge is covered, a conflicting one says `base-conflict`. |
+| "The next queued unit should sync first" | The `go` covers it: the child syncs right before it pushes. |
+| "I'll append the go to `pushes.log` myself" or "I'll message the go" | `run.py go`; it keeps the slot and the queue. Never a message. |
+| "The holder is waiting on the owner; it keeps the slot" | `run.py yield`. It returns to the front of the queue when it asks again. |
 | "Auto-fix woke the child; it can push the fix" | It asks first, every time. |
-| "It's only a merge from main" | The check decides; conflicts need a review. |
-| "I'll message the go" | Append to `pushes.log`. |
-| "The child is busy; restart the plain watch" | It re-fires on the same head every few minutes. Use `SKIP_HEAD`, after `ATTENTION` too. |
-| "Part 1 merged, open the dependents' gates" | Not until part N. |
+| "Part 1 merged, open the dependents' gates" | Not until part N: `merged --more` keeps the unit open. |
 | "I'll let the child know its PR merged" | It doesn't need to know, except a non-final part. Every message spends the 10-send budget. |
 | "The child gave a status update; I'll summarize it for the user" | One line at most, nothing about progress. |
 | "The next prompt should mention what 5-3 changed" | Prompts are written up front. Put it in `notes.md` before opening the gate. |

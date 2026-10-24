@@ -1,4 +1,4 @@
-"""Reads a pull request's state through gh: one poll reduced to a Summary, and the two-poll check behind ONCE=1."""
+"""Reads a pull request's state through gh: one poll reduced to a Summary, and the check behind `run.py check`."""
 
 from __future__ import annotations
 

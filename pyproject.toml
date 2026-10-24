@@ -17,7 +17,6 @@ quote-style = "double"
 known-first-party = [
     "helpers",
     "review_state",
-    "wait_pr_ready",
     "prstate",
     "runstate",
     "watcher",
