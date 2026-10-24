@@ -103,6 +103,17 @@ class CoveredTest(unittest.TestCase):
         self.assert_covered(result, [])
         self.assertEqual(result["counts"]["deferred"], 1)
 
+    def test_outside_finding_is_covered(self):
+        snapshot = self.cli("snapshot")["snapshot"]
+        self.cli("begin-round", "--mode", "deep", "--model", "m", "--snapshot", snapshot, "--base-ref", "main")
+        path = self.tmp / "report.md"
+        outside = {"file": "z.py", "lines": "3", "title": "Old bug.", "detail": "d"}
+        path.write_text(report(output(findings=[], outside_change=[outside])))
+        self.cli("record-findings", "--file", str(path))
+        result = self.covered()
+        self.assert_covered(result, [])
+        self.assertEqual(result["counts"]["outside"], 1)
+
     def test_findings_closed_without_code_change_is_covered(self):
         self.review([finding()])
         self.cli("set-status", "--id", "R1-F1", "--status", "invalid", "--note", "not reachable")

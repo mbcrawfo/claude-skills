@@ -144,6 +144,22 @@ def load_state(dir: Path) -> dict | None:
         raise StateError(f"corrupt state file {path}: {exc}") from exc
     if not isinstance(state, dict):
         raise StateError(f"corrupt state file {path}: expected a JSON object")
+    return _migrate(state)
+
+
+def _migrate(state: dict) -> dict:
+    """Bring a stored state up to the current shape; safe to run on every load.
+
+    v0.7 stored an outside-the-change finding as `deferred`, which was
+    indistinguishable from a developer's deferral. v0.8 gives it its own status.
+    """
+    for f in state.get("findings", []):
+        if not isinstance(f, dict) or f.get("scope") != "outside" or f.get("status") != "deferred":
+            continue
+        res = f.get("resolution")
+        if isinstance(res, dict) and res.get("note") == "outside the change set":
+            f["status"] = "outside"
+            res["status"] = "outside"
     return state
 
 
@@ -543,7 +559,7 @@ def cmd_begin_round(args: argparse.Namespace) -> dict:
 
 # --- findings ledger -------------------------------------------------------
 
-STATUSES = ("open", "fixed", "still-open", "verified", "invalid", "escalated", "deferred")
+STATUSES = ("open", "fixed", "still-open", "verified", "invalid", "escalated", "deferred", "outside")
 SEVERITIES = ("critical", "major", "minor")
 CATEGORIES = (
     "logic",
@@ -776,13 +792,13 @@ def cmd_record_findings(args: argparse.Namespace) -> dict:
         new.append(
             {
                 "id": f"R{number}-F{len(new) + 1}",
-                "status": "deferred",
+                "status": "outside",
                 "scope": "outside",
                 "round_opened": number,
                 "round_closed": None,
                 **rec,
                 "resolution": {
-                    "status": "deferred",
+                    "status": "outside",
                     "note": "outside the change set",
                     "commit": "",
                     "by": "reviewer",
@@ -1085,6 +1101,7 @@ def render_summary(state: dict) -> str:
         ("Escalated", "escalated", _resolution_note),
         ("Deferred", "deferred", _resolution_note),
         ("Invalid", "invalid", _invalid_details),
+        ("Outside the change", "outside", _resolution_note),
         ("Fixed and verified", "verified", _verified_details),
     )
     for title, status, details in sections:

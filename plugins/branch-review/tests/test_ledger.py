@@ -144,7 +144,7 @@ class LedgerTest(unittest.TestCase):
         self.record(None, raw=text)
         self.assertEqual(len(self.state()["findings"]), 2)
 
-    def test_record_outside_change_is_deferred(self):
+    def test_record_outside_change_is_outside(self):
         self.begin()
         self.record(
             output(
@@ -156,11 +156,80 @@ class LedgerTest(unittest.TestCase):
         self.assertEqual([f["id"] for f in findings], ["R1-F1", "R1-F2"])
         out = findings[1]
         self.assertEqual(out["scope"], "outside")
-        self.assertEqual(out["status"], "deferred")
+        self.assertEqual(out["status"], "outside")
+        self.assertEqual(out["resolution"]["status"], "outside")
+        self.assertEqual(self.cli("status")["counts"]["outside"], 1)
         self.assertEqual(out["severity"], "minor")
         self.assertEqual(out["category"], "logic")
         self.assertEqual(out["resolution"]["note"], "outside the change set")
         self.assertEqual(self.state()["rounds"][0]["added"], 1)
+
+    def outside_seeded(self):
+        self.seeded(
+            findings=[],
+            outside_change=[{"file": "z.py", "lines": "3", "title": "Old bug.", "detail": "d"}],
+        )
+
+    def test_load_maps_v07_outside_deferred_to_outside(self):
+        self.begin()
+        self.record(output(findings=[]))
+        state = self.state()
+        state["rounds"][0].pop("plugin_version", None)  # a v0.7 round carries none
+        state["findings"] = [
+            {
+                "id": "R1-F1",
+                "status": "deferred",
+                "scope": "outside",
+                "round_opened": 1,
+                "round_closed": None,
+                "severity": "minor",
+                "category": "logic",
+                "file": "z.py",
+                "lines": "3",
+                "title": "Old bug.",
+                "resolution": {
+                    "status": "deferred",
+                    "note": "outside the change set",
+                    "commit": "",
+                    "by": "reviewer",
+                    "round": 1,
+                },
+                "discussion": [],
+            }
+        ]
+        self.review_json.write_text(json.dumps(state))
+        counts = self.cli("status")["counts"]
+        self.assertEqual(counts["outside"], 1)
+        self.assertEqual(counts["deferred"], 0)
+        # Loading again changes nothing.
+        self.assertEqual(self.cli("status")["counts"], counts)
+
+    def test_developer_deferred_stays_deferred(self):
+        self.seeded()
+        self.set_status("R1-F1", "escalated", "--note", "q")
+        self.cli("resolve", "--id", "R1-F1", "--decision", "defer", "--note", "later")
+        self.assertEqual(self.find("R1-F1")["status"], "deferred")
+        self.assertEqual(self.cli("status")["counts"]["deferred"], 1)
+        self.assertEqual(self.find("R1-F1")["status"], "deferred")
+
+    def test_set_status_escalated_from_outside(self):
+        self.outside_seeded()
+        self.assertEqual(self.set_status("R1-F1", "escalated", "--note", "n")["status"], "escalated")
+        result = self.cli("status")
+        self.assertEqual(result["reason"], "converged")
+        self.assertFalse(result["continue"])
+
+    def test_summary_lists_outside_section(self):
+        self.outside_seeded()
+        text = self.cli("summary")["text"]
+        invalid, outside, fixed = (
+            text.index(h) for h in ("## Invalid", "## Outside the change", "## Fixed and verified")
+        )
+        self.assertLess(invalid, outside)
+        self.assertLess(outside, fixed)
+        self.assertIn("R1-F1", text[outside:fixed])
+        deferred = text[text.index("## Deferred") : invalid]
+        self.assertNotIn("R1-F1", deferred)
 
     def assert_rejected(self, text_or_data, **kw):
         self.begin()
