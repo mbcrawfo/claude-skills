@@ -30,6 +30,20 @@ OPEN_STATUSES = ("open", "fixed", "still-open")
 MAX_FILES = 150
 MAX_LINES = 10000
 SNAPSHOT_MESSAGE = "branch-review snapshot"
+FORCED_DEEP = ("snapshot-missing", "history-rewritten", "paths-changed")
+SECOND_OPINION_FOCUS = "second-opinion"
+
+
+def _read_plugin_version() -> str:
+    manifest = Path(__file__).resolve().parent.parent / ".claude-plugin" / "plugin.json"
+    try:
+        version = json.loads(manifest.read_text(encoding="utf-8")).get("version")
+    except (OSError, ValueError, AttributeError):
+        return "unknown"
+    return version if isinstance(version, str) and version else "unknown"
+
+
+PLUGIN_VERSION = _read_plugin_version()
 
 
 class StateError(Exception):
@@ -463,6 +477,7 @@ def cmd_begin_round(args: argparse.Namespace) -> dict:
             "rounds": [],
             "findings": [],
         }
+    state.setdefault("second_opinion", {"requested": None, "skipped": False})
     # A round that was begun but never recorded reviewed nothing: drop it.
     rounds = _recorded(state.get("rounds", []))
     state["rounds"] = rounds
@@ -534,12 +549,22 @@ def cmd_begin_round(args: argparse.Namespace) -> dict:
         "paths": paths,
         "summary": None,
         "merge_risk": None,
+        "focus": args.focus,
+        "mode_reason": args.mode_reason,
+        "plugin_version": PLUGIN_VERSION,
     }
     # An empty round has nothing for a reviewer, so it is never saved. Existing
     # state is still saved, to drop unrecorded rounds; no state is created.
     saved = files > 0
     if saved:
         rounds.append(rnd)
+        if args.second_opinion is not None:
+            # A request is the number of the round that made it; it is met by a
+            # second-opinion round numbered at least that.
+            state["second_opinion"] = {
+                "requested": rnd["number"] if args.second_opinion else None,
+                "skipped": not args.second_opinion,
+            }
     if saved or existed:
         save_state(directory, state)
 
@@ -918,6 +943,50 @@ def _reported_state(directory: Path) -> dict:
     return state
 
 
+def _cycle_start(rounds: list) -> int:
+    """Number of the last recorded round that forced a deep review, else 1.
+
+    A forced deep round re-reviews the whole change, so what earlier rounds
+    found no longer counts toward a second opinion.
+    """
+    start = 1
+    for rnd in rounds:
+        if isinstance(rnd, dict) and rnd.get("mode_reason") in FORCED_DEEP:
+            start = rnd.get("number", start)
+    return start
+
+
+def second_opinion_due(state: dict) -> tuple[bool, list[str]]:
+    """Whether the recorded state calls for a second-opinion round, and why.
+
+    State from v0.7 (no round carries `plugin_version`) is exempt.
+    """
+    rounds = [r for r in _recorded(state.get("rounds", [])) if isinstance(r, dict)]
+    if not any("plugin_version" in r for r in rounds):
+        return False, []
+    opinions = [r.get("number", 0) for r in rounds if r.get("focus") == SECOND_OPINION_FOCUS]
+    flags = state.get("second_opinion") or {}
+    reasons: list[str] = []
+    requested = flags.get("requested")
+    if requested is not None and not any(n >= requested for n in opinions):
+        reasons.append("requested")
+    if flags.get("skipped") or opinions:
+        return bool(reasons), reasons
+    start = _cycle_start(rounds)
+    cycle = [r for r in rounds if r.get("number", 0) >= start]
+    if any(r.get("mode") == "deep" and (r.get("merge_risk") or {}).get("level") in ("moderate", "high") for r in cycle):
+        reasons.append("merge-risk")
+    if any(
+        isinstance(f, dict)
+        and f.get("scope") == "change"
+        and f.get("round_opened", 0) >= start
+        and f.get("severity") in ("critical", "major")
+        for f in state.get("findings", [])
+    ):
+        reasons.append("major-finding")
+    return bool(reasons), reasons
+
+
 def cmd_status(args: argparse.Namespace) -> dict:
     state = _reported_state(state_path(Path(args.state_dir).expanduser(), Path(args.repo)))
     rounds = state["rounds"]
@@ -925,24 +994,34 @@ def cmd_status(args: argparse.Namespace) -> dict:
     for f in state.get("findings", []):
         counts[f.get("status")] = counts.get(f.get("status"), 0) + 1
 
+    opinion_reasons: list[str] = []
     if counts["open"] or counts["still-open"]:
         cont, reason = True, "open-findings"
     elif counts["fixed"]:
         cont, reason = True, "unverified-fixes"
-    elif rounds[-1]["added"] > 0:
-        cont, reason = True, "new-findings"
     else:
-        cont, reason = False, "converged"
+        # Escalated findings wait for the developer; they do not stop this.
+        due, opinion_reasons = second_opinion_due(state)
+        if due:
+            cont, reason = True, "second-opinion"
+        elif rounds[-1]["added"] > 0:
+            cont, reason = True, "new-findings"
+        else:
+            cont, reason = False, "converged"
     # The cap only stops a loop that would otherwise go on.
     run_rounds = [r for r in rounds if r.get("number", 0) > args.since_round]
     if cont and len(run_rounds) >= MAX_ROUNDS:
         cont, reason = False, "max-rounds"
+    second = reason == "second-opinion"
     return {
         "rounds": len(rounds),
         "last_mode": rounds[-1]["mode"],
         "counts": counts,
         "continue": cont,
         "reason": reason,
+        "next_mode": "deep" if second else None,
+        "next_focus": SECOND_OPINION_FOCUS if second else None,
+        "second_opinion_reasons": opinion_reasons if second else [],
     }
 
 
@@ -1006,6 +1085,8 @@ def cmd_covered(args: argparse.Namespace) -> dict:
                     reasons.append("base-conflict")
         if reviewed_tree is not None and _git(repo, "rev-parse", commit + "^{tree}") != reviewed_tree:
             reasons.append("changes-since-review")
+        if second_opinion_due(state)[0]:
+            reasons.append("second-opinion-pending")
 
     return {
         "covered": not reasons,
@@ -1433,6 +1514,26 @@ def _build_parser() -> argparse.ArgumentParser:
         help="ref the branch is reviewed against (default: the stored base ref, else the detected default)",
     )
     begin.add_argument("--intent-file", help="file holding the change's stated intent")
+    begin.add_argument(
+        "--focus",
+        choices=(SECOND_OPINION_FOCUS,),
+        help="what the round is for; second-opinion is the independent re-review of a risky change",
+    )
+    begin.add_argument("--mode-reason", help="why the mode was chosen, as `locate` reported it")
+    opinion = begin.add_mutually_exclusive_group()
+    opinion.add_argument(
+        "--second-opinion",
+        dest="second_opinion",
+        action="store_true",
+        default=None,
+        help="ask for a second opinion once this round converges",
+    )
+    opinion.add_argument(
+        "--no-second-opinion",
+        dest="second_opinion",
+        action="store_false",
+        help="skip the automatic second opinion",
+    )
     begin.add_argument(
         "--paths",
         nargs="+",

@@ -1,116 +1,11 @@
-import contextlib
-import io
 import json
-from pathlib import Path
-import tempfile
 import unittest
 
-from helpers import make_repo, run
+from helpers import LedgerHarness, finding, output, report
 import review_state
 
 
-def finding(**over):
-    base = {
-        "severity": "major",
-        "category": "logic",
-        "file": "b.txt",
-        "lines": "1-2",
-        "title": "Handle the empty case.",
-        "trigger": "empty input",
-        "consequence": "crash",
-        "reachable_now": "yes",
-        "fix": "add a guard",
-    }
-    base.update(over)
-    return base
-
-
-def output(**over):
-    base = {
-        "summary": "Adds b. Looks fine.",
-        "merge_risk": {"level": "low", "reason": "small change"},
-        "intent_check": {"unmet_claims": [], "unmentioned_behavior": []},
-        "verdicts": [],
-        "findings": [finding(), finding(title="Second problem.")],
-        "outside_change": [],
-    }
-    base.update(over)
-    return base
-
-
-def report(data):
-    return "# Review\n\nProse.\n\n```json\n" + json.dumps(data) + "\n```\n"
-
-
-class LedgerTest(unittest.TestCase):
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.tmp = Path(self._tmp.name)
-        self.state_dir = self.tmp / "state"
-        self.repo = make_repo(self.tmp / "r")
-
-    # helpers
-    def cli(self, *argv):
-        return run(self.repo, *argv, state_dir=self.state_dir)
-
-    def call(self, *argv):
-        out, err = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = review_state.main([*argv, "--state-dir", str(self.state_dir), "--repo", str(self.repo)])
-        return code, out.getvalue(), err.getvalue()
-
-    def assert_error(self, *argv):
-        code, out, err = self.call(*argv)
-        self.assertEqual(code, 1, err)
-        self.assertEqual(out, "")
-        self.assertTrue(err.startswith("error: "), err)
-        self.assertEqual(len(err.strip().splitlines()), 1, err)
-
-    def begin(self, mode="deep"):
-        if mode == "followup":
-            # An empty round is never saved, so give each follow-up a delta.
-            self._changes = getattr(self, "_changes", 0) + 1
-            (self.repo / f"change-{self._changes}.txt").write_text("x\n")
-        snap = self.cli("snapshot")["snapshot"]
-        return self.cli(
-            "begin-round",
-            "--mode",
-            mode,
-            "--model",
-            "m",
-            "--snapshot",
-            snap,
-            "--base-ref",
-            "main",
-        )
-
-    def write(self, name, text):
-        path = self.tmp / name
-        path.write_text(text)
-        return str(path)
-
-    def record(self, data, *extra, name="report.md", raw=None):
-        path = self.write(name, raw if raw is not None else report(data))
-        return self.cli("record-findings", "--file", path, *extra)
-
-    @property
-    def review_json(self):
-        return Path(self.cli("locate", "--base", "main")["dir"]) / "review.json"
-
-    def state(self):
-        return json.loads(self.review_json.read_text())
-
-    def find(self, fid):
-        return next(f for f in self.state()["findings"] if f["id"] == fid)
-
-    def set_status(self, fid, status, *extra):
-        return self.cli("set-status", "--id", fid, "--status", status, *extra)
-
-    def seeded(self, **over):
-        self.begin()
-        self.record(output(**over))
-
+class LedgerTest(LedgerHarness, unittest.TestCase):
     # record-findings
     def test_record_assigns_ids_and_open_status(self):
         self.begin()

@@ -6,9 +6,8 @@ import subprocess
 import tempfile
 import unittest
 
-from helpers import commit_file, git, make_repo, run
+from helpers import commit_file, finding, git, make_repo, output, report, run
 import review_state
-from test_ledger import finding, output, report
 
 
 class CoveredTest(unittest.TestCase):
@@ -89,6 +88,15 @@ class CoveredTest(unittest.TestCase):
         commit_file(self.repo, "b.txt", "fixed\n", "fix")
         self.cli("set-status", "--id", "R1-F1", "--status", "fixed", "--commit", git(self.repo, "rev-parse", "HEAD"))
         self.assert_covered(self.covered(), ["unverified-fixes", "changes-since-review"])
+
+    def test_second_opinion_pending_blocks(self):
+        self.review([], "--mode-reason", "continuing")
+        state_file = review_state.state_path(self.state_dir, self.repo) / "review.json"
+        data = json.loads(state_file.read_text())
+        data["rounds"][0]["merge_risk"] = {"level": "moderate", "reason": "shared state"}
+        state_file.write_text(json.dumps(data))
+        result = self.covered()
+        self.assert_covered(result, ["second-opinion-pending"])
 
     def test_escalated_blocks(self):
         self.review([finding()])
