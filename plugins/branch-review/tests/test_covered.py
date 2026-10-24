@@ -164,6 +164,21 @@ class CoveredTest(unittest.TestCase):
         git(self.repo, "commit", "--no-edit")
         self.assert_covered(self.covered(), ["base-conflict"])
 
+    def test_recorded_merge_check_round_covers_head(self):
+        commit_file(self.repo, "a.txt", "branch\n", "branch edits a")
+        self.review()
+        git(self.repo, "checkout", "main")
+        commit_file(self.repo, "a.txt", "main\n", "main edits a")
+        git(self.repo, "checkout", "feature/x")
+        merge = subprocess.run(["git", "merge", "main"], cwd=str(self.repo), capture_output=True, text=True)
+        self.assertNotEqual(merge.returncode, 0)
+        (self.repo / "a.txt").write_text("resolved\n")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "--no-edit")
+        self.assertEqual(self.cli("locate", "--base", "main")["mode"], "merge-check")
+        self.review(mode="merge-check")
+        self.assert_covered(self.covered(), [])
+
     def test_base_advanced_without_merge_is_covered(self):
         self.review()
         git(self.repo, "checkout", "main")

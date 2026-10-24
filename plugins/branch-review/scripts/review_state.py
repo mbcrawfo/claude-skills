@@ -334,6 +334,42 @@ def simulate_base_update(repo: Path, anchor: dict, new_merge_base: str) -> str |
     return out.splitlines()[0]
 
 
+def base_conflicts(repo: Path, anchor: dict, new_merge_base: str) -> list[str] | None:
+    """The paths that conflict when the base's new commits merge into the anchor's snapshot.
+
+    `[]` means the merge is clean. None means git could not tell (`merge-tree
+    --write-tree --merge-base` needs git 2.40). Paths come NUL-separated, so
+    any file name passes through unquoted.
+    """
+    result = subprocess.run(
+        [
+            "git",
+            "merge-tree",
+            "--write-tree",
+            "--name-only",
+            "-z",
+            f"--merge-base={anchor['merge_base']}",
+            anchor["snapshot"],
+            new_merge_base,
+        ],
+        cwd=str(repo),
+        capture_output=True,
+    )
+    if result.returncode == 0:
+        return []
+    if result.returncode != 1:
+        return None
+    # The tree OID, then the conflicted paths; an empty field starts the messages.
+    fields = os.fsdecode(result.stdout).split("\0")[1:]
+    conflicts: list[str] = []
+    for path in fields:
+        if not path:
+            break
+        if path not in conflicts:
+            conflicts.append(path)
+    return conflicts
+
+
 def normalize_paths(repo: Path, patterns: list[str] | None) -> list[str]:
     """Canonical `--paths` patterns: no leading `./`, a directory becomes `dir/**`.
 
@@ -386,14 +422,23 @@ def choose_mode(repo: Path, state: dict | None, base_ref: str, paths: list[str])
         return "deep", "snapshot-missing"
     if not _is_ancestor(repo, anchor["head"], "HEAD"):
         return "deep", "history-rewritten"
-    base_updated = False
+    base_updated = conflicted = False
     new_merge_base = _merge_base(repo, base_ref)
     if anchor.get("merge_base") and anchor["merge_base"] != new_merge_base:
-        if new_merge_base is None or simulate_base_update(repo, anchor, new_merge_base) is None:
+        if new_merge_base is None:
             return "deep", "base-moved"
-        base_updated = True
+        if simulate_base_update(repo, anchor, new_merge_base) is None:
+            # Only the conflicted files, and the branch's own work, need review;
+            # when git cannot list the conflicts, review everything.
+            if not base_conflicts(repo, anchor, new_merge_base):
+                return "deep", "base-moved"
+            conflicted = True
+        else:
+            base_updated = True
     if normalize_paths(repo, anchor.get("paths")) != paths:
         return "deep", "paths-changed"
+    if conflicted:
+        return "merge-check", "base-moved"
     return "followup", "base-updated" if base_updated else "continuing"
 
 
@@ -427,6 +472,10 @@ def cmd_locate(args: argparse.Namespace) -> dict:
         stored_base = _stored_base(state)
     base = args.base or stored_base or default_base(repo)
     mode, reason = choose_mode(repo, state, base, normalize_paths(repo, args.paths))
+    conflicts: list[str] = []
+    if mode == "merge-check":
+        anchor = _anchor(_recorded(state["rounds"]))
+        conflicts = base_conflicts(repo, anchor, _merge_base(repo, base)) or []
 
     return {
         "repo_key": rkey,
@@ -438,6 +487,7 @@ def cmd_locate(args: argparse.Namespace) -> dict:
         "reason": reason,
         "rounds": rounds,
         "open_findings": open_findings,
+        "conflicts": conflicts,
     }
 
 
@@ -535,7 +585,21 @@ def cmd_begin_round(args: argparse.Namespace) -> dict:
     merge_base = _merge_base(repo, base_ref, head)
     if merge_base is None:
         raise StateError(f"no merge base between {head[:12]} and {base_ref}")
-    if args.mode == "followup":
+    conflicts: list[str] = []
+    upstream_overlap: list[str] = []
+    change_set: set[str] = set()
+    if args.mode == "merge-check":
+        if not rounds:
+            raise StateError("cannot start a merge-check round: no recorded round")
+        anchor = _anchor(rounds)
+        found = base_conflicts(repo, anchor, merge_base)
+        if found is None:
+            raise StateError("cannot start a merge-check round: the base update cannot be simulated; run a deep round")
+        conflicts = found
+        diff_from = anchor["snapshot"]
+        change_set = {f for f, _ in _numstat(repo, merge_base, args.snapshot)}
+        upstream_overlap = [f for f, _ in _numstat(repo, anchor["merge_base"], merge_base) if f in change_set]
+    elif args.mode == "followup":
         if not rounds:
             raise StateError("cannot start a follow-up round: no recorded round")
         anchor = _anchor(rounds)
@@ -580,13 +644,19 @@ def cmd_begin_round(args: argparse.Namespace) -> dict:
         entries = _numstat(repo, start, diff_to)
         if paths:
             entries = [(f, n) for f, n in entries if path_matches(f, paths)]
+        if mode == "merge-check":
+            # The branch's own work since the anchor plus the conflicted files;
+            # files only the base changed drop out.
+            entries = [(f, n) for f, n in entries if f in change_set]
+            listed = {f for f, _ in entries}
+            entries += [(f, 0) for f in conflicts if f not in listed]
         names = [f for f, _ in entries]
         generated = generated_files(repo, diff_to, names, globs)
         counted = [n for f, n in entries if f not in generated]
         return names, sum(n for _, n in entries), generated, len(counted), sum(counted)
 
-    changed, lines, generated, counted_files, counted_lines = measure(diff_from)
     mode, model, mode_reason = args.mode, args.model, args.mode_reason
+    changed, lines, generated, counted_files, counted_lines = measure(diff_from)
     if mode == "followup" and (counted_files >= LARGE_FILES or counted_lines >= LARGE_LINES):
         # Too much changed since the last round to re-check by delta: review the
         # whole change set from the merge base with the deep model.
@@ -614,6 +684,8 @@ def cmd_begin_round(args: argparse.Namespace) -> dict:
         "mode_reason": mode_reason,
         "plugin_version": PLUGIN_VERSION,
     }
+    if mode == "merge-check":
+        rnd["conflicts"] = conflicts
     # An empty round has nothing for a reviewer, so it is never saved. Existing
     # state is still saved, to drop unrecorded rounds; no state is created.
     saved = files > 0
@@ -643,6 +715,8 @@ def cmd_begin_round(args: argparse.Namespace) -> dict:
             "saved": saved,
         }
     )
+    if mode == "merge-check":
+        result["upstream_overlap"] = upstream_overlap
     return result
 
 
@@ -1584,7 +1658,7 @@ def _build_parser() -> argparse.ArgumentParser:
     snap.set_defaults(func=cmd_snapshot)
 
     begin = sub.add_parser("begin-round", parents=[common], help="record the start of a review round")
-    begin.add_argument("--mode", required=True, choices=("deep", "followup"))
+    begin.add_argument("--mode", required=True, choices=("deep", "followup", "merge-check"))
     begin.add_argument("--model", required=True)
     begin.add_argument("--snapshot", required=True, help="snapshot sha to review")
     begin.add_argument(

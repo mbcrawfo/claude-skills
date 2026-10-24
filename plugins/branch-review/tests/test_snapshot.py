@@ -467,18 +467,24 @@ class SnapshotTest(unittest.TestCase):
         git(self.repo, "checkout", "feature/x")
         git(self.repo, "merge", "--no-edit", "main")
 
-    def conflicting_base_update(self):
-        """Review a branch that changed a.txt, then merge a main that changed it too."""
-        commit_file(self.repo, "a.txt", "branch\n", "branch edits a")
+    def conflicting_base_update(self, path="b.txt"):
+        """Review the branch, then merge a main that adds `path` too, with other content.
+
+        Main also adds `upstream.txt`, a change only the base makes. The branch
+        adds `path` first when it does not have it yet.
+        """
+        if not (self.repo / path).exists():
+            commit_file(self.repo, path, "branch\n", "branch adds the file")
         self.begin()
         self.record(findings=[finding()])
         git(self.repo, "checkout", "main")
-        (self.repo / "a.txt").write_text("main\n")
-        commit_file(self.repo, "upstream.txt", "u\n", "main edits a")
+        (self.repo / path).parent.mkdir(parents=True, exist_ok=True)
+        (self.repo / path).write_text("main\n")
+        commit_file(self.repo, "upstream.txt", "u\n", "main adds the file")
         git(self.repo, "checkout", "feature/x")
         merge = subprocess.run(["git", "merge", "main"], cwd=str(self.repo), capture_output=True, text=True)
         self.assertNotEqual(merge.returncode, 0)
-        (self.repo / "a.txt").write_text("resolved\n")
+        (self.repo / path).write_text("resolved\n")
         git(self.repo, "add", "-A")
         git(self.repo, "commit", "--no-edit")
 
@@ -508,13 +514,104 @@ class SnapshotTest(unittest.TestCase):
         self.assertTrue(result["empty"])
         self.assertFalse(result["saved"])
 
-    def test_locate_deep_when_base_merge_had_conflicts(self):
+    def test_conflicting_base_merge_gives_merge_check(self):
         self.conflicting_base_update()
         result = self.locate()
-        self.assertEqual((result["mode"], result["reason"]), ("deep", "base-moved"))
+        self.assertEqual((result["mode"], result["reason"]), ("merge-check", "base-moved"))
+        self.assertEqual(result["conflicts"], ["b.txt"])
         self.assertEqual([f["id"] for f in result["open_findings"]], ["R1-F1"])
         deep = self.begin()
-        self.assertEqual(deep["changed_files"], ["a.txt", "b.txt"])  # upstream.txt is not part of the change
+        self.assertEqual(deep["changed_files"], ["b.txt"])  # upstream.txt is not part of the change
+
+    def test_locate_conflicts_empty_outside_merge_check(self):
+        self.assertEqual(self.locate()["conflicts"], [])
+        self.begin()
+        self.record()
+        self.merge_main_cleanly()
+        result = self.locate()
+        self.assertEqual(result["mode"], "followup")
+        self.assertEqual(result["conflicts"], [])
+
+    def test_merge_check_scope_includes_branch_work_and_excludes_base_only_files(self):
+        self.conflicting_base_update()
+        anchor = self.review_json()["rounds"][-1]
+        commit_file(self.repo, "fix.txt", "f\n", "fix alongside the merge")
+        result = self.begin(mode="merge-check")
+        self.assertEqual(result["mode"], "merge-check")
+        self.assertEqual(result["diff_from"], anchor["snapshot"])
+        self.assertEqual(result["changed_files"], ["b.txt", "fix.txt"])
+        self.assertEqual(result["conflicts"], ["b.txt"])
+        self.assertEqual(result["upstream_overlap"], ["b.txt"])
+        self.assertTrue(result["saved"])
+        stored = self.review_json()["rounds"][-1]
+        self.assertEqual((stored["mode"], stored["conflicts"]), ("merge-check", ["b.txt"]))
+        self.assertNotIn("upstream_overlap", stored)
+
+    def test_modify_delete_conflict_is_listed(self):
+        git(self.repo, "checkout", "main")
+        git(self.repo, "merge", "--ff-only", "feature/x")  # main now has b.txt
+        git(self.repo, "checkout", "feature/x")
+        git(self.repo, "rm", "-q", "b.txt")
+        git(self.repo, "commit", "-m", "branch deletes b")
+        self.begin()
+        self.record()
+        git(self.repo, "checkout", "main")
+        commit_file(self.repo, "b.txt", "main edit\n", "main modifies b")
+        git(self.repo, "checkout", "feature/x")
+        merge = subprocess.run(["git", "merge", "main"], cwd=str(self.repo), capture_output=True, text=True)
+        self.assertNotEqual(merge.returncode, 0)
+        git(self.repo, "rm", "-q", "b.txt")
+        git(self.repo, "commit", "--no-edit")
+        located = self.locate()
+        self.assertEqual((located["mode"], located["conflicts"]), ("merge-check", ["b.txt"]))
+        result = self.begin(mode="merge-check")
+        self.assertEqual(result["conflicts"], ["b.txt"])
+        self.assertEqual(result["changed_files"], ["b.txt"])
+        self.assertTrue(result["saved"])
+
+    def test_conflict_path_with_space_and_unicode(self):
+        path = "dir a/\u00e9.txt"
+        self.conflicting_base_update(path=path)
+        self.assertEqual(self.locate()["conflicts"], [path])
+        result = self.begin(mode="merge-check")
+        self.assertEqual(result["conflicts"], [path])
+        self.assertEqual(result["changed_files"], [path])
+
+    def test_merge_check_falls_back_to_deep_when_merge_tree_fails(self):
+        self.conflicting_base_update()
+        with mock.patch.object(review_state, "base_conflicts", return_value=None):
+            result = self.locate()
+            self.assertEqual((result["mode"], result["reason"]), ("deep", "base-moved"))
+            self.assertEqual(result["conflicts"], [])
+            snapshot = self.snapshot()["snapshot"]
+            code, out, err = self.call(
+                "begin-round", "--mode", "merge-check", "--model", "m", "--snapshot", snapshot, "--base-ref", "main"
+            )
+        self.assertEqual((code, out), (1, ""))
+        message = "cannot start a merge-check round: the base update cannot be simulated; run a deep round"
+        self.assertEqual(err.strip(), "error: " + message)
+
+    def test_merge_check_without_recorded_round_fails(self):
+        snapshot = self.snapshot()["snapshot"]
+        code, out, err = self.call(
+            "begin-round", "--mode", "merge-check", "--model", "m", "--snapshot", snapshot, "--base-ref", "main"
+        )
+        self.assertEqual((code, out), (1, ""))
+        self.assertEqual(err.strip(), "error: cannot start a merge-check round: no recorded round")
+
+    def test_paths_change_forces_deep_over_merge_check(self):
+        self.conflicting_base_update()
+        result = self.locate("--paths", "b.txt")
+        self.assertEqual((result["mode"], result["reason"]), ("deep", "paths-changed"))
+        self.assertEqual(result["conflicts"], [])
+
+    def test_base_conflicts_without_merge_tree_support_is_none(self):
+        self.conflicting_base_update()
+        anchor = self.review_json()["rounds"][-1]
+        new_base = git(self.repo, "merge-base", "HEAD", "main")
+        self.assertEqual(review_state.base_conflicts(self.repo, anchor, new_base), ["b.txt"])
+        self.assertEqual(review_state.base_conflicts(self.repo, anchor, anchor["merge_base"]), [])
+        self.assertIsNone(review_state.base_conflicts(self.repo, dict(anchor, merge_base="0" * 40), new_base))
 
     def test_begin_followup_rejects_conflicting_base_update(self):
         self.conflicting_base_update()
