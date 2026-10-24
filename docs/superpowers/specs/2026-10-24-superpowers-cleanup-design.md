@@ -108,6 +108,8 @@ The script doesn't search for loose prose mentions like "the branch-review spec"
    - It's a plan that names files, commands or features that don't exist on the base. The skill spot-checks the plan's file paths and key names with `git ls-tree` and `git grep` against the base ref.
    - It's a spec with no plan, and nothing on the base matches what it describes.
 
+   A spec and its plans stand or fall together: an unfinished plan holds back its spec, and a held-back spec holds back all its plans. Confirming a spec confirms its plans. *(Added after the final review.)*
+
    Flagged files sit in their own group with one line of reasons each. They're kept unless Michael confirms that file. Files with `tracked: false` also get the warning "not in git, deletion is permanent".
 6. **Find references.** Run `refs` on every candidate, then do a judgment pass. Grep the repo for each candidate's title and topic words, and read the hits for prose mentions ("see the implementation-manager design"). Skip matches where `in_target` is true.
 7. **Decide each reference.**

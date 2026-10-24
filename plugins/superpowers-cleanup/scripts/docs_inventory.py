@@ -37,12 +37,24 @@ class CliError(Exception):
 
 def _git(root: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
     result = subprocess.run(
-        ["git", "-c", "core.quotepath=off", *args],
+        # Literal pathspecs: a file named `what[1].md` must never match `what1.md`.
+        # The `-c` settings override user config that would change the output.
+        [
+            "git",
+            "--literal-pathspecs",
+            "-c",
+            "core.quotepath=off",
+            "-c",
+            "color.ui=never",
+            "-c",
+            "grep.column=false",
+            *args,
+        ],
         cwd=str(root),
         capture_output=True,
         text=True,
         encoding="utf-8",
-        errors="surrogateescape",
+        errors="replace",
     )
     if check and result.returncode != 0:
         first = (result.stderr.strip().splitlines() or [f"git {args[0]} failed"])[0]
@@ -221,6 +233,15 @@ def detect_base(root: Path, base: str | None) -> str | None:
     return None
 
 
+def base_branch(root: Path, base: str | None) -> str | None:
+    """The branch name a base ref stands for: `origin/main` -> `main`."""
+    if base is None:
+        return None
+    if _ref_exists(root, f"refs/remotes/{base}") and "/" in base:
+        return base.split("/", 1)[1]
+    return base[len("refs/heads/") :] if base.startswith("refs/heads/") else base
+
+
 def current_branch(root: Path) -> str | None:
     result = _git(root, "symbolic-ref", "--quiet", "--short", "HEAD", check=False)
     return result.stdout.strip() if result.returncode == 0 else None
@@ -257,6 +278,7 @@ def cmd_inventory(args: argparse.Namespace) -> dict:
         item.update(git_facts(root, item["path"], base))
     return {
         "base": base,
+        "base_branch": base_branch(root, base),
         "current_branch": current_branch(root),
         "dirs": {"specs": _posix(args.specs), "plans": _posix(args.plans), "research": _posix(args.research)},
         "missing_dirs": missing,
@@ -301,7 +323,7 @@ def find_refs(root: Path, targets: list[str]) -> list[dict]:
     results = []
     for target in targets:
         patterns = ref_patterns(target)
-        argv = ["grep", "-n", "-I", "--untracked", "-F", "-z"]
+        argv = ["grep", "-n", "-I", "--untracked", "-F", "-z", "--no-color", "--no-column"]
         for value in patterns.values():
             argv += ["-e", value]
         result = _git(root, *argv, check=False)

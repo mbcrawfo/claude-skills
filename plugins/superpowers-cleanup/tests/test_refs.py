@@ -1,8 +1,9 @@
+import json
 from pathlib import Path
 import tempfile
 import unittest
 
-from helpers import PLANS, RESEARCH, SPECS, call, commit_all, docs_inventory, make_repo, run, write
+from helpers import PLANS, RESEARCH, SPECS, call, commit_all, docs_inventory, git, make_repo, run, write
 
 SPEC = f"{SPECS}/2020-01-15-retry-design.md"
 FOLDER = f"{RESEARCH}/2020-01-10-limits"
@@ -90,6 +91,21 @@ class RefsTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(out, "")
         self.assertEqual(err.strip(), f"error: no such file: {SPECS}/nope.md")
+
+    def test_non_utf8_line_does_not_break_output(self):
+        write(self.repo, "legacy.txt", b"caf\xe9 see 2020-01-15-retry-design.md\n")
+        code, out, err = call("refs", "--repo", str(self.repo), SPEC)
+        self.assertEqual(code, 0, err)
+        found = [m for m in json.loads(out)["targets"][0]["matches"] if m["file"] == "legacy.txt"]
+        self.assertEqual(found[0]["match"], "filename")
+        out.encode("utf-8")
+
+    def test_user_color_and_column_settings_ignored(self):
+        git(self.repo, "config", "color.ui", "always")
+        git(self.repo, "config", "grep.column", "true")
+        write(self.repo, "src/a.py", f"# see {SPEC}\n")
+        found = [m for m in self.matches(self.refs(SPEC)) if m["file"] == "src/a.py"]
+        self.assertEqual((found[0]["line"], found[0]["text"]), (1, f"# see {SPEC}"))
 
     def test_no_matches(self):
         write(self.repo, f"{SPECS}/2020-02-02-lonely.md", "# Lonely\n")

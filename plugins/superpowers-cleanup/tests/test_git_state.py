@@ -96,6 +96,26 @@ class GitStateTest(unittest.TestCase):
         f = by_path(self.inventory(repo), folder)
         self.assertEqual((f["tracked"], f["on_base"]), (True, True))
 
+    def test_glob_characters_are_literal(self):
+        repo = make_repo(self.tmp / "g")
+        write(repo, f"{SPECS}/what1.md", "# One\n")
+        commit_all(repo, "one", date="2020-01-16T12:00:00")
+        write(repo, f"{SPECS}/what[1].md", "# Bracket\n")
+        f = by_path(self.inventory(repo), f"{SPECS}/what[1].md")
+        self.assertEqual(facts(f), (False, False, False, None))
+
+    def test_base_branch_strips_remote(self):
+        repo = make_repo(self.tmp / "bb")
+        bare = self.tmp / "origin.git"
+        git(self.tmp, "clone", "--bare", "-q", str(repo), str(bare))
+        git(repo, "remote", "add", "origin", str(bare))
+        git(repo, "fetch", "-q", "origin")
+        git(repo, "remote", "set-head", "origin", "main")
+        out = self.inventory(repo)
+        self.assertEqual((out["base"], out["base_branch"]), ("origin/main", "main"))
+        self.assertEqual(self.inventory(repo, "--base", "main")["base_branch"], "main")
+        self.assertIsNone(self.inventory(make_repo(self.tmp / "nb", branch="trunk"))["base_branch"])
+
     def test_current_branch_and_detached_head(self):
         repo = make_repo(self.tmp / "d")
         git(repo, "checkout", "-q", "-b", "feature")
