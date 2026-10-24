@@ -44,6 +44,10 @@ commit() {
 mkdir state
 
 # A clean reviewer report: no findings. Round 1 of `u1`/`u2` is a deep round.
+# The rounds are recorded by branch-review's own script, so they are current-version
+# state (each round carries `plugin_version`). Merge risk `minimal` and no findings
+# keep a second opinion from being due: raise either and the check reports
+# `second-opinion-pending`, which changes the expected verdicts in the graders.
 report="$ws/state/.report.json"
 trap 'rm -f "$report"' EXIT
 cat >"$report" <<'JSON'
