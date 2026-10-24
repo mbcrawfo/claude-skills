@@ -116,6 +116,16 @@ class LockedTests(RunStateTestCase):
             with locked(self.dir):
                 pass
 
+    def test_load_refuses_a_run_json_of_the_wrong_shape(self):
+        self.init()
+        good = json.loads((self.dir / "run.json").read_text())
+        for bad in ({}, [], "x", {**good, "version": 2}, {k: v for k, v in good.items() if k != "units"}):
+            with self.subTest(bad=bad):
+                (self.dir / "run.json").write_text(json.dumps(bad))
+                with self.assertRaises(RunError) as caught:
+                    load(self.dir)
+                self.assertIn("run.json", str(caught.exception))
+
     def test_run_json_is_pretty_printed(self):
         self.init()
         self.assertIn("\n  ", (self.dir / "run.json").read_text())
@@ -308,6 +318,35 @@ class GateTests(RunStateTestCase):
         self.assertEqual(openable(state), [])  # b is never reopened; c waits on b; a no longer fills the WIP
         add(state, "d")
         self.assertEqual(openable(state), ["d"])
+
+    def test_stop_frees_the_slot_and_drops_queue_and_pending(self):
+        state = self.init()
+        for name in "abc":
+            add(state, name)
+        go(self.dir, state, "a", SHA1, 5.0)
+        enqueue(state, "b", SHA2, 6.0)
+        state["pending"].append({"unit": "a", "sha": SHA2, "branch": "feat/a", "at": 7.0})
+        state["pending"].append({"unit": "c", "sha": SHA2, "branch": "feat/c", "at": 7.0})
+        stop_gate(self.dir, state, "a", "dropped")
+        stop_gate(self.dir, state, "b", "dropped")
+        self.assertIsNone(state["slot"])
+        self.assertEqual(state["queue"], [])
+        self.assertEqual([entry["unit"] for entry in state["pending"]], ["c"])
+
+    def test_stopped_unit_refuses_go_queue_and_open(self):
+        state = self.init()
+        add(state, "a")
+        stop_gate(self.dir, state, "a", "dropped")
+        for call in (
+            lambda: go(self.dir, state, "a", SHA1, 5.0),
+            lambda: enqueue(state, "a", SHA1, 5.0),
+            lambda: open_gate(self.dir, state, "a", 5.0),
+        ):
+            with self.assertRaises(RunError) as caught:
+                call()
+            self.assertIn("stop", str(caught.exception))
+        self.assertEqual((self.dir / "gates.log").read_text(), "a stop dropped\n")
+        self.assertEqual((self.dir / "pushes.log").read_text(), "")
 
     def test_stop_gate_rejects_unknown_unit_and_multiline_reason(self):
         state = self.init()
@@ -527,6 +566,22 @@ class SlotTests(RunStateTestCase):
         yield_slot(state, "a", "owner-wait", 7.0)
         self.assertIsNone(state["slot"])
         self.assertEqual(state["units"]["a"]["yielded"], "owner-wait")
+
+    def test_yield_drops_the_go_head_mark(self):
+        state = self.setup_units("a")
+        state["marks"]["a"] = {"head": "abc"}
+        go(self.dir, state, "a", SHA1, 5.0)
+        self.assertIn("go_head", state["marks"]["a"])
+        yield_slot(state, "a", "stuck", 6.0)
+        self.assertNotIn("go_head", state["marks"]["a"])
+        self.assertEqual(state["marks"]["a"]["head"], "abc")
+
+    def test_set_queue_parallel_keeps_the_queue(self):
+        state = self.setup_units("a", "b")
+        go(self.dir, state, "a", SHA1, 5.0)
+        enqueue(state, "b", SHA2, 6.0)
+        set_option(state, "queue", "parallel")
+        self.assertEqual([entry["unit"] for entry in state["queue"]], ["b"])
 
     def test_merged_frees_slot_and_marks_done(self):
         state = self.setup_units("a")

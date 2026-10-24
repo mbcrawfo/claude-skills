@@ -76,13 +76,40 @@ def init_run(run_dir: Path, *, repo: str, base: str, method: str, wip: int | Non
     return state
 
 
+STATE_KEYS = (
+    "version",
+    "repo",
+    "base",
+    "method",
+    "queue_mode",
+    "wip",
+    "units",
+    "slot",
+    "queue",
+    "pending",
+    "bad_requests",
+    "requests_offset",
+    "marks",
+)
+
+
 def load(run_dir: Path) -> dict:
-    """Read run.json without taking the lock."""
+    """Read run.json without taking the lock; refuse one that is not a version 1 run state.
+
+    Raises json.JSONDecodeError on a file that is not JSON.
+    """
+    path = run_dir / STATE_FILE
     try:
-        with open(run_dir / STATE_FILE, encoding="utf-8") as f:
-            return json.load(f)
+        with open(path, encoding="utf-8") as f:
+            state = json.load(f)
     except FileNotFoundError:
         raise RunError(f"no run in {run_dir}") from None
+    if not isinstance(state, dict) or state.get("version") != 1:
+        raise RunError(f"{path} is not a version 1 run state")
+    missing = [key for key in STATE_KEYS if key not in state]
+    if missing:
+        raise RunError(f"{path} is missing {', '.join(missing)}")
+    return state
 
 
 @contextmanager
@@ -182,18 +209,31 @@ def open_gate(run_dir: Path, state: dict, unit: str, now: float) -> None:
     record = _unit(state, unit)
     if record["gate"] == "open":
         raise RunError(f"gate for {unit!r} is already open")
+    _refuse_stopped(record, unit)
     _append(run_dir, GATES, f"{unit} open\n")
     record["gate"] = "open"
     record["gate_at"] = now
 
 
 def stop_gate(run_dir: Path, state: dict, unit: str, reason: str) -> None:
-    """Log that a unit stopped, with a one-line reason. Its gate is now `stopped`: it never opens or counts to WIP."""
+    """Log that a unit stopped, with a one-line reason.
+
+    Its gate is now `stopped`: it never opens, counts to WIP, gets `go` or joins the queue. It gives up the slot,
+    and its queued and pending requests are dropped.
+    """
     record = _unit(state, unit)
     if "\n" in reason or "\r" in reason:
         raise RunError("a stop reason must be a single line")
     _append(run_dir, GATES, f"{unit} stop {reason}\n")
     record["gate"] = "stopped"
+    if _holds_slot(state, unit):
+        state["slot"] = None
+    _drop_entries(state, unit, "pending", "queue")
+
+
+def _refuse_stopped(record: dict, unit: str) -> None:
+    if record["gate"] == "stopped":
+        raise RunError(f"unit {unit!r} is stopped; answer its push requests with: redo <sha> unit-stopped")
 
 
 def has_open_pr(state: dict, unit: str) -> bool:
@@ -221,6 +261,7 @@ def go(run_dir: Path, state: dict, unit: str, sha: str, now: float) -> None:
     _check_sha(sha)
     if record["done"]:
         raise RunError(f"unit {unit!r} is done; answer its push requests with: redo <sha> pr-merged")
+    _refuse_stopped(record, unit)
     holder = state["slot"]["unit"] if state["slot"] else None
     if state["queue_mode"] == "serial" and holder not in (None, unit):
         raise RunError(f"the push slot is held by {holder!r}; use queue to line {unit!r} up behind it")
@@ -255,7 +296,7 @@ def redo(run_dir: Path, state: dict, unit: str, sha: str, reasons: str) -> None:
 
 def enqueue(state: dict, unit: str, sha: str, now: float) -> None:
     """Line a unit's push request up behind the slot holder, replacing any earlier entry."""
-    _unit(state, unit)
+    _refuse_stopped(_unit(state, unit), unit)
     _check_sha(sha)
     if state["queue_mode"] == "parallel":
         raise RunError("queue is not used in parallel mode; answer with go")
@@ -278,6 +319,8 @@ def yield_slot(state: dict, unit: str, reason: str, now: float) -> None:
         raise RunError(f"unit {unit!r} does not hold the push slot")
     state["slot"] = None
     record["yielded"] = reason
+    # A unit that gave the slot up is not pushing, so the watcher stops holding its READY for a push.
+    state["marks"].get(unit, {}).pop("go_head", None)
 
 
 def record_merged(state: dict, unit: str, pr: int, *, more: bool) -> None:

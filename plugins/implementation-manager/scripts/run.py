@@ -6,9 +6,10 @@ The run folder is always the first argument after the subcommand:
   init <dir> --repo O/R --base B --method merge|squash|rebase [--wip N] [--queue serial|parallel]
   unit <dir> <name> [--prereq U ...] [--branch B] [--worktree P] [--specs]
   set <dir> wip <N|none> | set <dir> queue <serial|parallel>
+                                    in parallel mode, print each request still queued: queued <unit> <sha>
   open <dir> <unit>                 open one gate
   open-ready <dir>                  open every gate that may open; print one unit name per line
-  stop <dir> <unit> <reason...>
+  stop <dir> <unit> <reason...>     the unit never opens, gets go or queues again, and gives up the slot
   go <dir> <unit> <sha>             serial mode: take the push slot, or refuse while another unit holds it
   redo <dir> <unit> <sha> <reasons...>
   queue <dir> <unit> <sha>          line a covered request up behind the slot holder
@@ -16,6 +17,7 @@ The run folder is always the first argument after the subcommand:
   merged <dir> <unit> <pr> [--more] record a merge; print the gates that may open now, one per line
   closed <dir> <unit> <pr>
   status <dir>                      the tracker and everything waiting on the manager
+  clear-bad <dir>                   forget the bad request lines status lists, once they are handled
   check <dir> <unit>                one readiness check of the unit's PR, printed as one line
   wait <dir> [--stall-hours N]      block until one event, print it as one line, exit 0 (also on error)
 
@@ -203,6 +205,7 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("pr", type=int)
 
     command("status", "print the tracker and what waits on the manager")
+    command("clear-bad", "forget the bad request lines status lists")
     p = command("check", "check the unit's PR once")
     p.add_argument("unit")
     p = command("wait", "block until one event and print it")
@@ -262,6 +265,10 @@ def _run(args: argparse.Namespace) -> str | None:
             )
         elif command == "set":
             runstate.set_option(state, args.key, args.value)
+            if state["queue_mode"] == "parallel":
+                # Parallel mode has no queue turns: each request still queued needs its own go.
+                queued = [f"queued {entry['unit']} {entry['sha']}" for entry in runstate.queue_order(state)]
+                return "\n".join(queued) or None
         elif command == "open":
             runstate.open_gate(run_dir, state, args.unit, now)
         elif command == "open-ready":
@@ -284,6 +291,10 @@ def _run(args: argparse.Namespace) -> str | None:
             return "\n".join(runstate.openable(state)) or None
         elif command == "closed":
             runstate.record_closed(state, args.unit, args.pr)
+        elif command == "clear-bad":
+            count = len(state["bad_requests"])
+            state["bad_requests"] = []
+            return f"cleared {count} bad request lines"
     return None
 
 

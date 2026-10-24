@@ -192,6 +192,38 @@ class PushTests(CliTestCase):
         self.assertTrue(self.state()["units"]["a"]["done"])
         self.assertEqual(self.read("gates.log"), "a open\nb open\n")  # merged only prints; open-ready opens
 
+    def test_set_queue_parallel_lists_the_queued_requests(self):
+        self.ok("unit", str(self.dir), "c")
+        self.ok("go", str(self.dir), "a", SHA1)
+        self.ok("queue", str(self.dir), "b", SHA2)
+        self.ok("queue", str(self.dir), "c", SHA1)
+        self.assertEqual(self.ok("set", str(self.dir), "queue", "parallel"), f"queued b {SHA2}\nqueued c {SHA1}\n")
+        self.ok("go", str(self.dir), "b", SHA2)
+        self.assertEqual([entry["unit"] for entry in self.state()["queue"]], ["c"])
+        self.assertEqual(self.ok("set", str(self.dir), "queue", "serial"), "")
+
+    def test_stop_a_slot_holder(self):
+        self.ok("go", str(self.dir), "a", SHA1)
+        self.ok("queue", str(self.dir), "b", SHA2)
+        self.ok("stop", str(self.dir), "a", "cancelled")
+        self.assertIsNone(self.state()["slot"])
+        self.assertEqual(self.ok("wait", str(self.dir)), f"NEXT b {SHA2}\n")
+        for args in (["go", "a", SHA1], ["queue", "a", SHA1], ["open", "a"]):
+            with self.subTest(command=args[0]):
+                result = self.run_cli(args[0], str(self.dir), *args[1:])
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("unit-stopped", result.stderr)
+        self.ok("redo", str(self.dir), "a", SHA2, "unit-stopped")
+        self.assertEqual(self.read("pushes.log"), f"a go {SHA1}\na redo {SHA2} unit-stopped\n")
+
+    def test_clear_bad(self):
+        self.append_request(f"junk one\njunk two\na push {SHA1} feat/a\n")
+        self.ok("wait", str(self.dir))
+        self.assertEqual(self.ok("clear-bad", str(self.dir)), "cleared 2 bad request lines\n")
+        self.assertEqual(self.state()["bad_requests"], [])
+        self.assertNotIn("bad request line", self.ok("status", str(self.dir)))
+        self.assertEqual(self.ok("clear-bad", str(self.dir)), "cleared 0 bad request lines\n")
+
     def test_closed_frees_the_slot(self):
         self.ok("go", str(self.dir), "a", SHA1)
         self.ok("closed", str(self.dir), "a", "7")
@@ -336,6 +368,20 @@ class ErrorTests(CliTestCase):
                 self.assertEqual(len(result.stderr.splitlines()), 1, result.stderr)
                 self.assertIn("run.json", result.stderr)
                 self.assertNotIn("Traceback", result.stderr)
+
+    def test_run_json_of_the_wrong_shape_exit_1(self):
+        self.init()
+        for text in ("{}", "[]"):
+            (self.dir / "run.json").write_text(text)
+            for args in (["status", str(self.dir)], ["go", str(self.dir), "a", SHA1]):
+                with self.subTest(text=text, command=args[0]):
+                    result = self.run_cli(*args)
+                    self.assertEqual(result.returncode, 1)
+                    self.assertEqual(len(result.stderr.splitlines()), 1, result.stderr)
+                    self.assertIn("not a version 1 run state", result.stderr)
+            result = self.run_cli("wait", str(self.dir))
+            self.assertEqual(result.returncode, 0)
+            self.assertTrue(result.stdout.startswith("ERROR "), result.stdout)
 
     def test_wait_on_a_broken_run_prints_error_and_exits_0(self):
         result = self.run_cli("wait", str(self.dir))

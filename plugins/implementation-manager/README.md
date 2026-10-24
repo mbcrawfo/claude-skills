@@ -40,7 +40,7 @@ By default only one unit's PR is in flight at a time, so every other open PR doe
 - The holder gives up the slot (`yield`) when the manager relays its question or escalated finding to the owner, when it reports `[blocked]`, and when the watcher reports it `STUCK`. A `redo` to the holder frees the slot too. Its PR stays open, and it goes to the front of the queue when it asks again; after an owner answer, it always asks again.
 - When the slot frees, the watcher reports `NEXT` for the first queued request. The manager checks it again and answers `go`; the child's sync on `go` keeps the waiting request from going stale.
 - A request after the unit's last PR merged gets `redo <sha> pr-merged`, and the manager asks the owner whether it becomes a follow-up.
-- Parallel mode (`set queue parallel`, only when the owner asks) answers every covered request with `go` at once.
+- Parallel mode (`set queue parallel`, only when the owner asks) answers every covered request with `go` at once. Requests still queued when it is turned on are answered again, one `go` each.
 
 A WIP limit (`init --wip N` or `set wip N|none`) caps the units whose gate is open and that have not merged. Every unit is gated, so a lower limit holds back units that have not started; it never stops one that has. The manager's own `specs` unit is not counted.
 
@@ -78,9 +78,9 @@ python3 scripts/run.py <command> <run folder> [args]
 |---|---|
 | `init <dir> --repo O/R --base B --method merge\|squash\|rebase [--wip N] [--queue serial\|parallel]` | Creates the run folder and its files. |
 | `unit <dir> <name> [--prereq U ...] [--branch B] [--worktree P] [--specs]` | Adds a unit, or updates the fields given. |
-| `set <dir> wip <N\|none>`, `set <dir> queue <serial\|parallel>` | Changes the WIP limit or the queue mode. |
+| `set <dir> wip <N\|none>`, `set <dir> queue <serial\|parallel>` | Changes the WIP limit or the queue mode. In parallel mode it prints `queued <unit> <sha>` for each request still queued, which the manager answers with a fresh check and `go`. |
 | `open <dir> <unit>`, `open-ready <dir>` | Opens one gate, or every gate that may open now (prerequisites merged, within the WIP limit), printing one name per line. |
-| `stop <dir> <unit> <reason...>` | Tells a unit to stop; its gate never opens again. |
+| `stop <dir> <unit> <reason...>` | Stops a unit for good: its gate never opens again, it gives up the slot, its queued and unanswered requests are dropped, and `go` and `queue` refuse it (its later requests get `redo <sha> unit-stopped`). A child that has already started never reads `gates.log` again, so the manager also tells it by message. |
 | `go <dir> <unit> <sha>` | Allows the push. In serial mode it takes the slot, and refuses while another unit holds it. |
 | `redo <dir> <unit> <sha> <reasons...>` | Refuses the push with one line of reasons. |
 | `queue <dir> <unit> <sha>` | Holds a covered request until the slot frees. |
@@ -88,6 +88,7 @@ python3 scripts/run.py <command> <run folder> [args]
 | `merged <dir> <unit> <pr> [--more]` | Records a merge and frees the slot; `--more` keeps the unit open for its next part. Prints the gates that may open now. |
 | `closed <dir> <unit> <pr>` | Records a PR closed without merging and frees the slot. |
 | `status <dir>` | The slot, the queue, merged, open and gated units, and everything waiting on the manager. |
+| `clear-bad <dir>` | Forgets the malformed request lines `status` lists, and prints how many. |
 | `check <dir> <unit>` | Checks the unit's PR now: `READY <pr> <sha>` (two equal clean polls 30 s apart), `NOT-READY <pr> head=<sha7><reasons>`, `NOT-READY - no open PR from <branch>`, `MERGED <pr>`, `CLOSED <pr>` or `ERROR <message>`. |
 | `wait <dir> [--stall-hours N]` | Blocks until one event, prints it as one line and exits 0, also on error. |
 
