@@ -162,6 +162,8 @@ Run `rs status --since-round <prior_rounds>`, after `record-findings`; it exits 
 - `continue` is false with `reason: converged`: go on to section 9.
 - `continue` is false with `reason: max-rounds`: the cap is reached and the loop would otherwise go on, so it stops. Run `rs locate`. Escalate each finding still `open` or `still-open` with `rs set-status --id <id> --status escalated --note-file <tmp>/note.md`, the note being `unresolved after six rounds: <state of the fix>`. List any finding still `fixed` as an unverified fix in your report. Then go on to section 9.
 
+When the `locate` before a second-opinion or final-verification round gives a reason other than `continuing` or `base-updated` (a conflicting base merge landed, say), `locate` wins over `next_mode`: run the round it gives, without `--focus`, then run `status` again.
+
 ## 9. Report
 
 1. Run `rs summary` and print its `text`. The script has also written it to the `path` it returns.

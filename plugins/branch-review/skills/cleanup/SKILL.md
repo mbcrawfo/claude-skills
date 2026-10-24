@@ -8,13 +8,13 @@ argument-hint: "[--branch | --repo | --all] [--older-than DAYS] [--yes] [--state
 
 Lists the review state that `/branch-review:review` keeps, or removes some of it. State lives outside the repo, so it piles up until someone clears it.
 
-Every state command is the same prefix plus a subcommand. Shell variables do not survive between Bash calls, so write the prefix out in full each time:
+Every state command runs through the `rs` wrapper, by its full path, written out in each Bash call:
 
 ```
-python3 "${CLAUDE_SKILL_DIR}/../../scripts/review_state.py" <command> --state-dir "<state>" ...
+"${CLAUDE_SKILL_DIR}/../../scripts/rs" <command> ...
 ```
 
-`<state>` is the `--state-dir` value when the user gave one (the same directory they gave `/branch-review:review`), else `${CLAUDE_PLUGIN_DATA}`. Below, `rs <command>` means this prefix plus `<command>`. Each command prints one JSON object. On failure it exits 1 and prints one line on stderr. The script refuses an empty or relative `--state-dir`; if it reports that and no `--state-dir` was given, `CLAUDE_PLUGIN_DATA` is not set, so stop and report it. Never substitute a directory of your own.
+Below, `rs <command>` means this. Never put the path or a command in a shell variable: variables do not survive between Bash calls, and zsh does not split `$RS` into words. The wrapper adds `--state-dir "$CLAUDE_PLUGIN_DATA"`, and `--repo` (the repo's top level) when you give none and the current directory is in a git repo. When the user gave a `--state-dir` (the same directory they gave `/branch-review:review`), and only then, pass `--state-dir "<path>"` to every command. Each command prints one JSON object. On failure it exits 1 and prints one line on stderr. If that line is `error: CLAUDE_PLUGIN_DATA is not set; pass --state-dir`, stop and report it. Never substitute a directory of your own.
 
 Check the arguments first. Each of these is a usage error: report it with the usage line `[--branch | --repo | --all] [--older-than DAYS] [--yes] [--state-dir PATH]` and stop, removing nothing.
 
@@ -42,6 +42,6 @@ With no `--branch`, `--repo` or `--all`, print a table of `repo_key`, `branch`, 
 ## 3. Confirm and remove
 
 1. Unless `--yes` was given, ask the user to confirm removing exactly those entries, and wait for a clear yes. On anything else, stop and remove nothing.
-2. Run `rs cleanup --repo "<repo-path>" --scope <scope>`, adding `--older-than <DAYS>` when it was given. `<scope>` is `branch`, `repo` or `all` for `--branch`, `--repo` or `--all`. For `--all`, omit the script's `--repo` argument.
+2. Run `rs cleanup --repo "<repo-path>" --scope <scope>`, adding `--older-than <DAYS>` when it was given. `<scope>` is `branch`, `repo` or `all` for `--branch`, `--repo` or `--all`. For `--all`, omit the script's `--repo` argument; the script ignores any `--repo` the wrapper adds.
 3. Print each path in `removed`, or say nothing was removed if the list is empty. If it differs from the list you showed, say so. If the command exits 1 after printing its JSON, `errors` lists the directories it could not remove, each with its `dir` and `error`: print them as well. The script keeps going past such a failure, so `removed` is still accurate.
 4. If `skipped` is not empty, print those paths: they are symlinks, or hold neither `review.json` nor `rounds/`, so the script treats them as something other than review state and leaves them in place. Do not delete them yourself.
