@@ -153,9 +153,10 @@ All of:
 - `READY` or `REMIND` for that PR and head, or `run.py check <unit>` printing `READY <pr> <sha>`;
 - `branch-review:check --repo <worktree> --commit <sha>` covered on that head, `<worktree>` the unit's worktree;
 - no unanswered or queued request from that unit, and in serial mode the slot is free or held by that unit (`run.py status` shows both);
-- the unit is not stopped (`run.py status` does not list it `stopped`).
+- the unit is not stopped (`run.py status` does not list it `stopped`);
+- no approved push is outstanding for that unit (`run.py status` does not list `push approved for <unit>`). The child is about to push a newer commit, so wait for it; a `READY` for its new head follows.
 
-The child being idle is not required: it cannot push without a `go`, and `--match-head-commit` guards the merge.
+The child being idle is not required: it cannot push without a `go`, an outstanding `go` holds the merge, and `--match-head-commit` guards it.
 
 Not met because the check says not covered: send the child one message: its PR head `<sha7>` is not covered (`<reasons>`); fix that and ask to push. Not met because the check errors or the unit has no worktree: tell the user in one line. An unanswered request: answer it first. A queued request or another unit's slot: do nothing; the unit's turn comes through `NEXT` or its next request.
 

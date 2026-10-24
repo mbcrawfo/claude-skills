@@ -52,8 +52,9 @@ The manager merges a PR when all of these hold:
 - `branch-review:check`, run in the unit's worktree, says the review covers that head commit.
 - The unit has no unanswered or queued request, and in serial mode the slot is free or the unit's own.
 - The unit is not stopped. The watcher never reports `READY` or `REMIND` for a stopped unit.
+- No approved push is outstanding for the unit (`status` does not list `push approved for <unit>`), so a stale head is never merged while the child pushes a newer one.
 
-The child need not be idle: it cannot push without a `go`, and the merge uses `gh pr merge --match-head-commit <sha>`.
+The child need not be idle: it cannot push without a `go`, an outstanding `go` holds the merge, and the merge uses `gh pr merge --match-head-commit <sha>`.
 
 ## Run folder
 
