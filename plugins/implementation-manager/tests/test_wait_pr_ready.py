@@ -1,4 +1,4 @@
-"""Tests for the PR watch script: summarize() over GraphQL objects and watch() over a scripted gh."""
+"""Tests for watch() over a scripted gh and the wait_pr_ready command line."""
 
 from __future__ import annotations
 
@@ -10,89 +10,14 @@ import sys
 import tempfile
 import unittest
 
+from fakes import HEAD_A, HEAD_B, NO_PR, PR7, FakeClock, FakeGh, check_run, make_pr
 import helpers  # noqa: F401  (puts the scripts dir on sys.path)
+from prstate import GhError
 import wait_pr_ready
-from wait_pr_ready import GhError, summarize, watch
+from wait_pr_ready import watch
 
-HEAD_A = "a" * 40
-HEAD_B = "b" * 40
 STALL = 3 * 3600
 POLL = 120
-
-
-def check_run(status="COMPLETED", conclusion="SUCCESS", name="build"):
-    return {"__typename": "CheckRun", "name": name, "status": status, "conclusion": conclusion}
-
-
-def status_context(state="SUCCESS", context="ci/legacy"):
-    return {"__typename": "StatusContext", "context": context, "state": state, "description": ""}
-
-
-def make_pr(*, state="OPEN", draft=False, merge="CLEAN", head=HEAD_A, checks=None, threads=(), total_threads=None):
-    """A GraphQL `pullRequest` object; a green CheckRun by default."""
-    contexts = [check_run()] if checks is None else checks
-    return {
-        "state": state,
-        "isDraft": draft,
-        "mergeStateStatus": merge,
-        "headRefOid": head,
-        "reviewThreads": {
-            "totalCount": len(threads) if total_threads is None else total_threads,
-            "nodes": [{"isResolved": resolved} for resolved in threads],
-        },
-        "commits": {"nodes": [{"commit": {"statusCheckRollup": {"contexts": {"nodes": contexts}}}}]},
-    }
-
-
-def graphql(pr):
-    return json.dumps({"data": {"repository": {"pullRequest": pr}}})
-
-
-class FakeGh:
-    """Answers `gh pr list` and `gh api graphql` from scripted queues.
-
-    An item is a str (returned), a dict (a pullRequest, wrapped and dumped) or an exception (raised).
-    The last `pr list` answer repeats; running out of graphql answers fails the test.
-    """
-
-    def __init__(self, pr_list, polls=()):
-        self.pr_list = list(pr_list)
-        self.polls = list(polls)
-        self.calls = []
-
-    def __call__(self, args):
-        self.calls.append(list(args))
-        if args[:2] == ["pr", "list"]:
-            item = self.pr_list.pop(0) if len(self.pr_list) > 1 else self.pr_list[0]
-        elif args[:2] == ["api", "graphql"]:
-            if not self.polls:
-                raise AssertionError("unexpected extra graphql call")
-            item = self.polls.pop(0)
-        else:
-            raise AssertionError(f"unexpected gh call {args}")
-        if isinstance(item, Exception):
-            raise item
-        return graphql(item) if isinstance(item, dict) else item
-
-    def count(self, kind):
-        return sum(1 for call in self.calls if call[:2] == kind)
-
-
-PR7 = json.dumps([{"number": 7}])
-NO_PR = "[]"
-
-
-class FakeClock:
-    def __init__(self):
-        self.t = 1_000_000.0
-        self.sleeps = []
-
-    def now(self):
-        return self.t
-
-    def sleep(self, seconds):
-        self.sleeps.append(seconds)
-        self.t += seconds
 
 
 def run_watch(gh, *, skip_head="", once=False, stall=STALL, poll=POLL):
@@ -177,65 +102,6 @@ class StateTests(unittest.TestCase):
                 self.assertEqual(line, f"{state} 7")
 
 
-class ReasonTests(unittest.TestCase):
-    def test_reasons(self):
-        cases = [
-            ("clean", make_pr(), ""),
-            ("has hooks", make_pr(merge="HAS_HOOKS"), ""),
-            ("draft", make_pr(draft=True), " draft"),
-            ("blocked", make_pr(merge="BLOCKED"), " merge=BLOCKED"),
-            ("behind", make_pr(merge="BEHIND"), " merge=BEHIND"),
-            ("no checks", make_pr(checks=[]), " no-checks"),
-            ("check run in progress", make_pr(checks=[check_run("IN_PROGRESS", None)]), " checks-running=1"),
-            ("check run queued", make_pr(checks=[check_run("QUEUED", None), check_run()]), " checks-running=1"),
-            ("status context pending", make_pr(checks=[status_context("PENDING")]), " checks-running=1"),
-            ("status context expected", make_pr(checks=[status_context("EXPECTED")]), " checks-running=1"),
-            ("check run failure", make_pr(checks=[check_run(conclusion="FAILURE")]), " checks-failed=1"),
-            ("status context failure", make_pr(checks=[status_context("FAILURE")]), " checks-failed=1"),
-            ("status context error", make_pr(checks=[status_context("ERROR")]), " checks-failed=1"),
-            ("check run neutral passes", make_pr(checks=[check_run(conclusion="NEUTRAL")]), ""),
-            ("check run skipped passes", make_pr(checks=[check_run(conclusion="SKIPPED")]), ""),
-            ("status context success passes", make_pr(checks=[status_context("SUCCESS")]), ""),
-            (
-                "mixed counts",
-                make_pr(checks=[check_run("IN_PROGRESS", None), check_run(conclusion="FAILURE"), check_run()]),
-                " checks-running=1 checks-failed=1",
-            ),
-            ("unresolved threads", make_pr(threads=[False, True, False]), " unresolved-threads=2"),
-            ("resolved threads", make_pr(threads=[True, True]), ""),
-            ("over 100 threads", make_pr(total_threads=150), " over-100-threads"),
-            (
-                "everything at once",
-                make_pr(
-                    draft=True,
-                    merge="DIRTY",
-                    checks=[check_run("IN_PROGRESS", None)],
-                    threads=[False],
-                    total_threads=101,
-                ),
-                " draft merge=DIRTY checks-running=1 unresolved-threads=1 over-100-threads",
-            ),
-        ]
-        for label, pr, expected in cases:
-            with self.subTest(label):
-                self.assertEqual(summarize(pr).reasons(), expected)
-
-    def test_missing_rollup_means_no_checks(self):
-        pr = make_pr()
-        pr["commits"]["nodes"][0]["commit"]["statusCheckRollup"] = None
-        self.assertEqual(summarize(pr).reasons(), " no-checks")
-        pr["commits"]["nodes"] = []
-        self.assertEqual(summarize(pr).reasons(), " no-checks")
-
-    def test_summary_carries_head_and_state(self):
-        summary = summarize(make_pr(state="MERGED", head=HEAD_B))
-        self.assertEqual((summary.state, summary.head), ("MERGED", HEAD_B))
-
-    def test_equal_summaries_compare_equal(self):
-        self.assertEqual(summarize(make_pr()), summarize(make_pr()))
-        self.assertNotEqual(summarize(make_pr()), summarize(make_pr(head=HEAD_B)))
-
-
 class StallTests(unittest.TestCase):
     def test_stalled_after_unchanged_signature(self):
         running = make_pr(checks=[check_run("IN_PROGRESS", None)])
@@ -287,32 +153,6 @@ class ErrorTests(unittest.TestCase):
         polls = [GhError("x")] * 9 + [make_pr()] + [GhError("x")] * 9 + [make_pr()]
         line, _ = run_watch(FakeGh([PR7], polls))
         self.assertEqual(line, f"READY 7 {HEAD_A}")
-
-    def test_empty_output_is_a_failure(self):
-        line, _ = run_watch(FakeGh([PR7], [""] * 10))
-        self.assertTrue(line.startswith("ERROR gh api graphql on PR 7:"), line)
-
-    def test_unparseable_output_is_a_failure(self):
-        line, _ = run_watch(FakeGh([PR7], ["not json"] * 10))
-        self.assertTrue(line.startswith("ERROR gh api graphql on PR 7:"), line)
-
-    def test_null_pull_request_is_a_failure(self):
-        line, _ = run_watch(FakeGh([PR7], [json.dumps({"data": {"repository": {"pullRequest": None}}})] * 10))
-        self.assertTrue(line.startswith("ERROR gh api graphql on PR 7:"), line)
-
-    def test_malformed_rollup_is_a_failure(self):
-        pr = make_pr()
-        pr["commits"]["nodes"][0]["commit"]["statusCheckRollup"] = "bad"
-        line, _ = run_watch(FakeGh([PR7], [pr] * 10))
-        self.assertTrue(line.startswith("ERROR gh api graphql on PR 7:"), line)
-        line, _ = run_watch(FakeGh([PR7], [pr]), once=True)
-        self.assertTrue(line.startswith("ERROR gh api graphql on PR 7:"), line)
-
-    def test_null_head_ref_oid_is_a_failure(self):
-        line, _ = run_watch(FakeGh([PR7], [make_pr(head=None)] * 10))
-        self.assertTrue(line.startswith("ERROR gh api graphql on PR 7:"), line)
-        line, _ = run_watch(FakeGh([PR7], [make_pr(head=None)]), once=True)
-        self.assertTrue(line.startswith("ERROR gh api graphql on PR 7:"), line)
 
     def test_once_error_on_first_failure(self):
         gh = FakeGh([GhError("boom")])
