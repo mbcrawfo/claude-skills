@@ -107,6 +107,22 @@ class RefsTest(unittest.TestCase):
         found = [m for m in self.matches(self.refs(SPEC)) if m["file"] == "src/a.py"]
         self.assertEqual((found[0]["line"], found[0]["text"]), (1, f"# see {SPEC}"))
 
+    def test_stem_needs_word_boundaries(self):
+        write(self.repo, "a.md", "the old-retry-design-notes page\n")
+        write(self.repo, "b.md", "see retry-design.md\n")
+        files = {m["file"] for m in self.matches(self.refs(SPEC))}
+        self.assertNotIn("a.md", files)
+        self.assertIn("b.md", files)
+
+    def test_single_word_stem_only_in_link_context(self):
+        target = f"{PLANS}/2020-01-16-retry.md"
+        write(self.repo, target, "# Retry plan\n")
+        write(self.repo, "prose.md", "the retry behavior is fine\n")
+        write(self.repo, "link.md", "[plan](../plans/retry)\n")
+        write(self.repo, "ext.md", "see retry.md\n")
+        files = {m["file"]: m["match"] for m in self.matches(self.refs(target), target) if not m["in_target"]}
+        self.assertEqual(files, {"link.md": "stem", "ext.md": "stem"})
+
     def test_no_matches(self):
         write(self.repo, f"{SPECS}/2020-02-02-lonely.md", "# Lonely\n")
         out = self.refs(f"{SPECS}/2020-02-02-lonely.md")

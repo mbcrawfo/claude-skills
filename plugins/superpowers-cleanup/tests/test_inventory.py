@@ -76,6 +76,37 @@ class InventoryFilesTest(unittest.TestCase):
         self.assertEqual(by_path(out, f"{SPECS}/2020-01-15-a.md")["research"], [f"{RESEARCH}/2020-01-10-notes.md"])
         self.assertEqual(by_path(out, f"{SPECS}/2020-01-15-b.md")["research"], [])
 
+    def test_research_name_needs_left_boundary(self):
+        write(self.repo, f"{RESEARCH}/2020-01-10-limits/report.md", "# Limits\n")
+        write(self.repo, f"{SPECS}/2020-01-15-a.md", "See x2020-01-10-limits and v-2020-01-10-limits.\n")
+        self.assertEqual(by_path(self.inventory(), f"{SPECS}/2020-01-15-a.md")["research"], [])
+
+    def test_undated_single_word_research_needs_path_context(self):
+        write(self.repo, f"{RESEARCH}/caching/notes.md", "# Caching\n")
+        write(self.repo, f"{SPECS}/2020-01-15-prose.md", "We avoid caching here.\n")
+        write(self.repo, f"{SPECS}/2020-01-15-path.md", f"See {RESEARCH}/caching/notes.md.\n")
+        write(self.repo, f"{SPECS}/2020-01-15-rel.md", "See ../research/caching/.\n")
+        out = self.inventory()
+        self.assertEqual(by_path(out, f"{SPECS}/2020-01-15-prose.md")["research"], [])
+        self.assertEqual(by_path(out, f"{SPECS}/2020-01-15-path.md")["research"], [f"{RESEARCH}/caching"])
+        self.assertEqual(by_path(out, f"{SPECS}/2020-01-15-rel.md")["research"], [f"{RESEARCH}/caching"])
+
+    def test_spec_link_anchor_spaces_and_broken_relative(self):
+        write(self.repo, SPEC_A, "# A design\n")
+        write(self.repo, f"{SPECS}/2026-10-22-with space.md", "# Spaced\n")
+        write(self.repo, f"{PLANS}/2026-10-22-anchor.md", "**Spec:** [d](../specs/2026-10-22-a-design.md#goal)\n")
+        write(self.repo, f"{PLANS}/2026-10-22-space.md", "**Spec:** [d](../specs/2026-10-22-with space.md)\n")
+        write(self.repo, f"{PLANS}/2026-10-22-angle.md", "**Spec:** [d](<../specs/2026-10-22-with space.md>)\n")
+        write(self.repo, f"{PLANS}/2026-10-22-broken.md", "**Spec:** [d](../specs/gone.md)\n")
+        out = self.inventory()
+        anchor = by_path(out, f"{PLANS}/2026-10-22-anchor.md")
+        self.assertEqual((anchor["spec"], anchor["spec_exists"]), (SPEC_A, True))
+        for name in ("2026-10-22-space.md", "2026-10-22-angle.md"):
+            plan = by_path(out, f"{PLANS}/{name}")
+            self.assertEqual((plan["spec"], plan["spec_exists"]), (f"{SPECS}/2026-10-22-with space.md", True), name)
+        broken = by_path(out, f"{PLANS}/2026-10-22-broken.md")
+        self.assertEqual((broken["spec"], broken["spec_exists"]), (f"{SPECS}/gone.md", False))
+
     def test_titles_and_research_folder_title(self):
         write(self.repo, f"{SPECS}/2020-01-15-retry.md", "Intro line\n\n# Retry design\n\n## Later\n")
         write(self.repo, f"{RESEARCH}/2020-01-10-limits/README.md", "# Limits\n")

@@ -61,6 +61,10 @@ class SkillMdTest(unittest.TestCase):
         text = SKILL.read_text(encoding="utf-8")
         self.assertIn("GIT_LITERAL_PATHSPECS=1 git rm -r -f -q -- <path>", text)
 
+    def test_folders_found_before_any_inventory(self):
+        text = SKILL.read_text(encoding="utf-8")
+        self.assertLess(text.index("## 1. Find the folders"), text.index("## 2. Read the request"))
+
     def test_reply_rules_default_to_not_approved(self):
         self.assertIn("Anything else is not approval", SKILL.read_text(encoding="utf-8"))
 

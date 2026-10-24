@@ -27,7 +27,7 @@ DEFAULT_RESEARCH = "docs/superpowers/research"
 _DATE_PREFIX = re.compile(r"^(\d{4}-\d{2}-\d{2})-")
 _HEADING = re.compile(r"^#{1,6}\s+(.*\S)\s*$")
 _SPEC_LINE = re.compile(r"^\*\*Spec:\*\*\s*(.*)$")
-_MD_LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
+_MD_LINK = re.compile(r"\[[^\]]*\]\(\s*(<[^>]+>|[^)]+?)\s*\)")
 _BACKTICK = re.compile(r"`([^`]+)`")
 
 
@@ -98,12 +98,17 @@ def parse_spec_link(text: str) -> str | None:
         rest = match.group(1).strip()
         link = _MD_LINK.search(rest)
         if link:
-            return link.group(1)
+            return _strip_anchor(link.group(1).strip("<>").strip())
         tick = _BACKTICK.search(rest)
         if tick:
-            return tick.group(1).strip()
-        return rest.split()[0] if rest else None
+            return _strip_anchor(tick.group(1).strip())
+        return _strip_anchor(rest.split()[0]) if rest else None
     return None
+
+
+def _strip_anchor(target: str) -> str | None:
+    """`x.md#goal` -> `x.md`; also drops a `?query`."""
+    return re.split(r"[#?]", target, maxsplit=1)[0] or None
 
 
 def _posix(path: str) -> str:
@@ -124,20 +129,25 @@ def resolve_spec_path(root: Path, plan_path: Path, raw: str) -> str:
         rel = candidate.relative_to(root)
     except ValueError:
         rel = None
-    if rel is not None and candidate.exists():
+    if rel is not None and (candidate.exists() or raw.startswith(".")):
         return rel.as_posix()
     return _posix(cleaned)
+
+
+def _distinctive(name: str) -> bool:
+    """Dated or hyphenated names (and file names) can match in prose; single words can't."""
+    return "-" in name or "." in name
 
 
 def cited_research(text: str, research_dir: str, entries: list[str]) -> list[str]:
     cited = []
     for entry in entries:
         name = entry.rsplit("/", 1)[-1]
+        # A single word like `caching` only counts as part of a path (`.../caching`).
+        left = r"(?<![A-Za-z0-9_.-])" if _distinctive(name) else r"(?<=/)"
         # The name must end there: no further name characters, and no `.ext`
         # (a sentence-ending period is fine).
-        pattern = re.compile(
-            r"(?:" + re.escape(f"{research_dir}/{name}") + "|" + re.escape(name) + r")(?![A-Za-z0-9_-]|\.[A-Za-z0-9])"
-        )
+        pattern = re.compile(left + re.escape(name) + r"(?![A-Za-z0-9_-]|\.[A-Za-z0-9])")
         if pattern.search(text):
             cited.append(entry)
     return sorted(cited)
@@ -290,6 +300,14 @@ def cmd_inventory(args: argparse.Namespace) -> dict:
 _KIND_RANK = {"path": 0, "filename": 1, "stem": 2}
 
 
+def _stem_regex(stem: str) -> re.Pattern:
+    """Where a stem counts as a mention: bounded, and for a single word only in a link or as `<stem>.md`."""
+    word = re.escape(stem)
+    if "-" in stem:
+        return re.compile(r"(?<![A-Za-z0-9_.-])" + word + r"(?![A-Za-z0-9_-])")
+    return re.compile(r"(?<=[/(\[])" + word + r"(?![A-Za-z0-9_-])|(?<![A-Za-z0-9_.-])" + word + r"(?=\.md\b)")
+
+
 def ref_patterns(target: str) -> dict[str, str]:
     path = _posix(target)
     filename = path.rsplit("/", 1)[-1]
@@ -330,17 +348,17 @@ def find_refs(root: Path, targets: list[str]) -> list[dict]:
         if result.returncode not in (0, 1):
             first = (result.stderr.strip().splitlines() or ["git grep failed"])[0]
             raise CliError(first)
+        stem_re = _stem_regex(patterns["stem"]) if "stem" in patterns else None
         matches = []
         for line in result.stdout.split("\n"):
             parts = line.split("\0", 2)
             if len(parts) != 3:
                 continue
             file, lineno, text = parts
-            kind = min(
-                (k for k, v in patterns.items() if v in text),
-                key=_KIND_RANK.__getitem__,
-                default=None,
-            )
+            found = [k for k in ("path", "filename") if patterns[k] in text]
+            if stem_re is not None and stem_re.search(text):
+                found.append("stem")
+            kind = min(found, key=_KIND_RANK.__getitem__, default=None)
             if kind is None:
                 continue
             matches.append(

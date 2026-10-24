@@ -92,7 +92,7 @@ The script doesn't search for loose prose mentions like "the branch-review spec"
 
 ### The skill's flow
 
-1. **Read the request.** With no argument, run `inventory`, show a short summary (counts per kind, the oldest and newest dates, and the titles), and ask what to remove. Stop there until Michael answers.
+1. **Read the request.** (The skill does step 2's folder lookup first, so this summary uses the right folders.) With no argument, run `inventory`, show a short summary (counts per kind, the oldest and newest dates, and the titles), and ask what to remove. Stop there until Michael answers.
 2. **Find the folders.** Check the repo's AGENTS.md and CLAUDE.md files, and any Claude preferences in view, for overrides of the specs and plans locations. Pass any overrides to `inventory`. Run `inventory`.
 3. **Select.** Turn Michael's description into a list of candidate files:
    - Dates and ages use `filename_date`, falling back to `first_added`. A file with neither is never matched by a date or age filter; it's listed as "no date" if the filter is date-based.
