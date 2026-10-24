@@ -16,6 +16,7 @@ import helpers
 RUN_PY = helpers.SCRIPTS_DIR / "run.py"
 SHA1 = "1" * 40
 SHA2 = "2" * 40
+SHA3 = "3" * 40
 
 FAKE_GH = """#!{python}
 import json, os, sys
@@ -279,6 +280,22 @@ class StatusTests(CliTestCase):
         self.assertEqual(lines[-1], "  - requests.log has lines no wait has read yet: start a wait")
         self.ok("wait", str(self.dir))
         self.assertNotIn("requests.log", self.ok("status", str(self.dir)))
+
+    def test_a_request_answered_before_wait_reads_it_is_not_unanswered(self):
+        # The first wait reports a only; the manager answers a and b, and the next wait reads b's line.
+        self.init()
+        for name in ("a", "b"):
+            self.ok("unit", str(self.dir), name)
+            self.ok("open", str(self.dir), name)
+        self.append_request(f"a push {SHA1} feat/a\nb push {SHA2} feat/b\n")
+        self.assertEqual(self.ok("wait", str(self.dir)), f"REQUEST a {SHA1} feat/a\n")
+        self.ok("redo", str(self.dir), "a", SHA1, "not", "covered")
+        self.ok("redo", str(self.dir), "b", SHA2, "not", "covered")
+        self.append_request(f"a push {SHA3} feat/a\n")
+        self.assertEqual(self.ok("wait", str(self.dir)), f"REQUEST a {SHA3} feat/a\n")
+        needs = self.ok("status", str(self.dir))
+        self.assertNotIn("request b", needs)
+        self.assertNotIn("requests.log", needs)
 
     def test_status_tracker_lines(self):
         self.init()

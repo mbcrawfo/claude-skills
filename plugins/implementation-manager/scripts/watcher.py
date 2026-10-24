@@ -29,12 +29,25 @@ def _note_bad(state: dict, line: str) -> None:
     state["bad_requests"] = (state["bad_requests"] + [line])[-BAD_REQUESTS_KEPT:]
 
 
+def _forget_answers_read(state: dict, offset: int) -> None:
+    """Drop the answers that cover only lines before `offset`, which no wait reads again."""
+    for name, marks in state["marks"].items():
+        answered = marks.get("answered") if name != NEXT_MARK else None
+        if answered is None:
+            continue
+        for sha in [sha for sha, size in answered.items() if size <= offset]:
+            del answered[sha]
+        if not answered:
+            del marks["answered"]
+
+
 def take_request(run_dir: Path, state: dict, now: float) -> str | None:
     """Consume whole requests.log lines up to the first valid request and report it as `REQUEST <unit> <sha> <branch>`.
 
     Lines that are not a valid request for a known unit go to `bad_requests`; a trailing line without its
     newline is left for a later call. A request from a done unit is still reported. A request ends the unit's
-    outstanding `go`: the child has moved on, and its new request is answered afresh.
+    outstanding `go`: the child has moved on, and its new request is answered afresh. A request the manager
+    answered (`go`, `redo` or `queue`) before any wait read it is consumed without a report.
     """
     path = run_dir / REQUESTS
     try:
@@ -45,6 +58,9 @@ def take_request(run_dir: Path, state: dict, now: float) -> str | None:
     if size < offset:
         _note_bad(state, f"{REQUESTS} was truncated")
         offset = state["requests_offset"] = 0
+        for marks in state["marks"].values():
+            marks.pop("answered", None)
+    _forget_answers_read(state, offset)
     with open(path, "rb") as f:
         f.seek(offset)
         data = f.read()
@@ -62,6 +78,8 @@ def take_request(run_dir: Path, state: dict, now: float) -> str | None:
             _note_bad(state, line)
             continue
         unit, sha, branch = match.groups()
+        if state["marks"].get(unit, {}).get("answered", {}).get(sha, -1) >= offset:
+            continue  # answered before this line was read
         state["pending"] = [entry for entry in state["pending"] if entry["unit"] != unit]
         state["pending"].append({"unit": unit, "sha": sha, "branch": branch, "at": now})
         state["marks"].get(unit, {}).pop("go_head", None)

@@ -304,7 +304,7 @@ def _run(args: argparse.Namespace) -> str | None:
         elif command == "redo":
             runstate.redo(run_dir, state, args.unit, args.sha, " ".join(args.reasons))
         elif command == "queue":
-            runstate.enqueue(state, args.unit, args.sha, now)
+            runstate.enqueue(run_dir, state, args.unit, args.sha, now)
         elif command == "yield":
             runstate.yield_slot(state, args.unit, " ".join(args.reason), now)
         elif command == "merged":

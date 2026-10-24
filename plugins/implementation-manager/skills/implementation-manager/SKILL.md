@@ -109,7 +109,7 @@ Every turn: handle what woke you, then make sure exactly one `run.py wait` is ru
 - `push approved for <unit> <sha7>, not seen yet`: `list_events` on the child (limit 5). Idle, with its latest note `[push-request]` for that sha: its answer poll died. If the unit holds the slot (or the queue is parallel), send it one message to read `<run>/pushes.log`; if it gave the slot up, send it one message to ask again. Otherwise nothing; it is syncing, validating or fixing, or waiting on the owner.
 - `slot holder <unit> PR #<pr> behind base`: handle it as `BEHIND`, unless `list_events` on the child (limit 5) shows it already syncing.
 - `slot free with a queue, next <unit> <sha>`: handle it as `NEXT`.
-- `requests.log has lines no wait has read yet`: start a `wait`; it reports them.
+- `requests.log has lines no wait has read yet`: start a `wait`; it reports those you have not answered yet.
 - `bad request line: …`: if a child wrote it, send that child one message with the exact request line format. Tell the user in one line otherwise. Once every listed line is handled, run `run.py clear-bad`.
 - `gate <unit> may open`: run `run.py open-ready`.
 
