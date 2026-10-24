@@ -58,8 +58,9 @@ def take_request(run_dir: Path, state: dict, now: float) -> str | None:
     if size < offset:
         _note_bad(state, f"{REQUESTS} was truncated")
         offset = state["requests_offset"] = 0
-        for marks in state["marks"].values():
-            marks.pop("answered", None)
+        for name, marks in state["marks"].items():
+            if name != NEXT_MARK:
+                marks.pop("answered", None)
     _forget_answers_read(state, offset)
     with open(path, "rb") as f:
         f.seek(offset)

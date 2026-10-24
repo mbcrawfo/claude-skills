@@ -258,6 +258,21 @@ class AnsweredBeforeReadTests(WatcherTestCase):
         run_wait(self.dir)
         self.assertNotIn("answered", load(self.dir)["marks"].get("a", {}))
 
+    def test_truncation_forgets_answers_and_keeps_the_next_mark(self):
+        append(self.dir, f"a push {SHA1} feat/a\nb push {SHA2} feat/b\n")
+        run_wait(self.dir)
+        with locked(self.dir) as state:
+            go(self.dir, state, "a", SHA1, NOW)
+            enqueue(self.dir, state, "b", SHA2, NOW + 1)
+            yield_slot(state, "a", "behind", NOW + 2)
+            self.assertEqual(next_event(state), f"NEXT b {SHA2}")
+        self.assertIn("answered", load(self.dir)["marks"]["b"])
+        (self.dir / "requests.log").write_text(f"b push {SHA2} x\n", encoding="utf-8")
+        self.assertEqual(run_wait(self.dir), f"REQUEST b {SHA2} x")
+        marks = load(self.dir)["marks"]
+        self.assertNotIn("answered", marks["b"])
+        self.assertEqual(marks["_next"], ["b", SHA2])
+
     def test_an_answer_after_every_request_was_read_is_not_kept(self):
         append(self.dir, f"a push {SHA1} feat/a\n")
         run_wait(self.dir)
