@@ -28,14 +28,14 @@ Arguments: `$ARGUMENTS`
 | Command | Does |
 |---|---|
 | `init --repo <owner/repo> --base <base> --method <merge\|squash\|rebase> [--wip N]` | Creates the run folder. The queue is `serial` (one PR in flight) unless the owner asks for `--queue parallel`. |
-| `unit <name> [--prereq U ...] [--branch B] [--worktree P] [--specs]` | Adds a unit, or updates the fields given. |
+| `unit <name> [--prereq U ...] [--branch B] [--worktree P] [--specs]` | Adds a unit (letters, digits, `-` and `_`), or updates the fields given. |
 | `set wip <N\|none>`, `set queue <serial\|parallel>` | The owner's changes mid-run. In parallel mode it prints `queued <unit> <sha>` for each request still queued. |
 | `open-ready` | Opens every gate that may open now (prerequisites merged, within the WIP limit) and prints their names. |
 | `open <unit>`, `stop <unit> <reason>` | Opens one gate; stops a unit for good (it never opens, gets `go` or queues again, and gives up the slot). |
-| `go <unit> <sha>` | Allows the push. In serial mode it also gives the unit the slot, and refuses while another unit holds it. |
+| `go <unit> <sha>` | Allows the push. In serial mode it also gives the unit the slot, and refuses while another unit holds it or is first in the queue. |
 | `queue <unit> <sha>` | Holds a covered request until the slot frees; the watcher then reports `NEXT`. |
-| `redo <unit> <sha> <reasons>` | Refuses the push with one line of reasons. A slot holder gives up the slot. |
-| `yield <unit> <reason>` | The slot holder gives up the slot. Its PR stays open; it returns to the front of the queue when it asks again. |
+| `redo <unit> <sha> <reasons>` | Refuses the push with one line of reasons. A slot holder gives up the slot; an earlier `go` not yet pushed is spent. |
+| `yield <unit> <reason>` | The slot holder gives up the slot. Its PR stays open; it returns to the front of the queue when it asks again. A `go` it has not pushed stays outstanding: its old head is not reported ready. |
 | `merged <unit> <pr> [--more]`, `closed <unit> <pr>` | Records a merge (`--more`: a part k of N with k < N) or a close, and frees the slot. |
 | `status` | The tracker and every line under "needs the manager". |
 | `clear-bad` | Forgets the bad request lines `status` lists, once you have handled them. |
@@ -44,7 +44,7 @@ Arguments: `$ARGUMENTS`
 
 ## Setup (first turn)
 
-1. **The work breakdown.** Use this conversation's plan if it has one; otherwise read the spec, plan or epic named in the arguments. List the units: name (short, e.g. `5-3`), title, spec path, prerequisites, and a `branch_name` you choose. Take order and dependencies from the docs; units the docs allow side by side run in parallel. If this session has its own open PR the units need (e.g. the specs), it is a unit named `specs` with no child, and every unit depends on it.
+1. **The work breakdown.** Use this conversation's plan if it has one; otherwise read the spec, plan or epic named in the arguments. List the units: name (short, letters, digits, `-` and `_`, e.g. `5-3`), title, spec path, prerequisites, and a `branch_name` you choose. Take order and dependencies from the docs; units the docs allow side by side run in parallel. If this session has its own open PR the units need (e.g. the specs), it is a unit named `specs` with no child, and every unit depends on it.
 2. **Repository facts and review tools:** `owner/repo`, base branch, and merge method (the repository's instructions; otherwise `gh repo view --json mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed`, and if more than one is allowed and nothing says which, ask). Confirm `branch-review:check` and `branch-review:review` are among your available skills. If either is missing, stop and tell the user to install branch-review (`/plugin install branch-review@mbcrawfo-skills`).
 3. **The run folder:** `<run>` is the absolute path of `~/.claude/implementation-manager/<owner>-<repo>/<slug>/`, `<slug>` a slug of the work (e.g. `query-gen-phase-5`). Run `run.py init` with the facts from step 2 and `--wip N` if the owner gave a WIP limit. Then `run.py unit <name> --prereq <units>` for each unit in table order (`run.py unit specs --specs` first if there is a `specs` unit). Write `<run>/notes.md` with the units table: name, title, spec, prerequisites, session, branch, PRs.
 4. **Go or ask.** If the breakdown and dependencies are stated in the docs or were agreed in this conversation, continue. If you inferred any dependency, or anything in steps 1–2 is ambiguous, show the units table and ask; start everything on the user's answer.
@@ -106,7 +106,8 @@ Every turn: handle what woke you, then make sure exactly one `run.py wait` is ru
 **On every user message,** before anything else: run `run.py status` and act on each line under "needs the manager":
 - `request <unit> <sha> <branch> unanswered since …`: handle it as `REQUEST`.
 - `<unit> PR #<pr> ready since …`: run `run.py check <unit>`; on `READY <pr> <sha>`, handle it as `READY`.
-- `push approved for <unit> <sha7>, not seen yet`: `list_events` on the child (limit 5). Idle, with its latest note `[push-request]` for that sha, and (serial mode) the unit still holds the slot: its answer poll died; send it one message to read `<run>/pushes.log`. Otherwise nothing; it is syncing, validating or fixing.
+- `push approved for <unit> <sha7>, not seen yet`: `list_events` on the child (limit 5). Idle, with its latest note `[push-request]` for that sha: its answer poll died. If the unit holds the slot (or the queue is parallel), send it one message to read `<run>/pushes.log`; if it gave the slot up, send it one message to ask again. Otherwise nothing; it is syncing, validating or fixing, or waiting on the owner.
+- `slot holder <unit> PR #<pr> behind base`: handle it as `BEHIND`, unless `list_events` on the child (limit 5) shows it already syncing.
 - `slot free with a queue, next <unit> <sha>`: handle it as `NEXT`.
 - `requests.log has lines no wait has read yet`: start a `wait`; it reports them.
 - `bad request line: …`: if a child wrote it, send that child one message with the exact request line format. Tell the user in one line otherwise. Once every listed line is handled, run `run.py clear-bad`.
@@ -114,29 +115,30 @@ Every turn: handle what woke you, then make sure exactly one `run.py wait` is ru
 
 | Event | Do |
 |---|---|
-| `REQUEST <unit> <sha> <branch>` | "Answering a push request", below. Send the child no message. |
+| `REQUEST <unit> <sha> <branch>` or `PENDING <unit> <sha> <branch>` | "Answering a push request", below. Send the child no message. `PENDING` is a request still unanswered 15 minutes after its `REQUEST`: handle it exactly like `REQUEST`. |
 | `NEXT <unit> <sha>` | The slot is free and this queued request is first. Answer it again (the child may have changed something): covered gets `go`, not covered gets `redo`. Do not tell the child to sync first; the `go` covers it. |
 | `READY <unit> <pr> <sha>` or `REMIND <unit> <pr> <sha>` | Apply the merge bar (below) and merge. The child may be running; that does not matter. |
 | `MERGED <unit> <pr>` | If you already ran `run.py merged` for that PR, ignore it. Otherwise someone else merged it: confirm with `gh pr view`, then "After a merge". |
 | `CLOSED <unit> <pr>` | `run.py closed <unit> <pr>`. Tell the user; ask whether the unit is dropped or redone. Its dependents stay gated meanwhile. |
 | `BEHIND <unit> <pr> <sha>` | Send the child one message: sync with `<base>` and ask to push. |
-| `STUCK <unit> <pr> no-push` or `STUCK <unit> - no-push` | `list_events` on the child (limit 5). Idle at `[push-request] <sha>`, with `<unit> go <sha>` in `pushes.log` after that request: its answer poll died. Do not yield; send it one message to read `<run>/pushes.log`. Otherwise, in serial mode, `run.py yield <unit> stuck`; a cause the owner must decide: tell the user in one line. |
+| `STUCK <unit> <pr> no-push` or `STUCK <unit> - no-push` | `list_events` on the child (limit 5). Idle at `[push-request] <sha>`, with `<unit> go <sha>` in `pushes.log` after that request: its answer poll died. Do not yield; send it one message to read `<run>/pushes.log`. Syncing, validating or pushing: nothing; it is acting on the `go`, and its push, its next request or a `STALLED` settles it. Only at `[waiting]` or `[blocked]`, or with its session gone or idle at anything else: `run.py yield <unit> stuck`; a cause the owner must decide: tell the user in one line. |
 | `STUCK <unit> <pr> <reasons>` (failing checks, unresolved threads, a conflict) | Serial mode: `run.py yield <unit> stuck`. `list_events` on the child (limit 5); a cause the owner must decide: tell the user in one line. Otherwise nothing; it asks again when it is ready. |
+| `ORPHAN <unit> <pr>` | A PR opened on a done unit's branch after its last merge. Tell the user in one line what it changes (`gh pr view <pr> -R <repo>`) and ask whether to merge or close it. Merge: the merge bar, with `run.py check <unit>` for readiness, then `run.py merged <unit> <pr>`. Close: `gh pr close <pr> -R <repo>`, then `run.py closed <unit> <pr>`. |
 | `STALLED <unit> <pr> head=<sha7><reasons>` | `list_events` on the child (limit 5). Legitimately waiting (on a decision, a review still running, CI queued): nothing. Otherwise tell the user what is stuck, in two lines. |
 | `ERROR <message>` | Tell the user the line. `gh` failures: start the `wait` again. A run folder it cannot read: run `run.py status` for the cause, and fix it or wait for the user before starting the `wait` again. |
 | Child message with an escalated review finding or a question, or a `[blocked]` note | Give the user the finding or question, the child's recommendation and yours, in the reply text, and list it under "Waiting on you". If the unit holds the slot, `run.py yield <unit> owner question`. |
 | The user answers a question you relayed | Forward the answer to the child in one message, quoting the user's words (an escalated finding: the child records it with `--resolve`; it then asks to push again). Add the decision to `notes.md` if later units need it. |
 | Any other child note | Nothing. |
-| Work outside every unit turns up (in a note, message or PR) | Propose it as a card (`own_initiative`), once, its prompt built from the child prompt's parts, gate included, and `run.py unit <name>` for it. It merges like any unit and gates nothing. |
+| Work outside every unit turns up (in a note, message or PR) | Propose it as a card (`own_initiative`), once, its prompt built from the child prompt's parts, gate included. It merges like any unit and gates nothing. |
 | The app reports the user started a card from this run | `get_session` it; `run.py unit <name> --branch <branch> --worktree <path>`, then `run.py open-ready`; fill in the table. |
 | The user changes the plan | WIP limit: `run.py set wip <N\|none>`; lowering it never stops a unit already open. Queue mode: `run.py set queue parallel` only when the owner asks; for each `queued <unit> <sha>` it prints, answer the request again ("Answering a push request": a fresh check, covered gets `go`). Cancel a unit: run `run.py status` first. Listed under `gated`: `run.py stop <unit> <reason>` alone. Listed under `open` (`<unit> PR #n` or `<unit> working`; it has started and never reads `gates.log` again): `run.py stop <unit> <reason>`, then send its child one message that the unit is stopped, quoting the reason, and ask the owner whether to close its open PR. A new unit: start its session now (this is the user's turn), `run.py unit` it with its prerequisites, record its branch and worktree, and run `run.py open-ready`. Update the table in `notes.md`. |
 
-**Answering a push request** (`REQUEST <unit> <sha> <branch>`, or `NEXT <unit> <sha>` with the unit's branch from `run.json` as `<branch>`). Work through these steps in order; the first `redo`, `go` or `queue` you run ends it:
+**Answering a push request** (`REQUEST` or `PENDING <unit> <sha> <branch>`, or `NEXT <unit> <sha>` with the unit's branch from `run.json` as `<branch>`). Work through these steps in order; the first `redo`, `go` or `queue` you run ends it:
 1. The unit is done (you ran `run.py merged` for its last PR; `run.py go` refuses it too): `run.py redo <unit> <sha> pr-merged`, then ask the owner whether the change becomes a follow-up (`list_events` on the child shows what it is). The unit is stopped (`status` lists it `stopped`; `go` and `queue` refuse it): `run.py redo <unit> <sha> unit-stopped`.
 2. Read the unit's branch and worktree from `<run>/run.json` (under `units`). Either missing: `get_session` on the child and record them with `run.py unit <unit> --branch <branch> --worktree <path>`. Still no working directory: `run.py redo <unit> <sha> no-worktree-path` and tell the user in one line.
 3. Invoke `branch-review:check --repo <worktree> --commit <sha>`. It errors (exit 1): `run.py redo <unit> <sha> check-error` and tell the user its stderr line.
 4. The check JSON's `branch` differs from the request's branch or from the unit's branch in `run.json`: `run.py redo <unit> <sha> wrong-branch`.
-5. Covered: `run.py go <unit> <sha>`. If it refuses because another unit holds the slot: `run.py queue <unit> <sha>`.
+5. Covered: `run.py go <unit> <sha>`. If it refuses because another unit holds the slot or is first in the queue: `run.py queue <unit> <sha>`.
 6. Not covered: `run.py redo <unit> <sha> '<reasons>'`, `<reasons>` the JSON's `reasons` joined by `, ` (no `not covered: ` prefix).
 
 Once a `no-worktree-path` or `check-error` is sorted out, send the child one message to ask again.
@@ -203,6 +205,7 @@ Run <run> (<owner/repo>)
 | "The next queued unit should sync first" | The `go` covers it: the child syncs right before it pushes. |
 | "I'll append the go to `pushes.log` myself" or "I'll message the go" | `run.py go`; it keeps the slot and the queue. Never a message. |
 | "`STUCK … no-push`: yield, then tell the child to read `pushes.log`" | A dead poll is the likely cause. After a yield, that old `go` would push without the slot. Message only, no yield. |
+| "`STUCK … no-push` and the child is syncing; yield" | It is acting on the `go`. Yield only when it is at `[waiting]` or `[blocked]`, or gone. |
 | "The holder is waiting on the owner; it keeps the slot" | `run.py yield`. It returns to the front of the queue when it asks again. |
 | "Auto-fix woke the child; it can push the fix" | It asks first, every time. |
 | "Part 1 merged, open the dependents' gates" | Not until part N: `merged --more` keeps the unit open. |

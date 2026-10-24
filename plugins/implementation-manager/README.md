@@ -35,9 +35,9 @@ Child notes can be held by the app for hours, so nothing in the protocol waits o
 
 By default only one unit's PR is in flight at a time, so every other open PR doesn't sync and run CI again after each merge. That unit holds the *slot*, from the `go` that opens or updates its PR until the PR merges or closes, or the unit gives the slot up.
 
-- A covered request from the slot holder gets `go` at once. A covered request from any other unit gets `go` if the slot is free, and is queued otherwise. A request that is not covered gets `redo` at once, wherever the unit stands, so it can fix things while it waits.
+- A covered request from the slot holder gets `go` at once. A covered request from any other unit gets `go` if the slot is free and no other unit is first in the queue, and is queued otherwise. A request that is not covered gets `redo` at once, wherever the unit stands, so it can fix things while it waits.
 - The queue serves units that already have an open PR and gave up the slot first, then everyone else, each in the order they asked.
-- The holder gives up the slot (`yield`) when the manager relays its question or escalated finding to the owner, when it reports `[blocked]`, and when the watcher reports it `STUCK`. A `redo` to the holder frees the slot too. Its PR stays open, and it goes to the front of the queue when it asks again; after an owner answer, it always asks again.
+- The holder gives up the slot (`yield`) when the manager relays its question or escalated finding to the owner, when it reports `[blocked]`, and when the watcher reports it `STUCK`. A `redo` to the holder frees the slot too. Its PR stays open, and it goes to the front of the queue when it asks again; after an owner answer, it always asks again. A `go` the holder has not pushed yet stays outstanding through a `yield`, so its old head is not reported ready while the approved push may still land; a `redo` or the unit's next request ends it.
 - When the slot frees, the watcher reports `NEXT` for the first queued request. The manager checks it again and answers `go`; the child's sync on `go` keeps the waiting request from going stale.
 - A request after the unit's last PR merged gets `redo <sha> pr-merged`, and the manager asks the owner whether it becomes a follow-up.
 - Parallel mode (`set queue parallel`, only when the owner asks) answers every covered request with `go` at once. Requests still queued when it is turned on are answered again, one `go` each.
@@ -78,17 +78,17 @@ python3 scripts/run.py <command> <run folder> [args]
 | Command | Does |
 |---|---|
 | `init <dir> --repo O/R --base B --method merge\|squash\|rebase [--wip N] [--queue serial\|parallel]` | Creates the run folder and its files. |
-| `unit <dir> <name> [--prereq U ...] [--branch B] [--worktree P] [--specs]` | Adds a unit, or updates the fields given. |
+| `unit <dir> <name> [--prereq U ...] [--branch B] [--worktree P] [--specs]` | Adds a unit, or updates the fields given. Names use letters, digits, `-` and `_`, starting with a letter or digit. |
 | `set <dir> wip <N\|none>`, `set <dir> queue <serial\|parallel>` | Changes the WIP limit or the queue mode. In parallel mode it prints `queued <unit> <sha>` for each request still queued, which the manager answers with a fresh check and `go`. |
 | `open <dir> <unit>`, `open-ready <dir>` | Opens one gate, or every gate that may open now (prerequisites merged, within the WIP limit), printing one name per line. |
 | `stop <dir> <unit> <reason...>` | Stops a unit for good: its gate never opens again, it gives up the slot, its queued and unanswered requests are dropped, and `go` and `queue` refuse it (its later requests get `redo <sha> unit-stopped`). A child that has already started never reads `gates.log` again, so the manager also tells it by message. |
-| `go <dir> <unit> <sha>` | Allows the push. In serial mode it takes the slot, and refuses while another unit holds it. |
+| `go <dir> <unit> <sha>` | Allows the push. In serial mode it takes the slot, and refuses while another unit holds it or, with the slot free, another unit is first in the queue. |
 | `redo <dir> <unit> <sha> <reasons...>` | Refuses the push with one line of reasons. |
 | `queue <dir> <unit> <sha>` | Holds a covered request until the slot frees. |
 | `yield <dir> <unit> <reason...>` | The slot holder gives up the slot. |
 | `merged <dir> <unit> <pr> [--more]` | Records a merge and frees the slot; `--more` keeps the unit open for its next part. Prints the gates that may open now. |
 | `closed <dir> <unit> <pr>` | Records a PR closed without merging and frees the slot. |
-| `status <dir>` | The slot, the queue, merged, open and gated units, and everything waiting on the manager. |
+| `status <dir>` | The slot, the queue, merged, open and gated units, and everything waiting on the manager, including a `go` not pushed yet and a slot holder whose PR is behind the base. |
 | `clear-bad <dir>` | Forgets the malformed request lines `status` lists, and prints how many. |
 | `check <dir> <unit>` | Checks the unit's PR now: `READY <pr> <sha>` (two equal clean polls 30 s apart), `NOT-READY <pr> head=<sha7><reasons>`, `NOT-READY - no open PR from <branch>`, `MERGED <pr>`, `CLOSED <pr>` or `ERROR <message>`. |
 | `wait <dir> [--stall-hours N]` | Blocks until one event, prints it as one line and exits 0, also on error. |
@@ -100,12 +100,14 @@ It exits 0 on success, 1 when a command is refused (one line on stderr, nothing 
 | Line | Meaning |
 |---|---|
 | `REQUEST <unit> <sha> <branch>` | A new request in `requests.log`. Every request is reported at once, whatever the queue. Malformed lines are skipped and listed by `status`. |
+| `PENDING <unit> <sha> <branch>` | The request is still unanswered 15 minutes after its `REQUEST`; reported once per request. |
 | `NEXT <unit> <sha>` | The slot is free and this queued request is first in line. |
 | `READY <unit> <pr> <sha>` | Open, not draft, mergeable, at least one check and every check passed, no unresolved review thread; confirmed by a second poll 30 s later. Not reported while the unit has an unanswered or queued request, while it is pushing after a `go`, or, in serial mode, while another unit holds the slot. |
 | `REMIND <unit> <pr> <sha>` | Still ready and unmerged 30 minutes after `READY`. |
 | `MERGED <unit> <pr>`, `CLOSED <unit> <pr>` | Only for a PR the watcher saw open and the manager has not recorded. |
+| `ORPHAN <unit> <pr>` | A PR opened on a done unit's branch after its last merge; the manager asks the owner whether to merge or close it. |
 | `BEHIND <unit> <pr> <sha>` | The slot holder's PR (every open PR in parallel mode) is behind the base and the repository requires up-to-date branches. |
-| `STUCK <unit> <pr> <reasons>` | The slot holder's PR has had failing checks, unresolved threads or a conflict for 20 minutes, with no new request. |
+| `STUCK <unit> <pr> <reasons>` | The slot holder's PR has had failing checks, unresolved threads or a conflict for 20 minutes, with no new request and no `go` waiting to be pushed. |
 | `STUCK <unit> - no-push` | The holder got `go` but no new head appeared within 30 minutes (the PR number, when it has one, takes the place of `-`). |
 | `STALLED <unit> <pr> head=<sha7><reasons>` | An open PR with nothing changed for the stall period (default 3 hours). |
 | `ERROR <message>` | `gh` failed 10 PR polls in a row, or the run folder could not be read. |
