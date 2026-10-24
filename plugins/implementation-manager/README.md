@@ -27,7 +27,9 @@ Invoking it authorizes starting the child sessions and merging the run's PRs onc
 
 Pushes go through the manager. A child reviews its change with `/branch-review:review` until it converges, then asks to push by appending `<unit> push <sha> <branch>` to the run's `requests.log` and ending its turn with `[push-request] <sha>`. The run watcher reports the request; the manager runs `branch-review:check` on that commit in the child's worktree and answers through the run script, which appends `<unit> go <sha>`, or `<unit> redo <sha> <reasons>` with the check's reasons joined by `, `, to `pushes.log`. The child's poll reads only lines added after it asked, so it can ask again with the same sha. An Auto-fix wake-up in a child (CI failure, review comment, merge conflict) is never permission to push.
 
-On `go`, the child syncs with the base right before it pushes. A clean merge is pushed after validation, with no new request; the review check counts a clean base merge as covered. A conflicting merge, or a failed validation, sends the child back to ask again.
+On `go`, the child syncs with the base right before it pushes. A clean merge is pushed after validation, with no new request; the review check counts a clean base merge as covered. A conflicting merge, or a failed validation, sends the child back to ask again; for a conflicting merge the check reports `base-conflict`, and the child's review checks the resolutions in a small merge-check round.
+
+The child's PR description carries the review summary's Escalated, Deferred, Invalid, Outside the change and Intent check sections under "Review notes". Findings outside the change are not deferrals: where the repository forbids deferring review findings, the review escalates them, and the check reports `escalated` until the owner answers. The child prompt's review command has no `--no-second-opinion`, so a second opinion the review calls for always runs; until it does, the check reports `second-opinion-pending`.
 
 Child notes can be held by the app for hours, so nothing in the protocol waits on one: requests are lines in a file, and the manager learns everything from the run watcher.
 

@@ -71,17 +71,17 @@ Parts 8 to 11 follow, word for word. Replace `<run>` (the absolute run folder), 
 ```
 8. Review and push permission.
 - Review: when the change is complete and its tests pass, run `/branch-review:review --base origin/<base>` with the unit's intent (the spec's goal, which becomes the PR description) and continue until it converges. Later runs reuse the stored base. Run it yourself, not from a subagent implementing a slice. Run it again when a later change is complete or a `redo` from the manager says so; never decide on your own that a sync from the base needs one.
-- Escalations: send all the escalated findings of a converged review to the implementation manager in one message (each message spends the 10-send budget), each with the question, the finding id and your recommendation. When it forwards the owner's answer, record it with `/branch-review:review --resolve <id> "<the owner's quoted words>"`, then run the review to convergence again.
+- Escalations: send all the escalated findings of a converged review (outside-the-change ones included) to the implementation manager in one message (each message spends the 10-send budget), each with the question, the finding id and your recommendation. When it forwards the owner's answer, record it with `/branch-review:review --resolve <id> "<the owner's quoted words>"`, then run the review to convergence again.
 - Ask to push, before opening the PR and before every later push: commit everything. Then start this command with Bash `run_in_background`; it records your request and prints the manager's answer. `<sha>` is the full sha of HEAD and `<branch>` the output of `git branch --show-current`: `f="<run>/pushes.log"; n=$(cat "$f" 2>/dev/null | wc -l); printf '%s push %s %s\n' '<name>' '<sha>' '<branch>' >> "<run>/requests.log"; until l=$(tail -n +"$((n + 1))" "$f" 2>/dev/null | grep -E '^<name> (go|redo) <sha>( |$)' | tail -1) && [ -n "$l" ]; do sleep 30; done; echo "$l"`. Then end your turn with `[push-request] <sha>`. The answer counts only lines added after the command starts, so asking again with the same sha is fine.
 - On `go <sha>`:
   1. If HEAD is no longer that sha, do not push; ask again.
   2. Sync with `<base>` (ccd_host `sync_with_base_branch`).
   3. A clean merge, or nothing to merge: run the validation the repository requires before a push; if it passes, push HEAD (open the PR if none is open for the branch). HEAD may be the clean merge commit rather than `<sha>`; that is expected and needs no new request.
-  4. The merge conflicts: resolve it, commit, and ask again. The manager's answer says whether a review is needed.
+  4. The merge conflicts: resolve it, commit, and ask again. The manager's answer says whether a review is needed (`base-conflict`); the review then checks the resolutions in a small merge-check round.
   5. Validation fails: fix it, commit, and ask again.
 - On `redo <sha> <reasons>`: fix what the reasons say, commit if anything changed, and ask again, with the same sha if nothing did.
-  - `changes-since-review`, `open-findings`, `unverified-fixes`, `base-conflict`, `no-rounds`, `partial-scope`, `history-rewritten`, `snapshot-missing`: run the review to convergence. `changes-since-review` right after a review that found nothing to review means the working tree holds files the commit lacks: commit or remove them.
-  - `escalated`: wait for the owner's answer (`[waiting]`); do not review again.
+  - `changes-since-review`, `open-findings`, `unverified-fixes`, `base-conflict`, `no-rounds`, `partial-scope`, `history-rewritten`, `snapshot-missing`, `second-opinion-pending`: run the review to convergence, with no new arguments; it picks the round itself (a merge-check round for `base-conflict`, the second opinion for `second-opinion-pending`). `changes-since-review` right after a review that found nothing to review means the working tree holds files the commit lacks: commit or remove them.
+  - `escalated`: the findings wait for the owner's answer. With no other review reason, end your turn with `[waiting]` and do not review again. With another one, run the review for it, then wait.
   - `wrong-branch`: the request's branch is not the one checked out in this session's own worktree, or that is not this session's branch. Get back to this session's own worktree and branch, then ask again.
   - `pr-merged`: your unit's last PR has already merged. Push nothing; end your turn with `[waiting]`, saying in the recap what the change is and whether it still matters.
   - `unit-stopped`: the owner stopped this unit. Push nothing; end your turn with `[waiting]`.
@@ -90,13 +90,13 @@ Parts 8 to 11 follow, word for word. Replace `<run>` (the absolute run folder), 
 - If the manager tells you to read `<run>/pushes.log`, act on its last line for your sha.
 - If the manager tells you this unit is stopped, push and commit nothing more, and end your turn with `[waiting]` quoting its message.
 - An Auto-fix wake-up (CI failure, review comment, merge conflict) is never permission to push. Fix it locally, commit, and ask.
-- Put the review summary's Escalated, Deferred and Invalid sections in the PR description under "Review notes".
+- Put the review summary's Escalated, Deferred, Invalid, Outside the change and Intent check sections in the PR description under "Review notes".
 
 9. Status token. Every turn's final message begins with one of `[gated]`, `[building]`, `[reviewing]` (running `/branch-review:review`), `[fixing]`, `[push-request] <sha>` (asking to push that full sha), `[waiting]` (on a decision or the manager), `[blocked]`, or `[review]` (PR open and nothing left for you to do unless review or CI reports something). This includes turns woken by a subagent's hand-back or a background task. A turn that applies a message from the manager says which after the token, for example `[reviewing] owner answer applied`. A wake-up for bot-only PR comments (coverage reports, "Review skipped" notices, anything with nothing to fix) ends the turn at once with your previous token unchanged, and sends no message.
 
 10. Questions only. Do not send the implementation manager (<manager id>) progress or merge reports. Message it only for a decision the owner must make, an escalated review finding included: the question, your recommended default, and what you will do meanwhile.
 
-11. One open PR at a time, and scope. Build every part in this session's own worktree, on its own branch. While part k's PR is open, you may plan part k+1 but commit nothing for it; start its code only after the manager tells you part k merged, then sync with `<base>` first. Never use a second branch, worktree or checkout. A review finding outside this unit's scope is escalated with the review's other escalations; never record it as new tech debt or a follow-up without the owner's answer.
+11. One open PR at a time, and scope. Build every part in this session's own worktree, on its own branch. While part k's PR is open, you may plan part k+1 but commit nothing for it; start its code only after the manager tells you part k merged, then sync with `<base>` first. Never use a second branch, worktree or checkout. A finding whose fix belongs outside this unit's scope is escalated with the review's other escalations. A finding outside the change (status `outside`) stays as the review leaves it and goes in the PR description; the review itself escalates it when the repository's rules forbid deferring review findings. Never record any review finding as new tech debt or a follow-up without the owner's answer.
 ```
 
 ## Event handling
@@ -203,6 +203,7 @@ Run <run> (<owner/repo>)
 | "The PR is ready but the child is running" | Merge if the bar is met. The child cannot push without a `go`. |
 | "The child says its review is clean" | Run `branch-review:check` yourself. |
 | "It's only a clean sync, it needs a review" or "it's only a merge from the base, no check needed" | The check decides both: a clean base merge is covered, a conflicting one says `base-conflict`. |
+| "The Review notes list findings outside the change, and this repo forbids deferring; refuse the push" | `outside` is not a deferral (`deferred` means the owner chose it), and the check decides the push and the merge. Where the repo forbids deferring, the review escalates outside findings and the check says `escalated`; relay them like any escalation. If such a repo's Review notes still list outside findings the check does not count as escalated, give them to the owner as a question, and do not hold the push. |
 | "The next queued unit should sync first" | The `go` covers it: the child syncs right before it pushes. |
 | "I'll append the go to `pushes.log` myself" or "I'll message the go" | `run.py go`; it keeps the slot and the queue. Never a message. |
 | "`STUCK … no-push`: yield, then tell the child to read `pushes.log`" | A dead poll is the likely cause. After a yield, that old `go` would push without the slot. Message only, no yield. |
