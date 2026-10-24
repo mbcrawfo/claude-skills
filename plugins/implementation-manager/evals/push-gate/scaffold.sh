@@ -6,8 +6,9 @@
 #            then one more commit was made, so HEAD (sha2) is not covered.
 #   state/   branch-review state for both branches (the eval sandbox only lets
 #            the agent write inside the workspace, so state lives here too).
-#   run/     notes.md (units table with the worktree paths and both shas) and an
-#            empty pushes.log.
+#   run/     the run folder, built with run.py: both units' gates open, both
+#            push requests in requests.log, an empty pushes.log, and notes.md
+#            (the units table with the worktree paths).
 # Both checkouts share the origin URL, so they share one state key.
 #
 # The commits use fixed dates, identity and messages, so sha1 and sha2 are the
@@ -19,6 +20,7 @@ set -euo pipefail
 unset CDPATH # a set CDPATH makes `cd` print and can send it elsewhere
 here=$(cd "$(dirname "$0")" && pwd -P)
 rs="$here/../../../branch-review/scripts/review_state.py"
+runpy="$here/../../scripts/run.py"
 ws=$(pwd -P)
 
 # Isolate from the user's git configuration, signing and hooks.
@@ -42,7 +44,7 @@ commit() {
   GIT_AUTHOR_DATE="$3" GIT_COMMITTER_DATE="$3" git -C "$1" commit -q -m "$2"
 }
 
-mkdir state run
+mkdir state
 
 # A clean reviewer report: no findings. Round 1 of `u1`/`u2` is a deep round.
 report="$ws/state/.report.json"
@@ -98,7 +100,15 @@ printf 'unit two, second version\n' >wt-u2/two.txt
 commit wt-u2 "Update unit two" "2026-01-06T12:00:00Z"
 sha2=$(git -C wt-u2 rev-parse HEAD)
 
-: >run/pushes.log
+# The run folder, through the same script the manager uses. Paths stay relative
+# to the workspace, except the worktrees, which are recorded as absolute paths.
+python3 "$runpy" init "$ws/run" --repo fixture/shop --base main --method merge
+python3 "$runpy" unit "$ws/run" u1 --branch u1 --worktree "$ws/repo"
+python3 "$runpy" unit "$ws/run" u2 --branch u2 --worktree "$ws/wt-u2"
+python3 "$runpy" open "$ws/run" u1
+python3 "$runpy" open "$ws/run" u2
+printf 'u1 push %s u1\nu2 push %s u2\n' "$sha1" "$sha2" >>run/requests.log
+
 cat >run/notes.md <<NOTES
 # Run push-gate
 
@@ -106,11 +116,6 @@ cat >run/notes.md <<NOTES
 |---|---|---|---|---|---|---|---|
 | u1 | Unit one | none | none | child-u1 | u1 | $ws/repo | none yet |
 | u2 | Unit two | none | none | child-u2 | u2 | $ws/wt-u2 | none yet |
-
-Child notes received this turn:
-
-- from u1: \`[push-request] $sha1\`
-- from u2: \`[push-request] $sha2\`
 NOTES
 
 echo "workspace $ws: u1 $sha1 in repo, u2 $sha2 in wt-u2, state in state, run folder run"
