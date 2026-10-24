@@ -1,5 +1,5 @@
 [tool.ruff]
-# Keep in step with the `version:` pinned in .github/workflows/lint.yml.
+# Keep in step with the `version:` pinned in the ruff job in .github/workflows/ci.yml.
 required-version = "==0.17.2"
 target-version = "py39"
 line-length = 120
@@ -15,6 +15,7 @@ quote-style = "double"
 # landing among third-party imports (test_* covers modules like test_ledger that
 # other tests import).
 known-first-party = [
+    "docs_inventory",
     "helpers",
     "review_state",
     "prstate",
