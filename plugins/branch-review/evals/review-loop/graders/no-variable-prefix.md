@@ -1,9 +1,9 @@
 ---
 type: tool_used
 tool: Bash
-input_match: '(?:^|[\s;&"{(])\w+=\\?"?[^\s;]*scripts/rs|(?:^|[^\\]"|&&|;|\||\\n)\s*\$\{?\w+\}?\s+(?:locate|begin-round|record-findings|status|snapshot|summary|prune|set-status|discuss|resolve)\b'
+input_match: '\b\w+=\\?["'']?python3\s[^;&|]*review_state\.py'
 min: 0
 max: 0
 ---
 
-The orchestrator never stored the `rs` path in a shell variable (`RS=.../scripts/rs`, then `$RS locate`). Variables do not survive between Bash calls, and zsh does not split `$RS locate` into words, so the call fails. The pattern matches an assignment of the `scripts/rs` path to a variable, or a variable used as the command word of an `rs` subcommand: at the start of the command, or after `&&`, `;`, `|` or a newline (`\n` in the JSON-encoded form). It does not match a plain `scripts/rs` call, or a variable used as an argument, as in `git -C $R status`.
+No Bash call stored the multi-word `python3 …/review_state.py` prefix in a shell variable, as v0.7 sessions did with `RS="python3 …"; $RS locate`. zsh does not split such a variable into words, so the call fails with exit 127. A variable holding only the `rs` path works, because it is one word. This grader does not flag it, nor variables the reviewer uses for other tools (such as `G=/opt/homebrew/bin/git; $G status`), since the trace includes subagent calls.
