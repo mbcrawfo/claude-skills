@@ -102,16 +102,19 @@ def test_conflict_property(self):
     self.assertTrue(summarize(make_pr(merge="DIRTY")).conflict)
     self.assertFalse(summarize(make_pr(merge="BEHIND")).conflict)
 
+
 def test_check_once_ready_after_two_clean_polls(self):
     gh = FakeGh([PR7], [make_pr(), make_pr()])
     clock = FakeClock()
     self.assertEqual(check_once("owner/repo", "feat/x", gh=gh, sleep=clock.sleep), f"READY 7 {HEAD_A}")
     self.assertEqual(clock.sleeps, [30])
 
+
 def test_check_once_no_pr(self):
     gh = FakeGh([NO_PR])
-    self.assertEqual(check_once("owner/repo", "feat/x", gh=gh, sleep=FakeClock().sleep),
-                     "NOT-READY - no open PR from feat/x")
+    self.assertEqual(
+        check_once("owner/repo", "feat/x", gh=gh, sleep=FakeClock().sleep), "NOT-READY - no open PR from feat/x"
+    )
 ```
 
 - [ ] **Step 3: Run the new tests and confirm they fail.** Run `python3 -m unittest discover -s plugins/implementation-manager/tests -p 'test_prstate.py' -v`. Expected: ImportError for `prstate`.
