@@ -6,9 +6,8 @@ import subprocess
 import tempfile
 import unittest
 
-from helpers import commit_file, git, make_repo, run
+from helpers import commit_file, finding, git, make_repo, output, report, run
 import review_state
-from test_ledger import finding, output, report
 
 
 class CoveredTest(unittest.TestCase):
@@ -90,6 +89,15 @@ class CoveredTest(unittest.TestCase):
         self.cli("set-status", "--id", "R1-F1", "--status", "fixed", "--commit", git(self.repo, "rev-parse", "HEAD"))
         self.assert_covered(self.covered(), ["unverified-fixes", "changes-since-review"])
 
+    def test_second_opinion_pending_blocks(self):
+        self.review([], "--mode-reason", "continuing")
+        state_file = review_state.state_path(self.state_dir, self.repo) / "review.json"
+        data = json.loads(state_file.read_text())
+        data["rounds"][0]["merge_risk"] = {"level": "moderate", "reason": "shared state"}
+        state_file.write_text(json.dumps(data))
+        result = self.covered()
+        self.assert_covered(result, ["second-opinion-pending"])
+
     def test_escalated_blocks(self):
         self.review([finding()])
         self.cli("set-status", "--id", "R1-F1", "--status", "escalated", "--note", "needs a decision")
@@ -102,6 +110,17 @@ class CoveredTest(unittest.TestCase):
         result = self.covered()
         self.assert_covered(result, [])
         self.assertEqual(result["counts"]["deferred"], 1)
+
+    def test_outside_finding_is_covered(self):
+        snapshot = self.cli("snapshot")["snapshot"]
+        self.cli("begin-round", "--mode", "deep", "--model", "m", "--snapshot", snapshot, "--base-ref", "main")
+        path = self.tmp / "report.md"
+        outside = {"file": "z.py", "lines": "3", "title": "Old bug.", "detail": "d"}
+        path.write_text(report(output(findings=[], outside_change=[outside])))
+        self.cli("record-findings", "--file", str(path))
+        result = self.covered()
+        self.assert_covered(result, [])
+        self.assertEqual(result["counts"]["outside"], 1)
 
     def test_findings_closed_without_code_change_is_covered(self):
         self.review([finding()])
@@ -144,6 +163,21 @@ class CoveredTest(unittest.TestCase):
         git(self.repo, "add", "-A")
         git(self.repo, "commit", "--no-edit")
         self.assert_covered(self.covered(), ["base-conflict"])
+
+    def test_recorded_merge_check_round_covers_head(self):
+        commit_file(self.repo, "a.txt", "branch\n", "branch edits a")
+        self.review()
+        git(self.repo, "checkout", "main")
+        commit_file(self.repo, "a.txt", "main\n", "main edits a")
+        git(self.repo, "checkout", "feature/x")
+        merge = subprocess.run(["git", "merge", "main"], cwd=str(self.repo), capture_output=True, text=True)
+        self.assertNotEqual(merge.returncode, 0)
+        (self.repo / "a.txt").write_text("resolved\n")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "--no-edit")
+        self.assertEqual(self.cli("locate", "--base", "main")["mode"], "merge-check")
+        self.review(mode="merge-check")
+        self.assert_covered(self.covered(), [])
 
     def test_base_advanced_without_merge_is_covered(self):
         self.review()

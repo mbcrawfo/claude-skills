@@ -1,116 +1,11 @@
-import contextlib
-import io
 import json
-from pathlib import Path
-import tempfile
 import unittest
 
-from helpers import make_repo, run
+from helpers import LedgerHarness, finding, output, report
 import review_state
 
 
-def finding(**over):
-    base = {
-        "severity": "major",
-        "category": "logic",
-        "file": "b.txt",
-        "lines": "1-2",
-        "title": "Handle the empty case.",
-        "trigger": "empty input",
-        "consequence": "crash",
-        "reachable_now": "yes",
-        "fix": "add a guard",
-    }
-    base.update(over)
-    return base
-
-
-def output(**over):
-    base = {
-        "summary": "Adds b. Looks fine.",
-        "merge_risk": {"level": "low", "reason": "small change"},
-        "intent_check": {"unmet_claims": [], "unmentioned_behavior": []},
-        "verdicts": [],
-        "findings": [finding(), finding(title="Second problem.")],
-        "outside_change": [],
-    }
-    base.update(over)
-    return base
-
-
-def report(data):
-    return "# Review\n\nProse.\n\n```json\n" + json.dumps(data) + "\n```\n"
-
-
-class LedgerTest(unittest.TestCase):
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.tmp = Path(self._tmp.name)
-        self.state_dir = self.tmp / "state"
-        self.repo = make_repo(self.tmp / "r")
-
-    # helpers
-    def cli(self, *argv):
-        return run(self.repo, *argv, state_dir=self.state_dir)
-
-    def call(self, *argv):
-        out, err = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = review_state.main([*argv, "--state-dir", str(self.state_dir), "--repo", str(self.repo)])
-        return code, out.getvalue(), err.getvalue()
-
-    def assert_error(self, *argv):
-        code, out, err = self.call(*argv)
-        self.assertEqual(code, 1, err)
-        self.assertEqual(out, "")
-        self.assertTrue(err.startswith("error: "), err)
-        self.assertEqual(len(err.strip().splitlines()), 1, err)
-
-    def begin(self, mode="deep"):
-        if mode == "followup":
-            # An empty round is never saved, so give each follow-up a delta.
-            self._changes = getattr(self, "_changes", 0) + 1
-            (self.repo / f"change-{self._changes}.txt").write_text("x\n")
-        snap = self.cli("snapshot")["snapshot"]
-        return self.cli(
-            "begin-round",
-            "--mode",
-            mode,
-            "--model",
-            "m",
-            "--snapshot",
-            snap,
-            "--base-ref",
-            "main",
-        )
-
-    def write(self, name, text):
-        path = self.tmp / name
-        path.write_text(text)
-        return str(path)
-
-    def record(self, data, *extra, name="report.md", raw=None):
-        path = self.write(name, raw if raw is not None else report(data))
-        return self.cli("record-findings", "--file", path, *extra)
-
-    @property
-    def review_json(self):
-        return Path(self.cli("locate", "--base", "main")["dir"]) / "review.json"
-
-    def state(self):
-        return json.loads(self.review_json.read_text())
-
-    def find(self, fid):
-        return next(f for f in self.state()["findings"] if f["id"] == fid)
-
-    def set_status(self, fid, status, *extra):
-        return self.cli("set-status", "--id", fid, "--status", status, *extra)
-
-    def seeded(self, **over):
-        self.begin()
-        self.record(output(**over))
-
+class LedgerTest(LedgerHarness, unittest.TestCase):
     # record-findings
     def test_record_assigns_ids_and_open_status(self):
         self.begin()
@@ -144,7 +39,7 @@ class LedgerTest(unittest.TestCase):
         self.record(None, raw=text)
         self.assertEqual(len(self.state()["findings"]), 2)
 
-    def test_record_outside_change_is_deferred(self):
+    def test_record_outside_change_is_outside(self):
         self.begin()
         self.record(
             output(
@@ -156,11 +51,123 @@ class LedgerTest(unittest.TestCase):
         self.assertEqual([f["id"] for f in findings], ["R1-F1", "R1-F2"])
         out = findings[1]
         self.assertEqual(out["scope"], "outside")
-        self.assertEqual(out["status"], "deferred")
+        self.assertEqual(out["status"], "outside")
+        self.assertEqual(out["resolution"]["status"], "outside")
+        self.assertEqual(self.cli("status")["counts"]["outside"], 1)
         self.assertEqual(out["severity"], "minor")
         self.assertEqual(out["category"], "logic")
         self.assertEqual(out["resolution"]["note"], "outside the change set")
         self.assertEqual(self.state()["rounds"][0]["added"], 1)
+
+    def outside_seeded(self):
+        self.seeded(
+            findings=[],
+            outside_change=[{"file": "z.py", "lines": "3", "title": "Old bug.", "detail": "d"}],
+        )
+
+    def test_load_maps_v07_outside_deferred_to_outside(self):
+        self.begin()
+        self.record(output(findings=[]))
+        state = self.state()
+        state["rounds"][0].pop("plugin_version", None)  # a v0.7 round carries none
+        state["findings"] = [
+            {
+                "id": "R1-F1",
+                "status": "deferred",
+                "scope": "outside",
+                "round_opened": 1,
+                "round_closed": None,
+                "severity": "minor",
+                "category": "logic",
+                "file": "z.py",
+                "lines": "3",
+                "title": "Old bug.",
+                "resolution": {
+                    "status": "deferred",
+                    "note": "outside the change set",
+                    "commit": "",
+                    "by": "reviewer",
+                    "round": 1,
+                },
+                "discussion": [],
+            }
+        ]
+        self.review_json.write_text(json.dumps(state))
+        counts = self.cli("status")["counts"]
+        self.assertEqual(counts["outside"], 1)
+        self.assertEqual(counts["deferred"], 0)
+        # Loading again changes nothing.
+        self.assertEqual(self.cli("status")["counts"], counts)
+
+    def test_developer_deferred_stays_deferred(self):
+        self.seeded()
+        self.set_status("R1-F1", "escalated", "--note", "q")
+        self.cli("resolve", "--id", "R1-F1", "--decision", "defer", "--note", "later")
+        self.assertEqual(self.find("R1-F1")["status"], "deferred")
+        self.assertEqual(self.cli("status")["counts"]["deferred"], 1)
+        self.assertEqual(self.find("R1-F1")["status"], "deferred")
+
+    def test_set_status_escalated_from_outside(self):
+        self.outside_seeded()
+        self.assertEqual(self.set_status("R1-F1", "escalated", "--note", "n")["status"], "escalated")
+        result = self.cli("status")
+        self.assertEqual(result["reason"], "converged")
+        self.assertFalse(result["continue"])
+
+    def test_summary_lists_outside_section(self):
+        self.outside_seeded()
+        text = self.cli("summary")["text"]
+        invalid, outside, fixed = (
+            text.index(h) for h in ("## Invalid", "## Outside the change", "## Fixed and verified")
+        )
+        self.assertLess(invalid, outside)
+        self.assertLess(outside, fixed)
+        self.assertIn("R1-F1", text[outside:fixed])
+        deferred = text[text.index("## Deferred") : invalid]
+        self.assertNotIn("R1-F1", deferred)
+
+    def test_summary_intent_check_section(self):
+        self.begin()
+        self.record(
+            output(
+                findings=[],
+                intent_check={"unmet_claims": ["A"], "unmentioned_behavior": ["X"]},
+            )
+        )
+        self.begin("followup")
+        self.record(
+            output(
+                findings=[],
+                intent_check={"unmet_claims": [], "unmentioned_behavior": ["X", "Y"]},
+            )
+        )
+        text = self.cli("summary")["text"]
+        section = text[text.index("## Intent check") : text.index("## Escalated")]
+        self.assertLess(text.index("## Open and unverified"), text.index("## Intent check"))
+        self.assertEqual(section.count("A"), 1, section)
+        self.assertEqual(section.count("X"), 1, section)
+        self.assertEqual(section.count("Y"), 1, section)
+        self.assertLess(section.index("X"), section.index("Y"))
+
+    def test_summary_header_names_second_opinion(self):
+        self.begin()
+        self.record(output(findings=[finding(severity="major")]))
+        self.set_status("R1-F1", "escalated", "--note", "needs a decision")
+        self.begin("deep", "--focus", "second-opinion")
+        self.record(output(findings=[]))
+        self.assertIn("last deep (second opinion) with", self.cli("summary")["text"])
+
+    def test_summary_lists_every_round(self):
+        self.begin()
+        self.record(output(findings=[finding(severity="major")]))
+        self.set_status("R1-F1", "escalated", "--note", "needs a decision")
+        self.begin("deep", "--focus", "second-opinion")
+        self.record(output(findings=[]))
+        self.begin("followup")
+        self.record(output(findings=[]))
+        lines = self.cli("summary")["text"].splitlines()
+        self.assertIn("last followup with", lines[0])
+        self.assertEqual(lines[2], "Rounds: 1 deep (m), 2 deep (second opinion) (m), 3 followup (m)")
 
     def assert_rejected(self, text_or_data, **kw):
         self.begin()
@@ -409,14 +416,14 @@ class LedgerTest(unittest.TestCase):
         self.assertTrue(result["continue"])
         self.assertEqual(result["reason"], "unverified-fixes")
 
-    def test_status_continue_when_last_round_added(self):
+    def test_status_new_findings_all_invalid_or_escalated_converges(self):
         self.begin()
         self.record(output())
         self.set_status("R1-F1", "invalid", "--note", "n")
-        self.set_status("R1-F2", "invalid", "--note", "n")
+        self.set_status("R1-F2", "escalated", "--note", "q")
         result = self.cli("status")
-        self.assertTrue(result["continue"])
-        self.assertEqual(result["reason"], "new-findings")
+        self.assertFalse(result["continue"])
+        self.assertEqual(result["reason"], "converged")
 
     def test_status_converged(self):
         self.seeded(findings=[finding(), finding(title="Second problem."), finding(title="Not a problem.")])
@@ -474,6 +481,69 @@ class LedgerTest(unittest.TestCase):
         self.assertEqual(result["rounds"], 6)
         self.assertFalse(result["continue"])
         self.assertEqual(result["reason"], "converged")
+
+    def test_cap_counts_from_last_forced_deep_round(self):
+        self.rounds_with_open_findings(5)
+        self.begin("deep", "--mode-reason", "history-rewritten")
+        self.record(output())
+        result = self.cli("status")
+        self.assertEqual(result["rounds"], 6)
+        self.assertTrue(result["continue"])
+        self.assertEqual(result["reason"], "open-findings")
+
+    def test_final_verification_at_cap(self):
+        for _ in range(5):
+            self.begin()
+            self.record(output(findings=[]))
+        self.begin()
+        self.record(output(findings=[finding()]))
+        self.set_status("R6-F1", "fixed", "--commit", "c1")
+        result = self.cli("status")
+        self.assertTrue(result["continue"])
+        self.assertEqual(result["reason"], "final-verification")
+        self.assertEqual(result["next_mode"], "followup")
+        self.assertIsNone(result["next_focus"])
+        self.assertEqual(result["second_opinion_reasons"], [])
+        self.begin("followup")
+        self.record(output(findings=[], verdicts=[{"id": "R6-F1", "status": "verified", "reason": "ok"}]))
+        result = self.cli("status")
+        self.assertFalse(result["continue"])
+        self.assertEqual(result["reason"], "converged")
+
+    def test_unverified_fixes_after_final_verification_hit_the_cap(self):
+        for _ in range(5):
+            self.begin()
+            self.record(output(findings=[]))
+        self.begin()
+        self.record(output(findings=[finding()]))
+        self.set_status("R6-F1", "fixed", "--commit", "c1")
+        self.begin("followup")
+        self.record(output(findings=[]))
+        result = self.cli("status")
+        self.assertFalse(result["continue"])
+        self.assertEqual(result["reason"], "max-rounds")
+
+    def test_second_opinion_runs_past_cap(self):
+        self.begin()
+        self.record(output(findings=[], merge_risk={"level": "moderate", "reason": "shared state"}))
+        for _ in range(5):
+            self.begin()
+            self.record(output(findings=[]))
+        result = self.cli("status")
+        self.assertEqual(result["rounds"], 6)
+        self.assertTrue(result["continue"])
+        self.assertEqual(result["reason"], "second-opinion")
+        self.assertEqual(result["next_mode"], "deep")
+        self.assertEqual(result["next_focus"], "second-opinion")
+
+    def test_cap_floor(self):
+        plain = [{"number": n} for n in range(1, 5)]
+        self.assertEqual(review_state._cap_floor(plain, 0), 0)
+        self.assertEqual(review_state._cap_floor(plain, 2), 2)
+        forced = plain + [{"number": 5, "mode_reason": "paths-changed"}]
+        self.assertEqual(review_state._cap_floor(forced, 0), 4)
+        self.assertEqual(review_state._cap_floor(forced, 4), 4)
+        self.assertEqual(review_state._cap_floor(forced, 5), 5)
 
     def test_status_without_state_is_an_error(self):
         self.assert_error("status")

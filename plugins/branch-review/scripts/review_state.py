@@ -29,7 +29,23 @@ STATE_FILE = "review.json"
 OPEN_STATUSES = ("open", "fixed", "still-open")
 MAX_FILES = 150
 MAX_LINES = 10000
+LARGE_FILES = 40
+LARGE_LINES = 2000
 SNAPSHOT_MESSAGE = "branch-review snapshot"
+FORCED_DEEP = ("snapshot-missing", "history-rewritten", "paths-changed")
+SECOND_OPINION_FOCUS = "second-opinion"
+
+
+def _read_plugin_version() -> str:
+    manifest = Path(__file__).resolve().parent.parent / ".claude-plugin" / "plugin.json"
+    try:
+        version = json.loads(manifest.read_text(encoding="utf-8")).get("version")
+    except (OSError, ValueError, AttributeError):
+        return "unknown"
+    return version if isinstance(version, str) and version else "unknown"
+
+
+PLUGIN_VERSION = _read_plugin_version()
 
 
 class StateError(Exception):
@@ -144,6 +160,22 @@ def load_state(dir: Path) -> dict | None:
         raise StateError(f"corrupt state file {path}: {exc}") from exc
     if not isinstance(state, dict):
         raise StateError(f"corrupt state file {path}: expected a JSON object")
+    return _migrate(state)
+
+
+def _migrate(state: dict) -> dict:
+    """Bring a stored state up to the current shape; safe to run on every load.
+
+    v0.7 stored an outside-the-change finding as `deferred`, which was
+    indistinguishable from a developer's deferral. v0.8 gives it its own status.
+    """
+    for f in state.get("findings", []):
+        if not isinstance(f, dict) or f.get("scope") != "outside" or f.get("status") != "deferred":
+            continue
+        res = f.get("resolution")
+        if isinstance(res, dict) and res.get("note") == "outside the change set":
+            f["status"] = "outside"
+            res["status"] = "outside"
     return state
 
 
@@ -302,6 +334,42 @@ def simulate_base_update(repo: Path, anchor: dict, new_merge_base: str) -> str |
     return out.splitlines()[0]
 
 
+def base_conflicts(repo: Path, anchor: dict, new_merge_base: str) -> list[str] | None:
+    """The paths that conflict when the base's new commits merge into the anchor's snapshot.
+
+    `[]` means the merge is clean. None means git could not tell (`merge-tree
+    --write-tree --merge-base` needs git 2.40). Paths come NUL-separated, so
+    any file name passes through unquoted.
+    """
+    result = subprocess.run(
+        [
+            "git",
+            "merge-tree",
+            "--write-tree",
+            "--name-only",
+            "-z",
+            f"--merge-base={anchor['merge_base']}",
+            anchor["snapshot"],
+            new_merge_base,
+        ],
+        cwd=str(repo),
+        capture_output=True,
+    )
+    if result.returncode == 0:
+        return []
+    if result.returncode != 1:
+        return None
+    # The tree OID, then the conflicted paths; an empty field starts the messages.
+    fields = os.fsdecode(result.stdout).split("\0")[1:]
+    conflicts: list[str] = []
+    for path in fields:
+        if not path:
+            break
+        if path not in conflicts:
+            conflicts.append(path)
+    return conflicts
+
+
 def normalize_paths(repo: Path, patterns: list[str] | None) -> list[str]:
     """Canonical `--paths` patterns: no leading `./`, a directory becomes `dir/**`.
 
@@ -354,14 +422,23 @@ def choose_mode(repo: Path, state: dict | None, base_ref: str, paths: list[str])
         return "deep", "snapshot-missing"
     if not _is_ancestor(repo, anchor["head"], "HEAD"):
         return "deep", "history-rewritten"
-    base_updated = False
+    base_updated = conflicted = False
     new_merge_base = _merge_base(repo, base_ref)
     if anchor.get("merge_base") and anchor["merge_base"] != new_merge_base:
-        if new_merge_base is None or simulate_base_update(repo, anchor, new_merge_base) is None:
+        if new_merge_base is None:
             return "deep", "base-moved"
-        base_updated = True
+        if simulate_base_update(repo, anchor, new_merge_base) is None:
+            # Only the conflicted files, and the branch's own work, need review;
+            # when git cannot list the conflicts, review everything.
+            if not base_conflicts(repo, anchor, new_merge_base):
+                return "deep", "base-moved"
+            conflicted = True
+        else:
+            base_updated = True
     if normalize_paths(repo, anchor.get("paths")) != paths:
         return "deep", "paths-changed"
+    if conflicted:
+        return "merge-check", "base-moved"
     return "followup", "base-updated" if base_updated else "continuing"
 
 
@@ -395,6 +472,10 @@ def cmd_locate(args: argparse.Namespace) -> dict:
         stored_base = _stored_base(state)
     base = args.base or stored_base or default_base(repo)
     mode, reason = choose_mode(repo, state, base, normalize_paths(repo, args.paths))
+    conflicts: list[str] = []
+    if mode == "merge-check":
+        anchor = _anchor(_recorded(state["rounds"]))
+        conflicts = base_conflicts(repo, anchor, _merge_base(repo, base)) or []
 
     return {
         "repo_key": rkey,
@@ -406,6 +487,7 @@ def cmd_locate(args: argparse.Namespace) -> dict:
         "reason": reason,
         "rounds": rounds,
         "open_findings": open_findings,
+        "conflicts": conflicts,
     }
 
 
@@ -428,6 +510,48 @@ def _numstat(repo: Path, diff_from: str, diff_to: str) -> list[tuple[str, int]]:
     return entries
 
 
+def _check_attr(repo: Path, files: list[str], source: str | None) -> str:
+    """`git check-attr -z` output for the generated-file attributes of `files`.
+
+    Paths go in on stdin, NUL-separated, so a long list and any file name
+    (spaces, non-ASCII, quotes) pass through unchanged.
+    """
+    cmd = ["git", "check-attr", "-z"]
+    if source is not None:
+        cmd.append(f"--source={source}")
+    cmd += ["--stdin", "linguist-generated", "diff"]
+    stdin = b"".join(os.fsencode(f) + b"\0" for f in files)
+    result = subprocess.run(cmd, cwd=str(repo), input=stdin, check=True, capture_output=True)
+    return os.fsdecode(result.stdout)
+
+
+def generated_files(repo: Path, snapshot: str, files: list[str], globs: list[str]) -> set[str]:
+    """The subset of `files` that is generated.
+
+    A file is generated when it matches one of `globs`, or when its attributes
+    in `snapshot` say `linguist-generated` is set or `diff` is unset. Git older
+    than 2.40 has no `check-attr --source`, so the attributes then come from
+    the working tree.
+    """
+    found = {f for f in files if path_matches(f, globs)}
+    rest = [f for f in files if f not in found]
+    if not rest:
+        return found
+    try:
+        out = _check_attr(repo, rest, snapshot)
+    except subprocess.CalledProcessError:
+        try:
+            out = _check_attr(repo, rest, None)
+        except subprocess.CalledProcessError:
+            return found
+    fields = out.split("\0")
+    for i in range(0, len(fields) - 2, 3):
+        path, attr, value = fields[i : i + 3]
+        if (attr == "linguist-generated" and value in ("set", "true")) or (attr == "diff" and value == "unset"):
+            found.add(path)
+    return found
+
+
 def cmd_begin_round(args: argparse.Namespace) -> dict:
     repo = Path(args.repo)
     rkey, branch, directory = _locate_keys(Path(args.state_dir).expanduser(), repo)
@@ -447,6 +571,7 @@ def cmd_begin_round(args: argparse.Namespace) -> dict:
             "rounds": [],
             "findings": [],
         }
+    state.setdefault("second_opinion", {"requested": None, "skipped": False})
     # A round that was begun but never recorded reviewed nothing: drop it.
     rounds = _recorded(state.get("rounds", []))
     state["rounds"] = rounds
@@ -460,7 +585,24 @@ def cmd_begin_round(args: argparse.Namespace) -> dict:
     merge_base = _merge_base(repo, base_ref, head)
     if merge_base is None:
         raise StateError(f"no merge base between {head[:12]} and {base_ref}")
-    if args.mode == "followup":
+    conflicts: list[str] = []
+    upstream_overlap: list[str] = []
+    change_set: set[str] = set()
+    upstream: set[str] = set()
+    if args.mode == "merge-check":
+        if not rounds:
+            raise StateError("cannot start a merge-check round: no recorded round")
+        anchor = _anchor(rounds)
+        found = base_conflicts(repo, anchor, merge_base)
+        if found is None:
+            raise StateError("cannot start a merge-check round: the base update cannot be simulated; run a deep round")
+        conflicts = found
+        diff_from = anchor["snapshot"]
+        change_set = {f for f, _ in _numstat(repo, merge_base, args.snapshot)}
+        upstream_files = [f for f, _ in _numstat(repo, anchor["merge_base"], merge_base)]
+        upstream = set(upstream_files)
+        upstream_overlap = [f for f in upstream_files if f in change_set]
+    elif args.mode == "followup":
         if not rounds:
             raise StateError("cannot start a follow-up round: no recorded round")
         anchor = _anchor(rounds)
@@ -470,7 +612,7 @@ def cmd_begin_round(args: argparse.Namespace) -> dict:
             if tree is None:
                 raise StateError(
                     f"cannot start a follow-up round: the base update since round {anchor.get('number', '?')} "
-                    "has conflicts; run a deep round"
+                    "has conflicts; run a merge-check round (or deep if merge-check is unavailable)"
                 )
             # The anchor's snapshot with the base's new commits merged in, so
             # the delta shows only the branch's own work.
@@ -496,17 +638,42 @@ def cmd_begin_round(args: argparse.Namespace) -> dict:
         state["intent"] = _read_text_file(args.intent_file)
 
     paths = normalize_paths(repo, args.paths)
-    entries = _numstat(repo, diff_from, diff_to)
-    if paths:
-        entries = [(f, n) for f, n in entries if path_matches(f, paths)]
-    changed = [f for f, _ in entries]
-    lines = sum(n for _, n in entries)
+    if args.generated is not None:
+        state["generated"] = normalize_paths(repo, args.generated)
+    globs = state.setdefault("generated", [])
+
+    def measure(start: str) -> tuple[list[str], int, set[str], int, int]:
+        """Changed files and lines since `start`, and the part that counts (not generated)."""
+        entries = _numstat(repo, start, diff_to)
+        if paths:
+            entries = [(f, n) for f, n in entries if path_matches(f, paths)]
+        if mode == "merge-check":
+            # The branch's own work since the anchor plus the conflicted files;
+            # files only the base changed drop out. A file the base did not
+            # touch stays even when it no longer differs from the base (the
+            # branch deleted or reverted its own change).
+            entries = [(f, n) for f, n in entries if f not in upstream or f in change_set]
+            listed = {f for f, _ in entries}
+            entries += [(f, 0) for f in conflicts if f not in listed]
+        names = [f for f, _ in entries]
+        generated = generated_files(repo, diff_to, names, globs)
+        counted = [n for f, n in entries if f not in generated]
+        return names, sum(n for _, n in entries), generated, len(counted), sum(counted)
+
+    mode, model, mode_reason = args.mode, args.model, args.mode_reason
+    changed, lines, generated, counted_files, counted_lines = measure(diff_from)
+    if mode == "followup" and (counted_files >= LARGE_FILES or counted_lines >= LARGE_LINES):
+        # Too much changed since the last round to re-check by delta: review the
+        # whole change set from the merge base with the deep model.
+        mode, model, mode_reason = "deep", args.deep_model or args.model, "large-delta"
+        diff_from = merge_base
+        changed, lines, generated, counted_files, counted_lines = measure(diff_from)
     files = len(changed)
 
     rnd = {
         "number": len(rounds) + 1,
-        "mode": args.mode,
-        "model": args.model,
+        "mode": mode,
+        "model": model,
         "started": _now(),
         "snapshot": diff_to,
         "head": head,
@@ -518,13 +685,26 @@ def cmd_begin_round(args: argparse.Namespace) -> dict:
         "paths": paths,
         "summary": None,
         "merge_risk": None,
+        "focus": args.focus,
+        "mode_reason": mode_reason,
+        "plugin_version": PLUGIN_VERSION,
     }
+    if mode == "merge-check":
+        rnd["conflicts"] = conflicts
     # An empty round has nothing for a reviewer, so it is never saved. Existing
     # state is still saved, to drop unrecorded rounds; no state is created.
     saved = files > 0
     if saved:
         rounds.append(rnd)
     if saved or existed:
+        if args.second_opinion is not None:
+            # A request is the number of the round that made it (or would have,
+            # for an empty round); it is met by a second-opinion round numbered
+            # at least that. An empty round still stores the choice.
+            state["second_opinion"] = {
+                "requested": rnd["number"] if args.second_opinion else None,
+                "skipped": not args.second_opinion,
+            }
         save_state(directory, state)
 
     result = dict(rnd)
@@ -533,17 +713,22 @@ def cmd_begin_round(args: argparse.Namespace) -> dict:
             "dir": str(directory),
             "files": files,
             "lines": lines,
-            "oversized": files > MAX_FILES or lines > MAX_LINES,
+            "generated": sorted(generated),
+            "counted_files": counted_files,
+            "counted_lines": counted_lines,
+            "oversized": counted_files > MAX_FILES or counted_lines > MAX_LINES,
             "empty": files == 0,
             "saved": saved,
         }
     )
+    if mode == "merge-check":
+        result["upstream_overlap"] = upstream_overlap
     return result
 
 
 # --- findings ledger -------------------------------------------------------
 
-STATUSES = ("open", "fixed", "still-open", "verified", "invalid", "escalated", "deferred")
+STATUSES = ("open", "fixed", "still-open", "verified", "invalid", "escalated", "deferred", "outside")
 SEVERITIES = ("critical", "major", "minor")
 CATEGORIES = (
     "logic",
@@ -776,13 +961,13 @@ def cmd_record_findings(args: argparse.Namespace) -> dict:
         new.append(
             {
                 "id": f"R{number}-F{len(new) + 1}",
-                "status": "deferred",
+                "status": "outside",
                 "scope": "outside",
                 "round_opened": number,
                 "round_closed": None,
                 **rec,
                 "resolution": {
-                    "status": "deferred",
+                    "status": "outside",
                     "note": "outside the change set",
                     "commit": "",
                     "by": "reviewer",
@@ -902,6 +1087,60 @@ def _reported_state(directory: Path) -> dict:
     return state
 
 
+def _cycle_start(rounds: list) -> int:
+    """Number of the last recorded round that forced a deep review, else 1.
+
+    A forced deep round re-reviews the whole change, so what earlier rounds
+    found no longer counts toward a second opinion.
+    """
+    start = 1
+    for rnd in rounds:
+        if isinstance(rnd, dict) and rnd.get("mode_reason") in FORCED_DEEP:
+            start = rnd.get("number", start)
+    return start
+
+
+def second_opinion_due(state: dict) -> tuple[bool, list[str]]:
+    """Whether the recorded state calls for a second-opinion round, and why.
+
+    State from v0.7 (no round carries `plugin_version`) is exempt from the
+    automatic reasons; a `--second-opinion` request still counts.
+    """
+    rounds = [r for r in _recorded(state.get("rounds", [])) if isinstance(r, dict)]
+    opinions = [r.get("number", 0) for r in rounds if r.get("focus") == SECOND_OPINION_FOCUS]
+    flags = state.get("second_opinion") or {}
+    reasons: list[str] = []
+    requested = flags.get("requested")
+    if requested is not None and not any(n >= requested for n in opinions):
+        reasons.append("requested")
+    if flags.get("skipped") or opinions or not any("plugin_version" in r for r in rounds):
+        return bool(reasons), reasons
+    start = _cycle_start(rounds)
+    cycle = [r for r in rounds if r.get("number", 0) >= start]
+    if any(r.get("mode") == "deep" and (r.get("merge_risk") or {}).get("level") in ("moderate", "high") for r in cycle):
+        reasons.append("merge-risk")
+    if any(
+        isinstance(f, dict)
+        and f.get("scope") == "change"
+        and f.get("round_opened", 0) >= start
+        and f.get("severity") in ("critical", "major")
+        for f in state.get("findings", [])
+    ):
+        reasons.append("major-finding")
+    return bool(reasons), reasons
+
+
+def _cap_floor(rounds: list, since_round: int) -> int:
+    """Number of the last round that does not count toward the round cap.
+
+    A forced deep round restarts the review, so the round before it is the
+    floor when that is later than `since_round`.
+    """
+    if not any(isinstance(r, dict) and r.get("mode_reason") in FORCED_DEEP for r in rounds):
+        return since_round
+    return max(since_round, _cycle_start(rounds) - 1)
+
+
 def cmd_status(args: argparse.Namespace) -> dict:
     state = _reported_state(state_path(Path(args.state_dir).expanduser(), Path(args.repo)))
     rounds = state["rounds"]
@@ -909,24 +1148,36 @@ def cmd_status(args: argparse.Namespace) -> dict:
     for f in state.get("findings", []):
         counts[f.get("status")] = counts.get(f.get("status"), 0) + 1
 
+    opinion_reasons: list[str] = []
+    # Escalated findings wait for the developer; they do not keep the loop going.
     if counts["open"] or counts["still-open"]:
         cont, reason = True, "open-findings"
     elif counts["fixed"]:
         cont, reason = True, "unverified-fixes"
-    elif rounds[-1]["added"] > 0:
-        cont, reason = True, "new-findings"
     else:
-        cont, reason = False, "converged"
+        due, opinion_reasons = second_opinion_due(state)
+        if due:
+            cont, reason = True, "second-opinion"
+        else:
+            cont, reason = False, "converged"
     # The cap only stops a loop that would otherwise go on.
-    run_rounds = [r for r in rounds if r.get("number", 0) > args.since_round]
-    if cont and len(run_rounds) >= MAX_ROUNDS:
-        cont, reason = False, "max-rounds"
+    floor = _cap_floor(rounds, args.since_round)
+    run_rounds = sum(1 for r in rounds if r.get("number", 0) > floor)
+    if cont and run_rounds >= MAX_ROUNDS:
+        if reason == "unverified-fixes" and run_rounds == MAX_ROUNDS:
+            reason = "final-verification"
+        elif reason != "second-opinion":
+            cont, reason = False, "max-rounds"
+    second = reason == "second-opinion"
     return {
         "rounds": len(rounds),
         "last_mode": rounds[-1]["mode"],
         "counts": counts,
         "continue": cont,
         "reason": reason,
+        "next_mode": "deep" if second else "followup" if reason == "final-verification" else None,
+        "next_focus": SECOND_OPINION_FOCUS if second else None,
+        "second_opinion_reasons": opinion_reasons if second else [],
     }
 
 
@@ -990,6 +1241,8 @@ def cmd_covered(args: argparse.Namespace) -> dict:
                     reasons.append("base-conflict")
         if reviewed_tree is not None and _git(repo, "rev-parse", commit + "^{tree}") != reviewed_tree:
             reasons.append("changes-since-review")
+        if second_opinion_due(state)[0]:
+            reasons.append("second-opinion-pending")
 
     return {
         "covered": not reasons,
@@ -1057,6 +1310,40 @@ def _verified_details(finding: dict) -> list[str]:
     return [f"Commit: {res.get('commit') or '(none)'}"]
 
 
+def _intent_check_lines(state: dict) -> list[str]:
+    """The intent check: unmet claims from the last deep round on, and all unmentioned behavior."""
+    rounds = state["rounds"]
+    start = max((i for i, r in enumerate(rounds) if r.get("mode") == "deep"), default=0)
+
+    def collect(chosen: list, key: str) -> list[str]:
+        seen: dict[str, None] = {}
+        for r in chosen:
+            check = r.get("intent_check")
+            for text in check.get(key, []) if isinstance(check, dict) else []:
+                seen.setdefault(text)
+        return list(seen)
+
+    lines: list[str] = []
+    for label, chosen, key in (
+        ("Unmet claims:", rounds[start:], "unmet_claims"),
+        ("Behavior the intent does not mention:", rounds, "unmentioned_behavior"),
+    ):
+        items = collect(chosen, key)
+        lines.extend([*([""] if lines else []), label])
+        lines.extend(f"- {_one_line(text)}" for text in items)
+        if not items:
+            lines.append("None.")
+    return lines
+
+
+def _round_mode(rnd: dict) -> str:
+    """A round's mode as the summary shows it, naming a second opinion."""
+    mode = str(rnd.get("mode"))
+    if rnd.get("focus") == SECOND_OPINION_FOCUS:
+        mode += " (second opinion)"
+    return mode
+
+
 def render_summary(state: dict) -> str:
     rounds = state["rounds"]
     findings = state.get("findings", [])
@@ -1071,13 +1358,14 @@ def render_summary(state: dict) -> str:
     plural = "" if len(rounds) == 1 else "s"
     header = (
         f"# Review of `{state.get('branch')}` ({state.get('repo_key')}): {len(rounds)} round{plural}, "
-        f"last {last.get('mode')} with {last.get('model')}, merge risk {risk_text}"
+        f"last {_round_mode(last)} with {last.get('model')}, merge risk {risk_text}"
     )
 
     counts = {s: 0 for s in STATUSES}
     for f in findings:
         counts[f.get("status")] = counts.get(f.get("status"), 0) + 1
-    out = [header, "", "## Counts", "", "| Status | Count |", "| --- | --- |"]
+    listed = ", ".join(f"{r.get('number')} {_round_mode(r)} ({r.get('model')})" for r in rounds)
+    out = [header, "", f"Rounds: {listed}", "", "## Counts", "", "| Status | Count |", "| --- | --- |"]
     out.extend(f"| {s} | {n} |" for s, n in counts.items())
 
     sections = (
@@ -1085,6 +1373,7 @@ def render_summary(state: dict) -> str:
         ("Escalated", "escalated", _resolution_note),
         ("Deferred", "deferred", _resolution_note),
         ("Invalid", "invalid", _invalid_details),
+        ("Outside the change", "outside", _resolution_note),
         ("Fixed and verified", "verified", _verified_details),
     )
     for title, status, details in sections:
@@ -1095,6 +1384,8 @@ def render_summary(state: dict) -> str:
             out.append("None.")
         for f in chosen:
             out.extend(_entry(f, details(f)))
+        if title == "Open and unverified":
+            out.extend(["", "## Intent check", "", *_intent_check_lines(state)])
     return "\n".join(out) + "\n"
 
 
@@ -1408,7 +1699,7 @@ def _build_parser() -> argparse.ArgumentParser:
     snap.set_defaults(func=cmd_snapshot)
 
     begin = sub.add_parser("begin-round", parents=[common], help="record the start of a review round")
-    begin.add_argument("--mode", required=True, choices=("deep", "followup"))
+    begin.add_argument("--mode", required=True, choices=("deep", "followup", "merge-check"))
     begin.add_argument("--model", required=True)
     begin.add_argument("--snapshot", required=True, help="snapshot sha to review")
     begin.add_argument(
@@ -1416,6 +1707,35 @@ def _build_parser() -> argparse.ArgumentParser:
         help="ref the branch is reviewed against (default: the stored base ref, else the detected default)",
     )
     begin.add_argument("--intent-file", help="file holding the change's stated intent")
+    begin.add_argument(
+        "--focus",
+        choices=(SECOND_OPINION_FOCUS,),
+        help="what the round is for; second-opinion is the independent re-review of a risky change",
+    )
+    begin.add_argument("--mode-reason", help="why the mode was chosen, as `locate` reported it")
+    begin.add_argument(
+        "--generated",
+        nargs="+",
+        help="globs for generated files, kept out of the size checks; stored, and reused when absent",
+    )
+    begin.add_argument(
+        "--deep-model",
+        help="model for a follow-up promoted to a deep round (default: the --model value)",
+    )
+    opinion = begin.add_mutually_exclusive_group()
+    opinion.add_argument(
+        "--second-opinion",
+        dest="second_opinion",
+        action="store_true",
+        default=None,
+        help="ask for a second opinion once this round converges",
+    )
+    opinion.add_argument(
+        "--no-second-opinion",
+        dest="second_opinion",
+        action="store_false",
+        help="skip the automatic second opinion",
+    )
     begin.add_argument(
         "--paths",
         nargs="+",
