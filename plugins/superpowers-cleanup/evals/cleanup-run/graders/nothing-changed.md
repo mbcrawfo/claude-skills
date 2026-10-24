@@ -2,6 +2,7 @@
 type: tool_used
 tool: Bash
 input_match: '\bgit\s+(rm|commit|add|mv|restore|stash|reset|switch|clean|checkout)\b|\brm\s|\bmv\s|\bsed\s+-i\b'
+min: 0
 max: 0
 ---
 

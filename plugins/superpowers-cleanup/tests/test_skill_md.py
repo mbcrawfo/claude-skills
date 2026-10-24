@@ -81,6 +81,12 @@ class NothingChangedGraderTest(unittest.TestCase):
         line = next(x for x in self.GRADER.read_text().splitlines() if x.startswith("input_match:"))
         return re.compile(line.split(":", 1)[1].strip().strip("'"))
 
+    def test_bounds_allow_zero_calls(self):
+        # tool_used defaults min to 1, so max: 0 alone can never pass.
+        lines = self.GRADER.read_text().splitlines()
+        self.assertIn("min: 0", lines)
+        self.assertIn("max: 0", lines)
+
     def test_catches_changes(self):
         for cmd in [
             "git rm -r -q -- docs/x.md",
