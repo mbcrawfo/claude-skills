@@ -1311,6 +1311,32 @@ def _verified_details(finding: dict) -> list[str]:
     return [f"Commit: {res.get('commit') or '(none)'}"]
 
 
+def _intent_check_lines(state: dict) -> list[str]:
+    """The intent check: unmet claims from the last deep round on, and all unmentioned behavior."""
+    rounds = state["rounds"]
+    start = max((i for i, r in enumerate(rounds) if r.get("mode") == "deep"), default=0)
+
+    def collect(chosen: list, key: str) -> list[str]:
+        seen: dict[str, None] = {}
+        for r in chosen:
+            check = r.get("intent_check")
+            for text in check.get(key, []) if isinstance(check, dict) else []:
+                seen.setdefault(text)
+        return list(seen)
+
+    lines: list[str] = []
+    for label, chosen, key in (
+        ("Unmet claims:", rounds[start:], "unmet_claims"),
+        ("Behavior the intent does not mention:", rounds, "unmentioned_behavior"),
+    ):
+        items = collect(chosen, key)
+        lines.extend([*([""] if lines else []), label])
+        lines.extend(f"- {_one_line(text)}" for text in items)
+        if not items:
+            lines.append("None.")
+    return lines
+
+
 def render_summary(state: dict) -> str:
     rounds = state["rounds"]
     findings = state.get("findings", [])
@@ -1323,9 +1349,12 @@ def render_summary(state: dict) -> str:
     if risk:
         risk_text = f"{risk.get('level')} ({_one_line(risk.get('reason'))})"
     plural = "" if len(rounds) == 1 else "s"
+    last_mode = str(last.get("mode"))
+    if last.get("focus") == SECOND_OPINION_FOCUS:
+        last_mode += " (second opinion)"
     header = (
         f"# Review of `{state.get('branch')}` ({state.get('repo_key')}): {len(rounds)} round{plural}, "
-        f"last {last.get('mode')} with {last.get('model')}, merge risk {risk_text}"
+        f"last {last_mode} with {last.get('model')}, merge risk {risk_text}"
     )
 
     counts = {s: 0 for s in STATUSES}
@@ -1350,6 +1379,8 @@ def render_summary(state: dict) -> str:
             out.append("None.")
         for f in chosen:
             out.extend(_entry(f, details(f)))
+        if title == "Open and unverified":
+            out.extend(["", "## Intent check", "", *_intent_check_lines(state)])
     return "\n".join(out) + "\n"
 
 

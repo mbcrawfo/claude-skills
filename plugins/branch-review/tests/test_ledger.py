@@ -126,6 +126,37 @@ class LedgerTest(LedgerHarness, unittest.TestCase):
         deferred = text[text.index("## Deferred") : invalid]
         self.assertNotIn("R1-F1", deferred)
 
+    def test_summary_intent_check_section(self):
+        self.begin()
+        self.record(
+            output(
+                findings=[],
+                intent_check={"unmet_claims": ["A"], "unmentioned_behavior": ["X"]},
+            )
+        )
+        self.begin("followup")
+        self.record(
+            output(
+                findings=[],
+                intent_check={"unmet_claims": [], "unmentioned_behavior": ["X", "Y"]},
+            )
+        )
+        text = self.cli("summary")["text"]
+        section = text[text.index("## Intent check") : text.index("## Escalated")]
+        self.assertLess(text.index("## Open and unverified"), text.index("## Intent check"))
+        self.assertEqual(section.count("A"), 1, section)
+        self.assertEqual(section.count("X"), 1, section)
+        self.assertEqual(section.count("Y"), 1, section)
+        self.assertLess(section.index("X"), section.index("Y"))
+
+    def test_summary_header_names_second_opinion(self):
+        self.begin()
+        self.record(output(findings=[finding(severity="major")]))
+        self.set_status("R1-F1", "escalated", "--note", "needs a decision")
+        self.begin("deep", "--focus", "second-opinion")
+        self.record(output(findings=[]))
+        self.assertIn("last deep (second opinion) with", self.cli("summary")["text"])
+
     def assert_rejected(self, text_or_data, **kw):
         self.begin()
         before = self.review_json.read_bytes()
