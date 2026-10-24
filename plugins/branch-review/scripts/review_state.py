@@ -987,6 +987,17 @@ def second_opinion_due(state: dict) -> tuple[bool, list[str]]:
     return bool(reasons), reasons
 
 
+def _cap_floor(rounds: list, since_round: int) -> int:
+    """Number of the last round that does not count toward the round cap.
+
+    A forced deep round restarts the review, so the round before it is the
+    floor when that is later than `since_round`.
+    """
+    if not any(isinstance(r, dict) and r.get("mode_reason") in FORCED_DEEP for r in rounds):
+        return since_round
+    return max(since_round, _cycle_start(rounds) - 1)
+
+
 def cmd_status(args: argparse.Namespace) -> dict:
     state = _reported_state(state_path(Path(args.state_dir).expanduser(), Path(args.repo)))
     rounds = state["rounds"]
@@ -995,23 +1006,26 @@ def cmd_status(args: argparse.Namespace) -> dict:
         counts[f.get("status")] = counts.get(f.get("status"), 0) + 1
 
     opinion_reasons: list[str] = []
+    # Escalated findings wait for the developer; they do not keep the loop going.
     if counts["open"] or counts["still-open"]:
         cont, reason = True, "open-findings"
     elif counts["fixed"]:
         cont, reason = True, "unverified-fixes"
     else:
-        # Escalated findings wait for the developer; they do not stop this.
         due, opinion_reasons = second_opinion_due(state)
         if due:
             cont, reason = True, "second-opinion"
-        elif rounds[-1]["added"] > 0:
-            cont, reason = True, "new-findings"
         else:
             cont, reason = False, "converged"
     # The cap only stops a loop that would otherwise go on.
-    run_rounds = [r for r in rounds if r.get("number", 0) > args.since_round]
-    if cont and len(run_rounds) >= MAX_ROUNDS:
-        cont, reason = False, "max-rounds"
+    floor = _cap_floor(rounds, args.since_round)
+    run_rounds = sum(1 for r in rounds if r.get("number", 0) > floor)
+    if cont and run_rounds >= MAX_ROUNDS:
+        opinion_ran = any(r.get("focus") == SECOND_OPINION_FOCUS for r in rounds)
+        if reason == "unverified-fixes" and run_rounds == MAX_ROUNDS:
+            reason = "final-verification"
+        elif reason != "second-opinion" or opinion_ran:
+            cont, reason = False, "max-rounds"
     second = reason == "second-opinion"
     return {
         "rounds": len(rounds),
@@ -1019,7 +1033,7 @@ def cmd_status(args: argparse.Namespace) -> dict:
         "counts": counts,
         "continue": cont,
         "reason": reason,
-        "next_mode": "deep" if second else None,
+        "next_mode": "deep" if second else "followup" if reason == "final-verification" else None,
         "next_focus": SECOND_OPINION_FOCUS if second else None,
         "second_opinion_reasons": opinion_reasons if second else [],
     }

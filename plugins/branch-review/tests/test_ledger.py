@@ -373,14 +373,14 @@ class LedgerTest(LedgerHarness, unittest.TestCase):
         self.assertTrue(result["continue"])
         self.assertEqual(result["reason"], "unverified-fixes")
 
-    def test_status_continue_when_last_round_added(self):
+    def test_status_new_findings_all_invalid_or_escalated_converges(self):
         self.begin()
         self.record(output())
         self.set_status("R1-F1", "invalid", "--note", "n")
-        self.set_status("R1-F2", "invalid", "--note", "n")
+        self.set_status("R1-F2", "escalated", "--note", "q")
         result = self.cli("status")
-        self.assertTrue(result["continue"])
-        self.assertEqual(result["reason"], "new-findings")
+        self.assertFalse(result["continue"])
+        self.assertEqual(result["reason"], "converged")
 
     def test_status_converged(self):
         self.seeded(findings=[finding(), finding(title="Second problem."), finding(title="Not a problem.")])
@@ -438,6 +438,69 @@ class LedgerTest(LedgerHarness, unittest.TestCase):
         self.assertEqual(result["rounds"], 6)
         self.assertFalse(result["continue"])
         self.assertEqual(result["reason"], "converged")
+
+    def test_cap_counts_from_last_forced_deep_round(self):
+        self.rounds_with_open_findings(5)
+        self.begin("deep", "--mode-reason", "history-rewritten")
+        self.record(output())
+        result = self.cli("status")
+        self.assertEqual(result["rounds"], 6)
+        self.assertTrue(result["continue"])
+        self.assertEqual(result["reason"], "open-findings")
+
+    def test_final_verification_at_cap(self):
+        for _ in range(5):
+            self.begin()
+            self.record(output(findings=[]))
+        self.begin()
+        self.record(output(findings=[finding()]))
+        self.set_status("R6-F1", "fixed", "--commit", "c1")
+        result = self.cli("status")
+        self.assertTrue(result["continue"])
+        self.assertEqual(result["reason"], "final-verification")
+        self.assertEqual(result["next_mode"], "followup")
+        self.assertIsNone(result["next_focus"])
+        self.assertEqual(result["second_opinion_reasons"], [])
+        self.begin("followup")
+        self.record(output(findings=[], verdicts=[{"id": "R6-F1", "status": "verified", "reason": "ok"}]))
+        result = self.cli("status")
+        self.assertFalse(result["continue"])
+        self.assertEqual(result["reason"], "converged")
+
+    def test_unverified_fixes_after_final_verification_hit_the_cap(self):
+        for _ in range(5):
+            self.begin()
+            self.record(output(findings=[]))
+        self.begin()
+        self.record(output(findings=[finding()]))
+        self.set_status("R6-F1", "fixed", "--commit", "c1")
+        self.begin("followup")
+        self.record(output(findings=[]))
+        result = self.cli("status")
+        self.assertFalse(result["continue"])
+        self.assertEqual(result["reason"], "max-rounds")
+
+    def test_second_opinion_runs_past_cap(self):
+        self.begin()
+        self.record(output(findings=[], merge_risk={"level": "moderate", "reason": "shared state"}))
+        for _ in range(5):
+            self.begin()
+            self.record(output(findings=[]))
+        result = self.cli("status")
+        self.assertEqual(result["rounds"], 6)
+        self.assertTrue(result["continue"])
+        self.assertEqual(result["reason"], "second-opinion")
+        self.assertEqual(result["next_mode"], "deep")
+        self.assertEqual(result["next_focus"], "second-opinion")
+
+    def test_cap_floor(self):
+        plain = [{"number": n} for n in range(1, 5)]
+        self.assertEqual(review_state._cap_floor(plain, 0), 0)
+        self.assertEqual(review_state._cap_floor(plain, 2), 2)
+        forced = plain + [{"number": 5, "mode_reason": "paths-changed"}]
+        self.assertEqual(review_state._cap_floor(forced, 0), 4)
+        self.assertEqual(review_state._cap_floor(forced, 4), 4)
+        self.assertEqual(review_state._cap_floor(forced, 5), 5)
 
     def test_status_without_state_is_an_error(self):
         self.assert_error("status")
