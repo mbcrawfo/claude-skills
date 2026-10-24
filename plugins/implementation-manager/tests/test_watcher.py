@@ -43,6 +43,11 @@ def append(run_dir: Path, text: str) -> None:
         f.write(text)
 
 
+def append_bytes(run_dir: Path, data: bytes) -> None:
+    with open(run_dir / "requests.log", "ab") as f:
+        f.write(data)
+
+
 def assert_unlocked(run_dir: Path) -> None:
     """Fail at once, rather than deadlock, if the run lock is held while the watcher sleeps."""
     with open(run_dir / LOCK_FILE, "a") as f:
@@ -112,6 +117,22 @@ class RequestTests(WatcherTestCase):
         self.assertEqual(run_wait(self.dir), f"REQUEST a {SHA2} feat/a")
         self.assertEqual(load(self.dir)["bad_requests"], bad)
 
+    def test_undecodable_branch_is_a_bad_request(self):
+        append_bytes(self.dir, f"a push {SHA1} feat/".encode() + b"\xffx\n" + f"b push {SHA2} feat/b\n".encode())
+        self.assertEqual(run_wait(self.dir), f"REQUEST b {SHA2} feat/b")
+        self.assertEqual(load(self.dir)["bad_requests"], [f"a push {SHA1} feat/�x"])
+        self.assertEqual([p["unit"] for p in load(self.dir)["pending"]], ["b"])
+
+    def test_undecodable_unit_is_a_bad_request(self):
+        append_bytes(self.dir, b"\xfe push " + SHA1.encode() + b" feat/a\n" + f"b push {SHA2} feat/b\n".encode())
+        self.assertEqual(run_wait(self.dir), f"REQUEST b {SHA2} feat/b")
+        self.assertEqual(load(self.dir)["bad_requests"], [f"� push {SHA1} feat/a"])
+
+    def test_control_character_in_branch_is_a_bad_request(self):
+        append(self.dir, f"a push {SHA1} feat/\x00x\na push {SHA2} feat/\x7fy\nb push {SHA2} feat/b\n")
+        self.assertEqual(run_wait(self.dir), f"REQUEST b {SHA2} feat/b")
+        self.assertEqual(load(self.dir)["bad_requests"], [f"a push {SHA1} feat/\x00x", f"a push {SHA2} feat/\x7fy"])
+
     def test_carriage_return_inside_a_line_does_not_stall(self):
         append(self.dir, f"a push {SHA1}\rfeat/a\nb push {SHA2} feat/b\n")
         self.assertEqual(run_wait(self.dir), f"REQUEST b {SHA2} feat/b")
@@ -164,6 +185,22 @@ class NextTests(WatcherTestCase):
         with self.assertRaises(Timeout):
             run_wait(self.dir)
         self.assertEqual(load(self.dir)["marks"]["_next"], ["b", SHA2])
+
+    def test_next_reported_again_after_the_slot_was_held_in_between(self):
+        self.hold_a_queue_b()
+        with locked(self.dir) as state:
+            yield_slot(state, "a", "behind", NOW + 2)
+        self.assertEqual(run_wait(self.dir), f"NEXT b {SHA2}")
+        with locked(self.dir) as state:
+            go(self.dir, state, "b", SHA2, NOW + 3)
+            yield_slot(state, "b", "behind", NOW + 4)
+            go(self.dir, state, "c", SHA3, NOW + 5)
+            enqueue(state, "b", SHA2, NOW + 6)
+        with self.assertRaises(Timeout):
+            run_wait(self.dir)
+        with locked(self.dir) as state:
+            yield_slot(state, "c", "done", NOW + 7)
+        self.assertEqual(run_wait(self.dir), f"NEXT b {SHA2}")
 
     def test_next_reported_again_for_a_new_head(self):
         self.hold_a_queue_b()

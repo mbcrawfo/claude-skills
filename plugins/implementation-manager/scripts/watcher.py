@@ -8,7 +8,8 @@ from typing import Callable
 
 from runstate import REQUESTS, SHA_RE, UNIT_RE, locked, queue_order
 
-REQUEST_RE = rf"^({UNIT_RE}) push ({SHA_RE}) (\S+)$"
+# The branch is printable non-space characters: no whitespace or control characters.
+REQUEST_RE = rf"^({UNIT_RE}) push ({SHA_RE}) ([^\s\x00-\x1f\x7f]+)$"
 
 BAD_REQUESTS_KEPT = 20
 NEXT_MARK = "_next"
@@ -40,7 +41,11 @@ def take_request(run_dir: Path, state: dict, now: float) -> str | None:
     for raw in data.split(b"\n")[:-1]:
         offset += len(raw) + 1
         state["requests_offset"] = offset
-        line = raw.decode("utf-8", errors="replace")
+        try:
+            line = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            _note_bad(state, raw.decode("utf-8", errors="replace"))
+            continue
         match = re.fullmatch(REQUEST_RE, line)
         if not match or match.group(1) not in state["units"]:
             _note_bad(state, line)
@@ -55,9 +60,13 @@ def take_request(run_dir: Path, state: dict, now: float) -> str | None:
 def next_event(state: dict) -> str | None:
     """In serial mode with the slot free, report the head of the queue as `NEXT <unit> <sha>`, once per (unit, sha).
 
-    Queue entries for done units are dropped first.
+    Queue entries for done units are dropped first. While the slot is held the mark is cleared.
     """
-    if state["queue_mode"] != "serial" or state["slot"] is not None:
+    if state["queue_mode"] != "serial":
+        return None
+    if state["slot"] is not None:
+        # Someone holds the slot, so the last NEXT was answered: the next free slot reports the head afresh.
+        state["marks"].pop(NEXT_MARK, None)
         return None
     state["queue"] = [entry for entry in state["queue"] if not state["units"][entry["unit"]]["done"]]
     if not state["queue"]:
