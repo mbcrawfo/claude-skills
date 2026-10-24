@@ -7,6 +7,7 @@ stderr. The script only reads: it never writes, deletes or edits anything.
 
 Commands:
   inventory  every spec, plan and research entry, with dates, links and git state
+  refs       every line in the repo that mentions given files, by path, filename or stem
 """
 
 from __future__ import annotations
@@ -264,6 +265,82 @@ def cmd_inventory(args: argparse.Namespace) -> dict:
     }
 
 
+_KIND_RANK = {"path": 0, "filename": 1, "stem": 2}
+
+
+def ref_patterns(target: str) -> dict[str, str]:
+    path = _posix(target)
+    filename = path.rsplit("/", 1)[-1]
+    stem = _DATE_PREFIX.sub("", filename)
+    if stem.endswith(".md"):
+        stem = stem[: -len(".md")]
+    patterns = {"path": path, "filename": filename}
+    if stem and stem != filename:
+        patterns["stem"] = stem
+    return patterns
+
+
+def _relative_target(root: Path, target: str) -> str:
+    path = Path(target)
+    if path.is_absolute():
+        try:
+            path = path.resolve().relative_to(root)
+        except ValueError as exc:
+            raise CliError(f"target outside the repository: {target}") from exc
+    rel = _posix(str(path))
+    if not rel or not (root / rel).exists():
+        raise CliError(f"no such file: {target}")
+    return rel
+
+
+def _in_targets(file: str, targets: list[str]) -> bool:
+    return any(file == t or file.startswith(t + "/") for t in targets)
+
+
+def find_refs(root: Path, targets: list[str]) -> list[dict]:
+    results = []
+    for target in targets:
+        patterns = ref_patterns(target)
+        argv = ["grep", "-n", "-I", "--untracked", "-F", "-z"]
+        for value in patterns.values():
+            argv += ["-e", value]
+        result = _git(root, *argv, check=False)
+        if result.returncode not in (0, 1):
+            first = (result.stderr.strip().splitlines() or ["git grep failed"])[0]
+            raise CliError(first)
+        matches = []
+        for line in result.stdout.split("\n"):
+            parts = line.split("\0", 2)
+            if len(parts) != 3:
+                continue
+            file, lineno, text = parts
+            kind = min(
+                (k for k, v in patterns.items() if v in text),
+                key=_KIND_RANK.__getitem__,
+                default=None,
+            )
+            if kind is None:
+                continue
+            matches.append(
+                {
+                    "file": file,
+                    "line": int(lineno),
+                    "text": text.strip()[:300],
+                    "match": kind,
+                    "in_target": _in_targets(file, targets),
+                }
+            )
+        matches.sort(key=lambda m: (m["file"], m["line"]))
+        results.append({"target": target, "matches": matches})
+    return results
+
+
+def cmd_refs(args: argparse.Namespace) -> dict:
+    root = repo_root(Path(args.repo))
+    targets = [_relative_target(root, t) for t in args.targets]
+    return {"targets": find_refs(root, targets)}
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="docs_inventory.py", description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -275,6 +352,11 @@ def _parser() -> argparse.ArgumentParser:
     inv.add_argument("--research", default=DEFAULT_RESEARCH)
     inv.add_argument("--base", default=None)
     inv.set_defaults(func=cmd_inventory)
+
+    refs = sub.add_parser("refs", help="find every mention of the given files")
+    refs.add_argument("--repo", default=".")
+    refs.add_argument("targets", nargs="+")
+    refs.set_defaults(func=cmd_refs)
     return parser
 
 
