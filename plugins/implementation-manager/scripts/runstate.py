@@ -262,6 +262,21 @@ def _first_queued(state: dict) -> str | None:
     return None
 
 
+def _note_answered(run_dir: Path, state: dict, unit: str, sha: str) -> None:
+    """Remember that the unit's requests for `sha` written so far are answered.
+
+    The manager may answer a request before any wait has read it. The watcher skips such a line, one that ends
+    at or before requests.log's size at the answer, instead of taking it as a new, unanswered request. A request
+    for the same sha written after the answer is new.
+    """
+    try:
+        size = (run_dir / REQUESTS).stat().st_size
+    except FileNotFoundError:
+        return
+    if size > state["requests_offset"]:  # otherwise every request so far has been read
+        state["marks"].setdefault(unit, {}).setdefault("answered", {})[sha] = size
+
+
 def go(run_dir: Path, state: dict, unit: str, sha: str, now: float) -> None:
     """Answer a push request with `go`: log it and, in serial mode, take the slot.
 
@@ -281,6 +296,7 @@ def go(run_dir: Path, state: dict, unit: str, sha: str, now: float) -> None:
         if first not in (None, unit):
             raise RunError(f"{first!r} is first in the queue; use queue to line {unit!r} up behind it")
     _append(run_dir, PUSHES, f"{unit} go {sha}\n")
+    _note_answered(run_dir, state, unit, sha)
     _drop_entries(state, unit, "pending", "queue")
     marks = state["marks"].setdefault(unit, {})
     if marks.get("head") == sha:
@@ -305,13 +321,14 @@ def redo(run_dir: Path, state: dict, unit: str, sha: str, reasons: str) -> None:
     if not reasons.strip() or "\n" in reasons or "\r" in reasons:
         raise RunError("redo reasons must be a single non-empty line")
     _append(run_dir, PUSHES, f"{unit} redo {sha} {reasons}\n")
+    _note_answered(run_dir, state, unit, sha)
     _drop_entries(state, unit, "pending", "queue")
     state["marks"].get(unit, {}).pop("go_head", None)
     if _holds_slot(state, unit):
         state["slot"] = None
 
 
-def enqueue(state: dict, unit: str, sha: str, now: float) -> None:
+def enqueue(run_dir: Path, state: dict, unit: str, sha: str, now: float) -> None:
     """Line a unit's request up behind the slot holder, replacing any earlier entry; the same sha keeps its time."""
     _refuse_stopped(_unit(state, unit), unit)
     _check_sha(sha)
@@ -322,6 +339,7 @@ def enqueue(state: dict, unit: str, sha: str, now: float) -> None:
     # The same sha queued again (a NEXT whose go was refused) keeps its place.
     at = next((entry["at"] for entry in state["queue"] if entry["unit"] == unit and entry["sha"] == sha), now)
     _drop_entries(state, unit, "pending", "queue")
+    _note_answered(run_dir, state, unit, sha)
     state["queue"].append({"unit": unit, "sha": sha, "at": at, "front": has_open_pr(state, unit)})
 
 

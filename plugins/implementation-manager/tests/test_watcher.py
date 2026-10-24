@@ -197,6 +197,90 @@ class RequestTests(WatcherTestCase):
         self.assertEqual(clock.sleeps, [5.0, 5.0, 5.0])
 
 
+class AnsweredBeforeReadTests(WatcherTestCase):
+    """The manager answers a request it found before any wait read it, e.g. while handling another unit's."""
+
+    def test_redo_before_wait_reads_the_request(self):
+        append(self.dir, f"a push {SHA1} feat/a\nb push {SHA2} feat/b\n")
+        self.assertEqual(run_wait(self.dir), f"REQUEST a {SHA1} feat/a")
+        with locked(self.dir) as state:
+            redo(self.dir, state, "a", SHA1, "not covered")
+            redo(self.dir, state, "b", SHA2, "not covered")
+        with self.assertRaises(Timeout):
+            run_wait(self.dir)
+        state = load(self.dir)
+        self.assertEqual(state["pending"], [])
+        self.assertEqual(state["requests_offset"], (self.dir / "requests.log").stat().st_size)
+
+    def test_go_before_wait_reads_the_request_keeps_the_go(self):
+        append(self.dir, f"a push {SHA1} feat/a\n")
+        with locked(self.dir) as state:
+            go(self.dir, state, "a", SHA1, NOW)
+        with self.assertRaises(Timeout):
+            run_wait(self.dir)
+        state = load(self.dir)
+        self.assertEqual(state["pending"], [])
+        self.assertIn("go_head", state["marks"]["a"])  # the request came before the go, so it does not end it
+
+    def test_queue_before_wait_reads_the_request(self):
+        with locked(self.dir) as state:
+            go(self.dir, state, "a", SHA1, NOW)
+        append(self.dir, f"b push {SHA2} feat/b\n")
+        with locked(self.dir) as state:
+            enqueue(self.dir, state, "b", SHA2, NOW + 1)
+        with self.assertRaises(Timeout):
+            run_wait(self.dir)
+        state = load(self.dir)
+        self.assertEqual(state["pending"], [])
+        self.assertEqual([entry["unit"] for entry in state["queue"]], ["b"])
+
+    def test_the_same_sha_asked_again_after_the_answer_is_reported(self):
+        append(self.dir, f"a push {SHA1} feat/a\n")
+        with locked(self.dir) as state:
+            redo(self.dir, state, "a", SHA1, "not covered")
+        append(self.dir, f"a push {SHA1} feat/a\n")
+        self.assertEqual(run_wait(self.dir), f"REQUEST a {SHA1} feat/a")
+        self.assertEqual([entry["sha"] for entry in load(self.dir)["pending"]], [SHA1])
+
+    def test_an_answer_for_another_sha_does_not_cover_the_request(self):
+        append(self.dir, f"a push {SHA2} feat/a\n")
+        with locked(self.dir) as state:
+            redo(self.dir, state, "a", SHA1, "not covered")
+        self.assertEqual(run_wait(self.dir), f"REQUEST a {SHA2} feat/a")
+
+    def test_answers_are_forgotten_once_read_past(self):
+        append(self.dir, f"a push {SHA1} feat/a\n")
+        with locked(self.dir) as state:
+            redo(self.dir, state, "a", SHA1, "not covered")
+        with self.assertRaises(Timeout):
+            run_wait(self.dir)
+        append(self.dir, f"b push {SHA2} feat/b\n")
+        run_wait(self.dir)
+        self.assertNotIn("answered", load(self.dir)["marks"].get("a", {}))
+
+    def test_truncation_forgets_answers_and_keeps_the_next_mark(self):
+        append(self.dir, f"a push {SHA1} feat/a\nb push {SHA2} feat/b\n")
+        run_wait(self.dir)
+        with locked(self.dir) as state:
+            go(self.dir, state, "a", SHA1, NOW)
+            enqueue(self.dir, state, "b", SHA2, NOW + 1)
+            yield_slot(state, "a", "behind", NOW + 2)
+            self.assertEqual(next_event(state), f"NEXT b {SHA2}")
+        self.assertIn("answered", load(self.dir)["marks"]["b"])
+        (self.dir / "requests.log").write_text(f"b push {SHA2} x\n", encoding="utf-8")
+        self.assertEqual(run_wait(self.dir), f"REQUEST b {SHA2} x")
+        marks = load(self.dir)["marks"]
+        self.assertNotIn("answered", marks["b"])
+        self.assertEqual(marks["_next"], ["b", SHA2])
+
+    def test_an_answer_after_every_request_was_read_is_not_kept(self):
+        append(self.dir, f"a push {SHA1} feat/a\n")
+        run_wait(self.dir)
+        with locked(self.dir) as state:
+            redo(self.dir, state, "a", SHA1, "not covered")
+        self.assertNotIn("answered", load(self.dir)["marks"].get("a", {}))
+
+
 class PendingTests(WatcherTestCase):
     def setUp(self):
         super().setUp()
@@ -241,7 +325,7 @@ class NextTests(WatcherTestCase):
     def hold_a_queue_b(self):
         with locked(self.dir) as state:
             go(self.dir, state, "a", SHA1, NOW)
-            enqueue(state, "b", SHA2, NOW + 1)
+            enqueue(self.dir, state, "b", SHA2, NOW + 1)
 
     def test_no_next_while_slot_held(self):
         self.hold_a_queue_b()
@@ -266,7 +350,7 @@ class NextTests(WatcherTestCase):
             go(self.dir, state, "b", SHA2, NOW + 3)
             yield_slot(state, "b", "behind", NOW + 4)
             go(self.dir, state, "c", SHA3, NOW + 5)
-            enqueue(state, "b", SHA2, NOW + 6)
+            enqueue(self.dir, state, "b", SHA2, NOW + 6)
         with self.assertRaises(Timeout):
             run_wait(self.dir)
         with locked(self.dir) as state:
@@ -282,7 +366,7 @@ class NextTests(WatcherTestCase):
             go(self.dir, state, "b", SHA2, NOW + 3)
             yield_slot(state, "b", "behind", NOW + 4)
             go(self.dir, state, "c", SHA3, NOW + 5)
-            enqueue(state, "b", SHA2, NOW + 6)
+            enqueue(self.dir, state, "b", SHA2, NOW + 6)
             yield_slot(state, "c", "done", NOW + 7)
         self.assertEqual(run_wait(self.dir), f"NEXT b {SHA2}")
 
@@ -292,20 +376,20 @@ class NextTests(WatcherTestCase):
             yield_slot(state, "a", "behind", NOW + 2)
         self.assertEqual(run_wait(self.dir), f"NEXT b {SHA2}")
         with locked(self.dir) as state:
-            enqueue(state, "b", SHA3, NOW + 3)
+            enqueue(self.dir, state, "b", SHA3, NOW + 3)
         self.assertEqual(run_wait(self.dir), f"NEXT b {SHA3}")
 
     def test_next_skips_and_drops_done_units(self):
         with locked(self.dir) as state:
-            enqueue(state, "c", SHA3, NOW)
-            enqueue(state, "b", SHA2, NOW + 1)
+            enqueue(self.dir, state, "c", SHA3, NOW)
+            enqueue(self.dir, state, "b", SHA2, NOW + 1)
             record_merged(state, "c", 7, more=False)
         self.assertEqual(run_wait(self.dir), f"NEXT b {SHA2}")
         self.assertEqual([e["unit"] for e in load(self.dir)["queue"]], ["b"])
 
     def test_no_next_in_parallel_mode(self):
         with locked(self.dir) as state:
-            enqueue(state, "b", SHA2, NOW)
+            enqueue(self.dir, state, "b", SHA2, NOW)
             state["queue_mode"] = "parallel"
             self.assertIsNone(next_event(state))
 
@@ -507,7 +591,7 @@ class ReadyTests(PrTestCase):
         gh = self.gh_a(make_pr())
         self.assert_quiet(gh)
         with locked(self.dir) as state:
-            enqueue(state, "b", HEAD_B, self.clock.now())
+            enqueue(self.dir, state, "b", HEAD_B, self.clock.now())
             yield_slot(state, "c", "test", self.clock.now())
         self.assertEqual(self.wait(gh), f"READY a 7 {HEAD_A}")
         self.assertEqual(self.wait(gh), f"NEXT b {HEAD_B}")
