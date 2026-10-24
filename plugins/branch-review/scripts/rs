@@ -1,0 +1,39 @@
+#!/bin/sh
+# rs: run review_state.py with --state-dir and --repo filled in.
+#
+# Usage: rs <command> [args...]
+#
+# Appends --state-dir "$CLAUDE_PLUGIN_DATA" unless one is given, and
+# --repo "<git top level>" unless one is given and the current directory is
+# inside a git repository. Explicit arguments always win. The exit status is
+# review_state.py's.
+
+dir=$(cd "$(dirname "$0")" && pwd) || exit 1
+
+have_state=0
+have_repo=0
+want_help=0
+for arg in "$@"; do
+    case $arg in
+        --state-dir | --state-dir=*) have_state=1 ;;
+        --repo | --repo=*) have_repo=1 ;;
+        -h | --help) want_help=1 ;;
+    esac
+done
+
+if [ "$have_state" = 0 ]; then
+    if [ -n "${CLAUDE_PLUGIN_DATA:-}" ]; then
+        set -- "$@" --state-dir "$CLAUDE_PLUGIN_DATA"
+    elif [ "$want_help" = 0 ]; then
+        echo "error: CLAUDE_PLUGIN_DATA is not set; pass --state-dir" >&2
+        exit 1
+    fi
+fi
+
+if [ "$have_repo" = 0 ]; then
+    if top=$(git rev-parse --show-toplevel 2>/dev/null) && [ -n "$top" ]; then
+        set -- "$@" --repo "$top"
+    fi
+fi
+
+exec python3 "$dir/review_state.py" "$@"
