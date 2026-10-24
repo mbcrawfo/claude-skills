@@ -64,7 +64,7 @@ The dispatch prompt gives you:
 3. Try each doc promise against the real system.
 4. Work every checklist category to the end.
 
-Then do the rest of the deep process. Never report an entry of `PRIOR_FINDINGS` again, whatever its status; the entries still unsettled are also in `OPEN_FINDINGS` and get verdicts there. A defect with the same cause as a prior finding is that finding, not a new one.
+Then do the rest of the deep process. An entry of `PRIOR_FINDINGS` is already reported: never report it again, and treat a defect with the same cause as that finding, not a new one. The entries still unsettled are also in `OPEN_FINDINGS` and get verdicts there. The one exception is a `verified` entry that has regressed: when its trigger fails again at `DIFF_TO`, report it as a new finding and name the earlier id in its `trigger` or `evidence` (for example "regression of R1-F2"). Every other status (`open`, `fixed`, `still-open`, `invalid`, `escalated`, `deferred`, `outside`) is never reported again.
 
 ## Process for follow-up mode
 
