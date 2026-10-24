@@ -297,13 +297,15 @@ git commit -m "feat(superpowers-cleanup): refs command for references to doc fil
 
 ```python
 def test_frontmatter(self):
-    meta = parse_frontmatter(SKILL)   # simple "key: value" lines between the first two "---"
+    meta = parse_frontmatter(SKILL)  # simple "key: value" lines between the first two "---"
     self.assertEqual(meta["name"], "cleanup")
     self.assertEqual(meta["disable-model-invocation"], "true")
     self.assertIn("manual", meta["description"].lower())
 
+
 def test_no_dollar_digit(self):
     self.assertIsNone(re.search(r"\$\d", SKILL.read_text()))
+
 
 def test_names_only_real_script_commands(self):
     text = SKILL.read_text()
