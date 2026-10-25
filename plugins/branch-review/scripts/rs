@@ -7,6 +7,9 @@
 # --repo "<git top level>" unless one is given and the current directory is
 # inside a git repository. Explicit arguments always win. The exit status is
 # review_state.py's.
+#
+# Claude Code does not export CLAUDE_PLUGIN_DATA to Bash shells, so the skills
+# set it on each call from the path Claude Code writes into the skill text.
 
 dir=$(cd "$(dirname "$0")" && pwd) || exit 1
 

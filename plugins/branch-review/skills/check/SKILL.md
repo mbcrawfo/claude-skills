@@ -11,10 +11,10 @@ Answers one question: has a clean `/branch-review:review` seen everything in thi
 The state script runs through the `rs` wrapper, by its full path. Write the command out in full; never put it in a shell variable, since variables do not survive between Bash calls and zsh does not split them into words:
 
 ```
-"${CLAUDE_SKILL_DIR}/../../scripts/rs" covered --repo "<repo>" --commit "<sha>"
+CLAUDE_PLUGIN_DATA="${CLAUDE_PLUGIN_DATA}" "${CLAUDE_SKILL_DIR}/../../scripts/rs" covered --repo "<repo>" --commit "<sha>"
 ```
 
-- The wrapper adds `--state-dir "$CLAUDE_PLUGIN_DATA"`. Add `--state-dir "<path>"` yourself only when one was given (the same directory the review ran with). If the command fails with `error: CLAUDE_PLUGIN_DATA is not set; pass --state-dir`, stop and report it. Never substitute a directory of your own.
+- Claude Code writes in both `${...}` paths when it loads this skill, but it does not set `CLAUDE_PLUGIN_DATA` in Bash shells, so keep the `CLAUDE_PLUGIN_DATA="..."` prefix on every call. The wrapper passes it on as `--state-dir`. Add `--state-dir "<path>"` yourself only when one was given (the same directory the review ran with). If the command fails with `error: CLAUDE_PLUGIN_DATA is not set; pass --state-dir`, stop and report it. Never substitute a directory of your own.
 - `<repo>` is the `--repo` value, the path of the repository checkout to check. Without one, use the output of `git rev-parse --show-toplevel` in the current directory; if that fails, report it and stop.
 - `<sha>` is the `--commit` value, any ref that names a commit. Without one, leave `--commit "<sha>"` off the command and the script checks `HEAD` of `<repo>`.
 

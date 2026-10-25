@@ -11,10 +11,10 @@ Lists the review state that `/branch-review:review` keeps, or removes some of it
 Every state command runs through the `rs` wrapper, by its full path, written out in each Bash call:
 
 ```
-"${CLAUDE_SKILL_DIR}/../../scripts/rs" <command> ...
+CLAUDE_PLUGIN_DATA="${CLAUDE_PLUGIN_DATA}" "${CLAUDE_SKILL_DIR}/../../scripts/rs" <command> ...
 ```
 
-Below, `rs <command>` means this. Never put the path or a command in a shell variable: variables do not survive between Bash calls, and zsh does not split `$RS` into words. The wrapper adds `--state-dir "$CLAUDE_PLUGIN_DATA"`, and `--repo` (the repo's top level) when you give none and the current directory is in a git repo. When the user gave a `--state-dir` (the same directory they gave `/branch-review:review`), and only then, pass `--state-dir "<path>"` to every command. Each command prints one JSON object. On failure it exits 1 and prints one line on stderr. If that line is `error: CLAUDE_PLUGIN_DATA is not set; pass --state-dir`, stop and report it. Never substitute a directory of your own.
+Below, `rs <command>` means this. Never put the path or a command in a shell variable: variables do not survive between Bash calls, and zsh does not split `$RS` into words. Claude Code writes in both `${...}` paths when it loads this skill, but it does not set `CLAUDE_PLUGIN_DATA` in Bash shells, so keep the `CLAUDE_PLUGIN_DATA="..."` prefix on every call. The wrapper passes it on as `--state-dir`, and adds `--repo` (the repo's top level) when you give none and the current directory is in a git repo. When the user gave a `--state-dir` (the same directory they gave `/branch-review:review`), and only then, pass `--state-dir "<path>"` to every command. Each command prints one JSON object. On failure it exits 1 and prints one line on stderr. If that line is `error: CLAUDE_PLUGIN_DATA is not set; pass --state-dir`, stop and report it. Never substitute a directory of your own.
 
 Check the arguments first. Each of these is a usage error: report it with the usage line `[--branch | --repo | --all] [--older-than DAYS] [--yes] [--state-dir PATH]` and stop, removing nothing.
 

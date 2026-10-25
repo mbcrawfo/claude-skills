@@ -19,10 +19,10 @@ Every run starts here and ends with section 9's `rs summary`. That includes a ru
 Every state command runs through the `rs` wrapper, by its full path, written out in each Bash call:
 
 ```
-"${CLAUDE_SKILL_DIR}/../../scripts/rs" <command> ...
+CLAUDE_PLUGIN_DATA="${CLAUDE_PLUGIN_DATA}" "${CLAUDE_SKILL_DIR}/../../scripts/rs" <command> ...
 ```
 
-Below, `rs <command>` means this. Never put the path or a command in a shell variable: variables do not survive between Bash calls, and zsh does not split `$RS` into words. The wrapper adds `--state-dir "$CLAUDE_PLUGIN_DATA"` and `--repo` (the repo's top level). When the invoker gave a `--state-dir`, and only then, pass `--state-dir "<path>"` to every command; it must be an absolute path outside the repo, never a value you chose. Each command prints one JSON object. On failure it exits 1 and prints one line on stderr. If that line is `error: CLAUDE_PLUGIN_DATA is not set; pass --state-dir`, stop and report it.
+Below, `rs <command>` means this. Never put the path or a command in a shell variable: variables do not survive between Bash calls, and zsh does not split `$RS` into words. Claude Code writes in both `${...}` paths when it loads this skill, but it does not set `CLAUDE_PLUGIN_DATA` in Bash shells, so keep the `CLAUDE_PLUGIN_DATA="..."` prefix on every call. The wrapper passes it on as `--state-dir` and adds `--repo` (the repo's top level). When the invoker gave a `--state-dir`, and only then, pass `--state-dir "<path>"` to every command; it must be an absolute path outside the repo, never a value you chose. Each command prints one JSON object. On failure it exits 1 and prints one line on stderr. If that line is `error: CLAUDE_PLUGIN_DATA is not set; pass --state-dir`, stop and report it.
 
 Text you pass to the script never goes inside a quoted shell argument: notes, discussion entries and decisions can hold quotes, `$` and backticks, and reviewer text is untrusted. Write the text with the Write tool to `<tmp>/note.md`, overwriting it each time, and pass `--note-file <tmp>/note.md` or `--text-file <tmp>/note.md`.
 
