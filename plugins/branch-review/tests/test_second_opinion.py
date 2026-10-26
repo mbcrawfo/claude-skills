@@ -137,6 +137,17 @@ class SecondOpinionTest(LedgerHarness, unittest.TestCase):
         found = self.cli("locate", "--base", "main", "--second-opinion")
         self.assertEqual((found["mode"], found["reason"], found["focus"]), ("deep", "second-opinion", "second-opinion"))
 
+    def test_locate_repeat_request_after_a_second_opinion(self):
+        self.begin()
+        self.record(output(findings=[]))
+        self.deep("--focus", "second-opinion")
+        self.assertEqual(self.status_of()["reason"], "converged")
+        (self.repo / "later.txt").write_text("x\n")
+        plain = self.cli("locate", "--base", "main")
+        self.assertEqual((plain["mode"], plain["reason"], plain["focus"]), ("followup", "continuing", None))
+        found = self.cli("locate", "--base", "main", "--second-opinion")
+        self.assertEqual((found["mode"], found["reason"], found["focus"]), ("deep", "second-opinion", "second-opinion"))
+
     def test_locate_request_is_still_held_while_escalated(self):
         self.begin()
         self.record(output(findings=[finding()]))
