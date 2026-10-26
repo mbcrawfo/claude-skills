@@ -144,13 +144,14 @@ def _needs(run_dir: Path, state: dict) -> list[str]:
         wrong = _wrong_base(state, name)
         if wrong:
             needs.append(f"{_label(state, name)} PR #{marks['pr']} {wrong}: tell its child to retarget it")
-        if "go_head" in marks:
+        go_sha = marks.get("go_sha")
+        if go_sha and marks.get("synced_sha") == go_sha:
+            # The watcher saw the push land (it marks synced_sha, and with an open PR pops go_head)
+            # but `synced` never ran: no SYNCED repeats.
+            needs.append(f"integration push landed: run synced {name} {go_sha}")
+        elif "go_head" in marks:
             sha = _last_go(run_dir, name)
-            if sha and marks.get("go_sha") == sha and marks.get("synced_sha") == sha:
-                # The watcher saw the push land (it marks synced_sha) but `synced` never ran: no SYNCED repeats.
-                needs.append(f"integration push landed: run synced {name} {sha}")
-            else:
-                needs.append(f"push approved for {name} {sha[:7] if sha else '-'}, not seen yet")
+            needs.append(f"push approved for {name} {sha[:7] if sha else '-'}, not seen yet")
         elif _behind_holder(state, name):
             needs.append(f"slot holder {name} PR #{marks['pr']} behind base")
         if (

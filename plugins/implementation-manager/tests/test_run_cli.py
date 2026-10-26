@@ -816,6 +816,26 @@ class IntegrationCliTests(CliTestCase):
         self.ok("synced", str(self.dir), "int", SHA1)
         self.assertFalse([line for line in self.status() if "int" in line and "push" in line])
 
+    def test_a_landed_integration_push_points_to_synced_with_the_final_pr_open(self):
+        # R4-F1: the watcher popped go_head when the open final PR's head moved, so the landed line must not need it.
+        self.init_integration()
+        self.ok("open-ready", str(self.dir))
+        state = self.state()
+        state["units"]["int"]["prs"] = {"7": "OPEN"}
+        state["marks"]["int"] = {"pr": 7, "head": HEAD_A}
+        (self.dir / "run.json").write_text(json.dumps(state))
+        self.ok("go", str(self.dir), "int", SHA1)
+        state = self.state()
+        self.assertEqual(state["marks"]["int"]["go_head"], HEAD_A)
+        state["marks"]["int"].pop("go_head")
+        state["marks"]["int"].update(head=SHA1, synced_sha=SHA1)  # what the watcher does on the head change
+        (self.dir / "run.json").write_text(json.dumps(state))
+        lines = self.status()
+        self.assertIn(f"  - integration push landed: run synced int {SHA1}", lines)
+        self.assertFalse([line for line in lines if "not seen yet" in line], lines)
+        self.ok("synced", str(self.dir), "int", SHA1)
+        self.assertNotIn("- integration sync in flight", self.status())
+
     def test_synced_clears_the_sync_in_flight_line(self):
         self.init_integration()
         self.ok("open-ready", str(self.dir))
