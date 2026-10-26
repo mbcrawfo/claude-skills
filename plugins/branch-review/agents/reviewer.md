@@ -67,7 +67,7 @@ The dispatch prompt gives you:
 
 ## Process for second-opinion focus
 
-`FOCUS: second-opinion` means an earlier deep review has run, no finding is open, and this is the second deep look. Claimed fixes may still be unverified: they are in `OPEN_FINDINGS` for your verdicts. Do the whole deep process over the whole change set at `DIFF_TO`. A first pass most often skips four steps, so do these first once you have read the change (deep steps 1 and 2), and never cut them short:
+`FOCUS: second-opinion` means an earlier deep review has run, no finding is open, and this is the second deep look. Claimed fixes may still be unverified: they are in `OPEN_FINDINGS` for your verdicts. Do the whole deep process over the whole change set at `DIFF_TO`. A first pass most often skips the steps below, so do these five first once you have read the change (deep steps 1 and 2), and never cut them short:
 
 1. Check each entry of `EARLIER_NOT_CHECKED`. Run what an earlier round could not, or list it again under `not_checked` with its reason.
 2. Read the related records, the plan's assumptions included (deep step 3).

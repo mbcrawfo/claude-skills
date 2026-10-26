@@ -82,6 +82,14 @@ class SummaryTest(LedgerHarness, unittest.TestCase):
         self.record(output(findings=[], not_checked=[{"what": "probe A", "reason": "no docker"}]))
         self.assertEqual(self.section(self.summary_text(), "Not checked"), "- probe A: no docker")
 
+    def test_not_checked_survives_a_follow_up(self):
+        self.begin()
+        self.record(output(findings=[], not_checked=[{"what": "probe A", "reason": "no docker"}]))
+        self.begin("followup")
+        self.record(output(findings=[], not_checked=[]))
+        self.assertEqual(self.section(self.summary_text(), "Not checked"), "- probe A: no docker")
+        self.assertEqual(self.section(self.cli("summary")["review_notes"], "Not checked"), "- probe A: no docker")
+
     def test_unmentioned_from_latest_deep_round_on(self):
         def check(text):
             return output(findings=[], intent_check={"unmet_claims": [], "unmentioned_behavior": [text]})
@@ -125,6 +133,14 @@ class SummaryTest(LedgerHarness, unittest.TestCase):
         self.assertEqual(
             line, "1 round (1 deep with m); second opinion: no; merge risk low (round 1, the latest deep round)."
         )
+
+    def test_review_notes_risk_comes_from_the_latest_deep_round(self):
+        self.begin()
+        self.record(output(findings=[], merge_risk={"level": "moderate", "reason": "shared state"}))
+        self.begin("followup")
+        self.record(output(findings=[], merge_risk={"level": "low", "reason": "small delta"}))
+        line = self.cli("summary")["review_notes"].splitlines()[2]
+        self.assertTrue(line.endswith("merge risk moderate (round 1, the latest deep round)."), line)
 
     def test_review_notes_collapses_empty(self):
         self.begin()

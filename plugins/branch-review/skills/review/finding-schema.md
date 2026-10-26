@@ -177,6 +177,8 @@ The current cycle starts at the last recorded forced deep restart, else at round
 | `continuing` | followup | none of the above |
 | `second-opinion` | deep | the row above is `continuing` or `base-updated`, no finding is `open` or `still-open`, and a second opinion is due; `focus` is `second-opinion` and the `fixed` findings in `open_findings` get verdicts |
 
+`locate --second-opinion` or `--no-second-opinion` counts the invoker's flag in the `second-opinion` row as the next `begin-round` will store it (a request numbered as the next round, or a skip), so a requested second opinion replaces the follow-up; the escalation hold still applies. The skill passes it on a run's first `locate` only.
+
 The rows are checked in this order. `locate` prints `repo_key`, `branch`, `base`, `dir`, `exists`, `mode`, `reason`, `focus` (`second-opinion` or null), `rounds` (recorded), `open_findings`, `conflicts` (empty unless the mode is `merge-check`), `plugin_version` (the running plugin's version) and `earlier_not_checked` (the `not_checked` entries of the current cycle's recorded deep rounds, one per `what`, the latest kept, each with its `round`). `open_findings` is returned in every case, so a deep round after an earlier one carries them forward. `locate` and `begin-round` use `--base` / `--base-ref` when given, else the stored `base_ref`, else `origin/HEAD`'s target, else `main`.
 
 ## begin-round

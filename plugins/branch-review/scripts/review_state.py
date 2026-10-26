@@ -499,12 +499,21 @@ def cmd_locate(args: argparse.Namespace) -> dict:
         stored_base = _stored_base(state)
     base = args.base or stored_base or default_base(repo)
     mode, reason = choose_mode(repo, state, base, normalize_paths(repo, args.paths))
+    probe = state
+    if state is not None and args.second_opinion is not None:
+        # The invoker's flag is stored only by the next begin-round; count it now,
+        # as that round would, so a requested second opinion replaces the follow-up.
+        probe = dict(state)
+        probe["second_opinion"] = {
+            "requested": rounds + 1 if args.second_opinion else None,
+            "skipped": not args.second_opinion,
+        }
     focus = None
     if (
         mode == "followup"
         and reason in ("continuing", "base-updated")
         and not any(f.get("status") in ("open", "still-open") for f in open_findings)
-        and second_opinion_due(state)[0]
+        and second_opinion_due(probe)[0]
     ):
         # The second opinion replaces the follow-up and verifies the claimed fixes.
         mode, reason, focus = "deep", SECOND_OPINION_FOCUS, SECOND_OPINION_FOCUS
@@ -2018,6 +2027,20 @@ def _build_parser() -> argparse.ArgumentParser:
     locate = sub.add_parser("locate", parents=[common], help="find state for the current branch")
     locate.add_argument("--base", help="base ref (default: the stored base ref, else the detected default)")
     locate.add_argument("--paths", nargs="+", help="the --paths the next round will use")
+    wish = locate.add_mutually_exclusive_group()
+    wish.add_argument(
+        "--second-opinion",
+        dest="second_opinion",
+        action="store_true",
+        default=None,
+        help="count the invoker's --second-opinion, which the next begin-round stores",
+    )
+    wish.add_argument(
+        "--no-second-opinion",
+        dest="second_opinion",
+        action="store_false",
+        help="count the invoker's --no-second-opinion, which the next begin-round stores",
+    )
     locate.set_defaults(func=cmd_locate)
 
     snap = sub.add_parser(

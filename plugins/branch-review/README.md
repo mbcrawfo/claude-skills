@@ -59,6 +59,7 @@ State is kept outside the repo, in the plugin's data directory, which Claude Cod
   review.json    # findings, status and round metadata
   rounds/<N>.md  # each reviewer's report
   summary.md     # the latest summary
+  review-notes.md  # the Review notes block to paste into the PR
 ```
 
 Slashes in the branch name become `__`, and every path segment of the origin URL is kept, so a GitLab subgroup repo is `group__sub__repo`. A repo without an origin URL gets a `local-<hash>` key that its linked worktrees share. A detached HEAD is `detached-<sha7>`.

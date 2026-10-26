@@ -89,6 +89,42 @@ class DecisionTest(LedgerHarness, unittest.TestCase):
                 self.set_status("R1-F1", "open", "--note", "reopened")
                 self.gate_error()
 
+    def test_quote_spanning_a_line_break_is_accepted(self):
+        self.seed(fix_options=["a", "b"])
+        quote = self.write("q.md", "written bare. No other spelling")
+        self.assertEqual(
+            self.set_status("R1-F1", "fixed", "--note", "n", "--intent-quote-file", quote)["status"], "fixed"
+        )
+
+    def test_quote_in_another_case_is_refused(self):
+        self.seed(fix_options=["a", "b"])
+        self.gate_error("--intent-quote-file", self.write("q.md", "keys are written bare."))
+
+    def test_quote_uses_a_later_opening_round(self):
+        self.seed()
+        (self.repo / "more.txt").write_text("x\n")
+        self.begin(
+            "followup", "--intent-file", self.write("intent2.md", "Keys are written bare.\nOption b is chosen.\n")
+        )
+        self.record(output(findings=[finding(fix_options=["a", "b"])]))
+        code, _, err = self.call(
+            "set-status",
+            "--id",
+            "R2-F1",
+            "--status",
+            "fixed",
+            "--note",
+            "n",
+            "--intent-quote-file",
+            self.write("q1.md", "No other spelling is accepted."),
+        )
+        self.assertEqual(code, 1, err)
+        self.assertIn("R2-F1 offers fix options", err)
+        quote = self.write("q2.md", "Option b is chosen.")
+        self.assertEqual(
+            self.set_status("R2-F1", "fixed", "--note", "n", "--intent-quote-file", quote)["status"], "fixed"
+        )
+
     def test_v08_finding_without_fix_options_unaffected(self):
         self.seed()
         state = self.state()

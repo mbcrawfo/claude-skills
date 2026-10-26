@@ -124,6 +124,34 @@ class SecondOpinionTest(LedgerHarness, unittest.TestCase):
         found = self.cli("locate", "--base", "main")
         self.assertEqual((found["mode"], found["reason"], found["focus"]), ("followup", "continuing", None))
 
+    def test_locate_sees_a_second_opinion_request(self):
+        self.begin()
+        self.record(output(findings=[finding()]))
+        self.set_status("R1-F1", "fixed", "--commit", "c1")
+        self.begin("followup")
+        self.record(output(findings=[], verdicts=VERIFY_R1_F1))
+        self.assertEqual(self.status_of()["reason"], "converged")
+        (self.repo / "later.txt").write_text("x\n")
+        plain = self.cli("locate", "--base", "main")
+        self.assertEqual((plain["mode"], plain["reason"], plain["focus"]), ("followup", "continuing", None))
+        found = self.cli("locate", "--base", "main", "--second-opinion")
+        self.assertEqual((found["mode"], found["reason"], found["focus"]), ("deep", "second-opinion", "second-opinion"))
+
+    def test_locate_request_is_still_held_while_escalated(self):
+        self.begin()
+        self.record(output(findings=[finding()]))
+        self.set_status("R1-F1", "escalated", "--note", "decide")
+        found = self.cli("locate", "--base", "main", "--second-opinion")
+        self.assertEqual((found["mode"], found["reason"], found["focus"]), ("followup", "continuing", None))
+
+    def test_locate_sees_a_skip(self):
+        self.begin()
+        self.record(output(findings=[finding(severity="major")]))
+        self.set_status("R1-F1", "fixed", "--commit", "c1")
+        self.assertEqual(self.cli("locate", "--base", "main")["reason"], "second-opinion")
+        found = self.cli("locate", "--base", "main", "--no-second-opinion")
+        self.assertEqual((found["mode"], found["reason"], found["focus"]), ("followup", "continuing", None))
+
     def test_skip_still_suppresses_early(self):
         self.begin("deep", "--no-second-opinion")
         self.record(output(findings=[finding(severity="major")]))
