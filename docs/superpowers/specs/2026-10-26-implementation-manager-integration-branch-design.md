@@ -240,6 +240,10 @@ Bump implementation-manager to 0.5.0. Setup confirms `branch-review:record` is a
 - An integration sync in flight blocks unit merges in both queue modes, rather than refusing integration mode with `--queue parallel`.
 - 2026-10-26, during the build: a queued integration request does not count as a sync in flight; only an unanswered request or an approved push not yet landed does. Counting a queued one deadlocked serial mode, since the slot holder could never merge to free the slot. The cost is at most one reset-and-redo by the integration child for a unit that merges while the sync is queued.
 - After the final PR opens, late unit merges are brought under review by a follow-up review (feature review on) or a record (off).
+- 2026-10-26, final review: an ORPHAN PR the watcher reported holds the final PR, like any late unit, until the manager records it merged or closed.
+- 2026-10-26, final review: a `yield` of the integration unit's slot spends its `go`, as do `merged` and `closed` on it, so a push that never comes cannot block unit merges for good. The child re-checks ancestry and never force-pushes, so a late push of that `go` is rejected rather than landing under a unit merge.
+- 2026-10-26, final review: a unit PR that does not target the integration branch, or a final PR that does not target the base, is never reported ready; `status` lists it so the manager tells the child to retarget it.
+- 2026-10-26, final review: integration mode refuses the `rebase` merge method. The final PR carries base-merge commits that a rebase merge flattens or refuses.
 
 ## Left to the builder
 
