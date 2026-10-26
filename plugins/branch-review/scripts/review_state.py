@@ -765,7 +765,7 @@ def cmd_begin_round(args: argparse.Namespace) -> dict:
 
 # --- findings ledger -------------------------------------------------------
 
-STATUSES = ("open", "fixed", "still-open", "verified", "invalid", "escalated", "deferred", "outside")
+STATUSES = ("open", "fixed", "still-open", "verified", "invalid", "escalated", "deferred", "accepted", "outside")
 SEVERITIES = ("critical", "major", "minor")
 CATEGORIES = (
     "logic",
@@ -1134,6 +1134,40 @@ def _text_arg(inline: str | None, file: str | None, flag: str, required: bool) -
     return text
 
 
+def _normalize_ws(text: str) -> str:
+    """Runs of whitespace collapsed to one space, ends stripped; case kept."""
+    return " ".join(text.split())
+
+
+def _fix_options_basis(state: dict, finding: dict, args: argparse.Namespace) -> str | None:
+    """What lets a finding with fix options be marked fixed.
+
+    The developer's `resolve --decision fix` (returns None), or an
+    `--intent-quote-file` whose text occurs in the intent stored on the round
+    that opened the finding (returns the normalized quote). A finding with
+    fewer than two options needs neither.
+    """
+    if len(finding.get("fix_options") or []) < 2:
+        return None
+    if (finding.get("decision") or {}).get("decision") == "fix":
+        return None
+    refusal = StateError(
+        f"{finding['id']} offers fix options; record the developer's decision with resolve --decision fix, "
+        "or pass --intent-quote-file with a line of the intent that settles the choice"
+    )
+    if args.intent_quote_file is None:
+        raise refusal
+    quote = _normalize_ws(_read_text_file(args.intent_quote_file))
+    opened = finding.get("round_opened")
+    rnd = next((r for r in state["rounds"] if r.get("number") == opened), None)
+    intent = (rnd or {}).get("intent")
+    if not isinstance(intent, str):
+        raise StateError(f"no intent stored for round {opened}")
+    if not quote or quote not in _normalize_ws(intent):
+        raise refusal
+    return quote
+
+
 def cmd_set_status(args: argparse.Namespace) -> dict:
     directory, state = _ledger_state(args)
     finding = _find(state, args.id)
@@ -1143,6 +1177,7 @@ def cmd_set_status(args: argparse.Namespace) -> dict:
         raise StateError("fixed requires --commit or --note")
     if args.status in ("invalid", "escalated") and not note:
         raise StateError(f"{args.status} requires --note")
+    quote = _fix_options_basis(state, finding, args) if args.status == "fixed" else None
     number = state["rounds"][-1]["number"]
     finding["status"] = args.status
     finding["resolution"] = {
@@ -1152,6 +1187,8 @@ def cmd_set_status(args: argparse.Namespace) -> dict:
         "by": "orchestrator",
         "round": number,
     }
+    if quote is not None:
+        finding["resolution"]["intent_quote"] = quote
     finding["round_closed"] = number if args.status in ("invalid", "escalated") else None
     save_state(directory, state)
     return {
@@ -1178,7 +1215,7 @@ def cmd_resolve(args: argparse.Namespace) -> dict:
         raise StateError(f"{finding['id']} is {finding['status']}, not escalated")
     note = _text_arg(args.note, args.note_file, "--note", required=True)
     number = state["rounds"][-1]["number"]
-    finding["status"] = "open" if args.decision == "fix" else "deferred"
+    finding["status"] = {"fix": "open", "defer": "deferred", "accept": "accepted"}[args.decision]
     finding["resolution"] = {
         "status": finding["status"],
         "note": note,
@@ -1186,7 +1223,9 @@ def cmd_resolve(args: argparse.Namespace) -> dict:
         "by": "developer",
         "round": number,
     }
-    finding["round_closed"] = number if args.decision == "defer" else None
+    # Kept apart from `resolution`, which set-status replaces.
+    finding["decision"] = {"decision": args.decision, "note": note, "by": "developer", "round": number}
+    finding["round_closed"] = None if args.decision == "fix" else number
     save_state(directory, state)
     return {
         "id": finding["id"],
@@ -1893,6 +1932,11 @@ def _build_parser() -> argparse.ArgumentParser:
     setst.add_argument("--id", required=True)
     setst.add_argument("--status", required=True, choices=("fixed", "invalid", "escalated", "open"))
     setst.add_argument("--commit", help="commit that fixes the finding")
+    setst.add_argument(
+        "--intent-quote-file",
+        metavar="PATH",
+        help="a line of the intent that settles a finding's fix options (needed to mark one fixed)",
+    )
     note = setst.add_mutually_exclusive_group()
     note.add_argument("--note", help="explanation")
     note.add_argument("--note-file", metavar="PATH", help="read the explanation from a UTF-8 file")
@@ -1908,7 +1952,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     res = sub.add_parser("resolve", parents=[common], help="record the developer's decision")
     res.add_argument("--id", required=True)
-    res.add_argument("--decision", required=True, choices=("fix", "defer"))
+    res.add_argument("--decision", required=True, choices=("fix", "defer", "accept"))
     note = res.add_mutually_exclusive_group(required=True)
     note.add_argument("--note", help="the decision, in the developer's words")
     note.add_argument("--note-file", metavar="PATH", help="read the decision from a UTF-8 file")
