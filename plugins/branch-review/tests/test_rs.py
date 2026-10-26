@@ -73,6 +73,12 @@ class RsTests:
         result = self.rs("locate", f"--state-dir={other}", cwd=self.repo)
         self.assertTrue(Path(json.loads(result.stdout)["dir"]).is_relative_to(other))
 
+    def test_state_dir_before_command_is_not_doubled(self):
+        other = self.tmp / "other"
+        result = self.rs("--state-dir", str(other), "locate", cwd=self.repo)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(Path(json.loads(result.stdout)["dir"]).is_relative_to(other))
+
     def test_rs_without_plugin_data_reports_error(self):
         with sandbox_cwd() as sandbox:
             result = self.rs("list", cwd=sandbox, plugin_data=None)

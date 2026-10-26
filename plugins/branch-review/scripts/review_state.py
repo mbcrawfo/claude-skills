@@ -46,6 +46,17 @@ def _read_plugin_version() -> str:
 
 
 PLUGIN_VERSION = _read_plugin_version()
+V09 = (0, 9, 0)
+
+
+def _version_at_least(version: str | None, floor: tuple[int, int, int]) -> bool:
+    """Whether `version` (`X.Y.Z`) is `floor` or later; false when it does not parse."""
+    if not isinstance(version, str):
+        return False
+    parts = version.split(".")
+    if len(parts) != 3 or not all(p.isdigit() for p in parts):
+        return False
+    return tuple(int(p) for p in parts) >= floor
 
 
 class StateError(Exception):
@@ -458,6 +469,22 @@ def _read_text_file(path: str) -> str:
         raise StateError(f"{path} is not valid UTF-8: {exc.reason}") from exc
 
 
+def _earlier_not_checked(state: dict | None) -> list[dict]:
+    """`not_checked` entries of the current cycle's recorded deep rounds, latest per `what`."""
+    if state is None:
+        return []
+    rounds = [r for r in _recorded(state.get("rounds", [])) if isinstance(r, dict)]
+    start = _cycle_start(rounds)
+    found: dict[str, dict] = {}
+    for rnd in rounds:
+        if rnd.get("mode") != "deep" or rnd.get("number", 0) < start:
+            continue
+        for entry in rnd.get("not_checked") or []:
+            found.pop(entry["what"], None)
+            found[entry["what"]] = {**entry, "round": rnd.get("number")}
+    return list(found.values())
+
+
 def cmd_locate(args: argparse.Namespace) -> dict:
     repo = Path(args.repo)
     rkey, branch, directory = _locate_keys(Path(args.state_dir).expanduser(), repo)
@@ -472,6 +499,24 @@ def cmd_locate(args: argparse.Namespace) -> dict:
         stored_base = _stored_base(state)
     base = args.base or stored_base or default_base(repo)
     mode, reason = choose_mode(repo, state, base, normalize_paths(repo, args.paths))
+    probe = state
+    if state is not None and args.second_opinion is not None:
+        # The invoker's flag is stored only by the next begin-round; count it now,
+        # as that round would, so a requested second opinion replaces the follow-up.
+        probe = dict(state)
+        probe["second_opinion"] = {
+            "requested": rounds + 1 if args.second_opinion else None,
+            "skipped": not args.second_opinion,
+        }
+    focus = None
+    if (
+        mode == "followup"
+        and reason in ("continuing", "base-updated")
+        and not any(f.get("status") in ("open", "still-open") for f in open_findings)
+        and second_opinion_due(probe)[0]
+    ):
+        # The second opinion replaces the follow-up and verifies the claimed fixes.
+        mode, reason, focus = "deep", SECOND_OPINION_FOCUS, SECOND_OPINION_FOCUS
     conflicts: list[str] = []
     if mode == "merge-check":
         anchor = _anchor(_recorded(state["rounds"]))
@@ -485,9 +530,12 @@ def cmd_locate(args: argparse.Namespace) -> dict:
         "exists": state is not None,
         "mode": mode,
         "reason": reason,
+        "focus": focus,
         "rounds": rounds,
         "open_findings": open_findings,
         "conflicts": conflicts,
+        "plugin_version": PLUGIN_VERSION,
+        "earlier_not_checked": _earlier_not_checked(state),
     }
 
 
@@ -577,9 +625,10 @@ def cmd_begin_round(args: argparse.Namespace) -> dict:
     state["rounds"] = rounds
     state.setdefault("findings", [])
 
+    snapshot = args.snapshot or make_snapshot(repo)[0]
     # The round's head is the commit the snapshot was taken on, not whatever
     # HEAD is now, so head, merge base and snapshot always agree.
-    head = snapshot_head(repo, args.snapshot)
+    head = snapshot_head(repo, snapshot)
     if _git_try(repo, "rev-parse", "--verify", "--quiet", base_ref + "^{commit}") is None:
         raise StateError(f"base ref not found: {base_ref}")
     merge_base = _merge_base(repo, base_ref, head)
@@ -598,7 +647,7 @@ def cmd_begin_round(args: argparse.Namespace) -> dict:
             raise StateError("cannot start a merge-check round: the base update cannot be simulated; run a deep round")
         conflicts = found
         diff_from = anchor["snapshot"]
-        change_set = {f for f, _ in _numstat(repo, merge_base, args.snapshot)}
+        change_set = {f for f, _ in _numstat(repo, merge_base, snapshot)}
         upstream_files = [f for f, _ in _numstat(repo, anchor["merge_base"], merge_base)]
         upstream = set(upstream_files)
         upstream_overlap = [f for f in upstream_files if f in change_set]
@@ -631,11 +680,15 @@ def cmd_begin_round(args: argparse.Namespace) -> dict:
             )
     else:
         diff_from = merge_base
-    diff_to = args.snapshot
+    diff_to = snapshot
 
     state["base_ref"] = base_ref
     if args.intent_file:
         state["intent"] = _read_text_file(args.intent_file)
+    if args.notes_file is not None:
+        state["notes"] = _read_text_file(args.notes_file).strip() or None
+    if args.related_branch is not None:
+        state["related_branches"] = [] if args.related_branch == ["."] else list(args.related_branch)
 
     paths = normalize_paths(repo, args.paths)
     if args.generated is not None:
@@ -669,6 +722,10 @@ def cmd_begin_round(args: argparse.Namespace) -> dict:
         diff_from = merge_base
         changed, lines, generated, counted_files, counted_lines = measure(diff_from)
     files = len(changed)
+    if args.focus == SECOND_OPINION_FOCUS and mode != "deep":
+        # Any round with this focus counts as the second opinion, so it must be
+        # the deep review the second opinion is.
+        raise StateError(f"--focus {SECOND_OPINION_FOCUS} needs a deep round, not {mode}")
 
     rnd = {
         "number": len(rounds) + 1,
@@ -688,6 +745,7 @@ def cmd_begin_round(args: argparse.Namespace) -> dict:
         "focus": args.focus,
         "mode_reason": mode_reason,
         "plugin_version": PLUGIN_VERSION,
+        "intent": state.get("intent"),
     }
     if mode == "merge-check":
         rnd["conflicts"] = conflicts
@@ -719,6 +777,8 @@ def cmd_begin_round(args: argparse.Namespace) -> dict:
             "oversized": counted_files > MAX_FILES or counted_lines > MAX_LINES,
             "empty": files == 0,
             "saved": saved,
+            "notes": state.get("notes"),
+            "related_branches": state.get("related_branches", []),
         }
     )
     if mode == "merge-check":
@@ -728,7 +788,7 @@ def cmd_begin_round(args: argparse.Namespace) -> dict:
 
 # --- findings ledger -------------------------------------------------------
 
-STATUSES = ("open", "fixed", "still-open", "verified", "invalid", "escalated", "deferred", "outside")
+STATUSES = ("open", "fixed", "still-open", "verified", "invalid", "escalated", "deferred", "accepted", "outside")
 SEVERITIES = ("critical", "major", "minor")
 CATEGORIES = (
     "logic",
@@ -740,6 +800,19 @@ CATEGORIES = (
     "docs",
     "build-ci",
 )
+# The steps a deep round must account for, besides the checklist categories.
+COVERAGE_STEPS = (
+    "break-tests",
+    "doc-grep",
+    "fulfilled-promises",
+    "real-system",
+    "related-records",
+    "broad-mappings",
+    "measurement-tests",
+    "consumer-build",
+)
+COVERAGE_ITEMS = CATEGORIES + COVERAGE_STEPS
+VARIANT_RESULTS = ("fails", "ok")
 RISK_LEVELS = ("minimal", "low", "moderate", "high")
 REACHABLE = ("yes", "no", "unclear")
 EFFORTS = ("quick", "heavy")
@@ -814,10 +887,67 @@ def _require_str_list(obj: dict, key: str, where: str) -> list:
     return items
 
 
-def _validate_output(data: object, known: dict) -> dict:
-    """Check the reviewer block; return its verdicts, findings and outside entries.
+def _require_text(obj: dict, key: str, where: str) -> str:
+    value = _require_str(obj, key, where)
+    if not value.strip():
+        raise _bad(f"{where}.{key} must not be empty")
+    return value
 
-    `known` maps each ledger finding id to its status.
+
+def _objects(data: dict, key: str, where: str, required: bool) -> list:
+    """The list at `data[key]`, each entry an object; `[]` when absent and not required."""
+    if key not in data and not required:
+        return []
+    items = _require_list(data, key, where)
+    for i, item in enumerate(items):
+        if not isinstance(item, dict):
+            raise _bad(f"{where}.{key}[{i}] must be an object")
+    return items
+
+
+def _validate_coverage(data: dict, required: bool) -> tuple[list, list]:
+    """`coverage` and `not_checked`; both must be present, and cover every item, when `required`."""
+    coverage = []
+    for i, c in enumerate(_objects(data, "coverage", "output", required)):
+        where = f"coverage[{i}]"
+        coverage.append({"item": _require_text(c, "item", where), "done": _require_text(c, "done", where)})
+    if required:
+        listed = {c["item"] for c in coverage}
+        missing = [item for item in COVERAGE_ITEMS if item not in listed]
+        if missing:
+            raise _bad("coverage is missing " + ", ".join(missing))
+    not_checked = []
+    for i, n in enumerate(_objects(data, "not_checked", "output", required)):
+        where = f"not_checked[{i}]"
+        not_checked.append({"what": _require_text(n, "what", where), "reason": _require_text(n, "reason", where)})
+    return coverage, not_checked
+
+
+def _validate_variants(f: dict, where: str) -> list:
+    variants = []
+    for i, v in enumerate(_objects(f, "variants", where, False)):
+        at = f"{where}.variants[{i}]"
+        variants.append(
+            {"input": _require_text(v, "input", at), "result": _require_enum(v, "result", VARIANT_RESULTS, at)}
+        )
+    return variants
+
+
+def _validate_fix_options(f: dict, where: str) -> list:
+    if "fix_options" not in f:
+        return []
+    options = _require_str_list(f, "fix_options", where)
+    if len(options) < 2 or not all(o.strip() for o in options):
+        raise _bad(f"{where}.fix_options must hold two or more non-empty alternatives")
+    return options
+
+
+def _validate_output(data: object, known: dict, *, require_coverage: bool = False) -> dict:
+    """Check the reviewer block; return its verdicts, findings, outside entries and coverage.
+
+    `known` maps each ledger finding id to its status. With `require_coverage`
+    (a deep round begun under 0.9 or later), `coverage` must list every item of
+    `COVERAGE_ITEMS` and `not_checked` must be present.
     """
     if not isinstance(data, dict):
         raise _bad("expected a JSON object")
@@ -833,6 +963,7 @@ def _validate_output(data: object, known: dict) -> dict:
         raise _bad("output is missing intent_check")
     _require_str_list(check, "unmet_claims", "intent_check")
     _require_str_list(check, "unmentioned_behavior", "intent_check")
+    coverage, not_checked = _validate_coverage(data, require_coverage)
 
     verdicts = []
     seen: set = set()
@@ -869,6 +1000,8 @@ def _validate_output(data: object, known: dict) -> dict:
         for key in FINDING_OPTIONAL:
             rec[key] = _optional_str(f, key, "", where)
         rec["effort"] = _require_enum(f, "effort", EFFORTS, where) if "effort" in f else "quick"
+        rec["variants"] = _validate_variants(f, where)
+        rec["fix_options"] = _validate_fix_options(f, where)
         findings.append(rec)
 
     outside = []
@@ -890,7 +1023,13 @@ def _validate_output(data: object, known: dict) -> dict:
             rec["category"] = _require_enum(o, "category", CATEGORIES, where)
         outside.append(rec)
 
-    return {"verdicts": verdicts, "findings": findings, "outside": outside}
+    return {
+        "verdicts": verdicts,
+        "findings": findings,
+        "outside": outside,
+        "coverage": coverage,
+        "not_checked": not_checked,
+    }
 
 
 def _load_output(path: str) -> object:
@@ -933,7 +1072,8 @@ def cmd_record_findings(args: argparse.Namespace) -> dict:
         raise StateError(f"round {number} already has recorded findings")
     known = {f.get("id"): f.get("status") for f in state["findings"]}
     data = _load_output(args.file)
-    checked = _validate_output(data, known)
+    required = rnd.get("mode") == "deep" and _version_at_least(rnd.get("plugin_version"), V09)
+    checked = _validate_output(data, known, require_coverage=required)
 
     for v in checked["verdicts"]:
         f = _find(state, v["id"])
@@ -981,6 +1121,8 @@ def cmd_record_findings(args: argparse.Namespace) -> dict:
     rnd["summary"] = data["summary"]
     rnd["merge_risk"] = data["merge_risk"]
     rnd["intent_check"] = data["intent_check"]
+    rnd["coverage"] = checked["coverage"]
+    rnd["not_checked"] = checked["not_checked"]
     rnd["added"] = added
 
     # Copy first: a failed copy must leave the ledger as it was.
@@ -992,6 +1134,7 @@ def cmd_record_findings(args: argparse.Namespace) -> dict:
         except shutil.SameFileError:
             pass  # --file is already rounds/<N>.md
     save_state(directory, state)
+    _write_summary(directory, state)
     return {
         "round": number,
         "added": added,
@@ -1015,6 +1158,40 @@ def _text_arg(inline: str | None, file: str | None, flag: str, required: bool) -
     return text
 
 
+def _normalize_ws(text: str) -> str:
+    """Runs of whitespace collapsed to one space, ends stripped; case kept."""
+    return " ".join(text.split())
+
+
+def _fix_options_basis(state: dict, finding: dict, args: argparse.Namespace) -> str | None:
+    """What lets a finding with fix options be marked fixed.
+
+    The developer's `resolve --decision fix` (returns None), or an
+    `--intent-quote-file` whose text occurs in the intent stored on the round
+    that opened the finding (returns the normalized quote). A finding with
+    fewer than two options needs neither.
+    """
+    if len(finding.get("fix_options") or []) < 2:
+        return None
+    if (finding.get("decision") or {}).get("decision") == "fix":
+        return None
+    refusal = StateError(
+        f"{finding['id']} offers fix options; record the developer's decision with resolve --decision fix, "
+        "or pass --intent-quote-file with a line of the intent that settles the choice"
+    )
+    if args.intent_quote_file is None:
+        raise refusal
+    quote = _normalize_ws(_read_text_file(args.intent_quote_file))
+    opened = finding.get("round_opened")
+    rnd = next((r for r in state["rounds"] if r.get("number") == opened), None)
+    intent = (rnd or {}).get("intent")
+    if not isinstance(intent, str):
+        raise StateError(f"no intent stored for round {opened}")
+    if not quote or quote not in _normalize_ws(intent):
+        raise refusal
+    return quote
+
+
 def cmd_set_status(args: argparse.Namespace) -> dict:
     directory, state = _ledger_state(args)
     finding = _find(state, args.id)
@@ -1024,6 +1201,7 @@ def cmd_set_status(args: argparse.Namespace) -> dict:
         raise StateError("fixed requires --commit or --note")
     if args.status in ("invalid", "escalated") and not note:
         raise StateError(f"{args.status} requires --note")
+    quote = _fix_options_basis(state, finding, args) if args.status == "fixed" else None
     number = state["rounds"][-1]["number"]
     finding["status"] = args.status
     finding["resolution"] = {
@@ -1033,8 +1211,11 @@ def cmd_set_status(args: argparse.Namespace) -> dict:
         "by": "orchestrator",
         "round": number,
     }
+    if quote is not None:
+        finding["resolution"]["intent_quote"] = quote
     finding["round_closed"] = number if args.status in ("invalid", "escalated") else None
     save_state(directory, state)
+    _write_summary(directory, state)
     return {
         "id": finding["id"],
         "status": finding["status"],
@@ -1049,6 +1230,7 @@ def cmd_discuss(args: argparse.Namespace) -> dict:
     number = state["rounds"][-1]["number"]
     finding["discussion"].append({"from": args.source, "text": text, "round": number})
     save_state(directory, state)
+    _write_summary(directory, state)
     return {"id": finding["id"], "discussion": len(finding["discussion"])}
 
 
@@ -1059,7 +1241,7 @@ def cmd_resolve(args: argparse.Namespace) -> dict:
         raise StateError(f"{finding['id']} is {finding['status']}, not escalated")
     note = _text_arg(args.note, args.note_file, "--note", required=True)
     number = state["rounds"][-1]["number"]
-    finding["status"] = "open" if args.decision == "fix" else "deferred"
+    finding["status"] = {"fix": "open", "defer": "deferred", "accept": "accepted"}[args.decision]
     finding["resolution"] = {
         "status": finding["status"],
         "note": note,
@@ -1067,13 +1249,28 @@ def cmd_resolve(args: argparse.Namespace) -> dict:
         "by": "developer",
         "round": number,
     }
-    finding["round_closed"] = number if args.decision == "defer" else None
+    # Kept apart from `resolution`, which set-status replaces.
+    finding["decision"] = {"decision": args.decision, "note": note, "by": "developer", "round": number}
+    finding["round_closed"] = None if args.decision == "fix" else number
     save_state(directory, state)
+    _write_summary(directory, state)
     return {
         "id": finding["id"],
         "status": finding["status"],
         "round_closed": finding["round_closed"],
     }
+
+
+def cmd_confirm_behavior(args: argparse.Namespace) -> dict:
+    """Record a behavior change that existing users rely on, for the developer to confirm."""
+    directory, state = _ledger_state(args)
+    text = _text_arg(None, args.text_file, "--text", required=True)
+    items = state.setdefault("behavior_to_confirm", [])
+    if not any(item.get("text") == text for item in items):
+        items.append({"text": text, "round": state["rounds"][-1]["number"]})
+    save_state(directory, state)
+    _write_summary(directory, state)
+    return {"behavior_to_confirm": len(items)}
 
 
 def _reported_state(directory: Path) -> dict:
@@ -1100,8 +1297,29 @@ def _cycle_start(rounds: list) -> int:
     return start
 
 
+def _escalated(state: dict) -> bool:
+    return any(isinstance(f, dict) and f.get("status") == "escalated" for f in state.get("findings", []))
+
+
 def second_opinion_due(state: dict) -> tuple[bool, list[str]]:
-    """Whether the recorded state calls for a second-opinion round, and why.
+    """Whether a second-opinion round is due now, and why.
+
+    It waits while any finding is escalated: the developer's answer may add
+    code the second opinion must see (`second_opinion_held` says so).
+    """
+    reasons = _second_opinion_triggers(state)
+    if not reasons or _escalated(state):
+        return False, []
+    return True, reasons
+
+
+def second_opinion_held(state: dict) -> bool:
+    """A second opinion would be due but waits for escalated findings."""
+    return bool(_second_opinion_triggers(state)) and _escalated(state)
+
+
+def _second_opinion_triggers(state: dict) -> list[str]:
+    """The reasons the recorded state calls for a second opinion, decisions aside.
 
     State from v0.7 (no round carries `plugin_version`) is exempt from the
     automatic reasons; a `--second-opinion` request still counts.
@@ -1114,7 +1332,7 @@ def second_opinion_due(state: dict) -> tuple[bool, list[str]]:
     if requested is not None and not any(n >= requested for n in opinions):
         reasons.append("requested")
     if flags.get("skipped") or opinions or not any("plugin_version" in r for r in rounds):
-        return bool(reasons), reasons
+        return reasons
     start = _cycle_start(rounds)
     cycle = [r for r in rounds if r.get("number", 0) >= start]
     if any(r.get("mode") == "deep" and (r.get("merge_risk") or {}).get("level") in ("moderate", "high") for r in cycle):
@@ -1127,7 +1345,7 @@ def second_opinion_due(state: dict) -> tuple[bool, list[str]]:
         for f in state.get("findings", [])
     ):
         reasons.append("major-finding")
-    return bool(reasons), reasons
+    return reasons
 
 
 def _cap_floor(rounds: list, since_round: int) -> int:
@@ -1149,17 +1367,20 @@ def cmd_status(args: argparse.Namespace) -> dict:
         counts[f.get("status")] = counts.get(f.get("status"), 0) + 1
 
     opinion_reasons: list[str] = []
-    # Escalated findings wait for the developer; they do not keep the loop going.
+    # Escalated findings wait for the developer; they do not keep the loop
+    # going, but a loop that stops with them stops awaiting decisions. A due
+    # second opinion runs once nothing is open, carrying the claimed fixes.
+    due, reasons_now = second_opinion_due(state)
     if counts["open"] or counts["still-open"]:
         cont, reason = True, "open-findings"
+    elif due:
+        cont, reason, opinion_reasons = True, "second-opinion", reasons_now
     elif counts["fixed"]:
         cont, reason = True, "unverified-fixes"
+    elif counts["escalated"]:
+        cont, reason = False, "awaiting-decisions"
     else:
-        due, opinion_reasons = second_opinion_due(state)
-        if due:
-            cont, reason = True, "second-opinion"
-        else:
-            cont, reason = False, "converged"
+        cont, reason = False, "converged"
     # The cap only stops a loop that would otherwise go on.
     floor = _cap_floor(rounds, args.since_round)
     run_rounds = sum(1 for r in rounds if r.get("number", 0) > floor)
@@ -1178,6 +1399,7 @@ def cmd_status(args: argparse.Namespace) -> dict:
         "next_mode": "deep" if second else "followup" if reason == "final-verification" else None,
         "next_focus": SECOND_OPINION_FOCUS if second else None,
         "second_opinion_reasons": opinion_reasons if second else [],
+        "second_opinion_held": second_opinion_held(state),
     }
 
 
@@ -1251,6 +1473,8 @@ def cmd_covered(args: argparse.Namespace) -> dict:
         "reasons": reasons,
         "counts": counts,
         "rounds": len(recorded),
+        "second_opinion_held": second_opinion_held(state) if recorded else False,
+        "behavior_to_confirm": len((state or {}).get("behavior_to_confirm") or []),
     }
 
 
@@ -1310,8 +1534,11 @@ def _verified_details(finding: dict) -> list[str]:
     return [f"Commit: {res.get('commit') or '(none)'}"]
 
 
-def _intent_check_lines(state: dict) -> list[str]:
-    """The intent check: unmet claims from the last deep round on, and all unmentioned behavior."""
+def _intent_check_lines(state: dict, *, skip_empty: bool = False) -> list[str]:
+    """The intent check: unmet claims and unmentioned behavior from the last deep round on.
+
+    With `skip_empty`, a list with no items is left out instead of saying "None.".
+    """
     rounds = state["rounds"]
     start = max((i for i, r in enumerate(rounds) if r.get("mode") == "deep"), default=0)
 
@@ -1326,9 +1553,11 @@ def _intent_check_lines(state: dict) -> list[str]:
     lines: list[str] = []
     for label, chosen, key in (
         ("Unmet claims:", rounds[start:], "unmet_claims"),
-        ("Behavior the intent does not mention:", rounds, "unmentioned_behavior"),
+        ("Behavior the intent does not mention:", rounds[start:], "unmentioned_behavior"),
     ):
         items = collect(chosen, key)
+        if skip_empty and not items:
+            continue
         lines.extend([*([""] if lines else []), label])
         lines.extend(f"- {_one_line(text)}" for text in items)
         if not items:
@@ -1358,7 +1587,8 @@ def render_summary(state: dict) -> str:
     plural = "" if len(rounds) == 1 else "s"
     header = (
         f"# Review of `{state.get('branch')}` ({state.get('repo_key')}): {len(rounds)} round{plural}, "
-        f"last {_round_mode(last)} with {last.get('model')}, merge risk {risk_text}"
+        f"last {_round_mode(last)} with {last.get('model')}, merge risk {risk_text}; "
+        f"written by branch-review {PLUGIN_VERSION}"
     )
 
     counts = {s: 0 for s in STATUSES}
@@ -1372,30 +1602,127 @@ def render_summary(state: dict) -> str:
         ("Open and unverified", OPEN_STATUSES, _open_details),
         ("Escalated", "escalated", _resolution_note),
         ("Deferred", "deferred", _resolution_note),
+        ("Accepted", "accepted", _resolution_note),
         ("Invalid", "invalid", _invalid_details),
         ("Outside the change", "outside", _resolution_note),
         ("Fixed and verified", "verified", _verified_details),
     )
     for title, status, details in sections:
         out.extend(["", "## " + title, ""])
-        wanted = status if isinstance(status, tuple) else (status,)
-        chosen = [f for f in findings if f.get("status") in wanted]
+        chosen = _with_status(findings, status)
         if not chosen:
             out.append("None.")
         for f in chosen:
             out.extend(_entry(f, details(f)))
         if title == "Open and unverified":
             out.extend(["", "## Intent check", "", *_intent_check_lines(state)])
+            out.extend(["", "## Not checked", "", *(_not_checked_lines(state) or ["None."])])
+        if title == "Escalated":
+            out.extend(["", "## Behavior changes to confirm", "", *(_behavior_lines(state) or ["None."])])
     return "\n".join(out) + "\n"
+
+
+def _with_status(findings: list, status: str | tuple) -> list:
+    wanted = status if isinstance(status, tuple) else (status,)
+    return [f for f in findings if f.get("status") in wanted]
+
+
+def _latest_deep(rounds: list) -> dict | None:
+    return next((r for r in reversed(rounds) if r.get("mode") == "deep"), None)
+
+
+def _not_checked_lines(state: dict) -> list[str]:
+    """The latest deep round's `not_checked`, one bullet each."""
+    rnd = _latest_deep(state["rounds"]) or {}
+    return [f"- {_one_line(n.get('what'))}: {_one_line(n.get('reason'))}" for n in rnd.get("not_checked") or []]
+
+
+def _behavior_lines(state: dict) -> list[str]:
+    return [f"- {_one_line(b.get('text'))}" for b in state.get("behavior_to_confirm") or []]
+
+
+def _notes_line(state: dict) -> str:
+    """The generated first line of the Review notes block, from recorded rounds only."""
+    rounds = state["rounds"]
+    plural = "" if len(rounds) == 1 else "s"
+    by_mode = []
+    for mode in ("deep", "followup", "merge-check"):
+        chosen = [r for r in rounds if r.get("mode") == mode]
+        if chosen:
+            models = list(dict.fromkeys(str(r.get("model")) for r in chosen))
+            by_mode.append(f"{len(chosen)} {mode} with {' and '.join(models)}")
+    opinion = "yes" if any(r.get("focus") == SECOND_OPINION_FOCUS for r in rounds) else "no"
+    deep = _latest_deep(rounds)
+    risk = (deep or {}).get("merge_risk")
+    risk_text = "n/a"
+    if isinstance(risk, dict):
+        risk_text = f"{risk.get('level')} (round {deep.get('number')}, the latest deep round)"
+    return f"{len(rounds)} round{plural} ({', '.join(by_mode)}); second opinion: {opinion}; merge risk {risk_text}."
+
+
+def render_review_notes(state: dict) -> str:
+    """The block to paste into a PR description, generated so nothing is retyped."""
+    findings = state.get("findings", [])
+
+    def entries(status: str, details) -> list[str]:
+        lines: list[str] = []
+        for f in _with_status(findings, status):
+            lines.extend(_entry(f, details(f)))
+        return lines
+
+    sections = (
+        ("Escalated", entries("escalated", _resolution_note)),
+        ("Behavior changes to confirm", _behavior_lines(state)),
+        ("Deferred", entries("deferred", _resolution_note)),
+        ("Accepted", entries("accepted", _resolution_note)),
+        ("Invalid", entries("invalid", _invalid_details)),
+        ("Outside the change", entries("outside", _resolution_note)),
+        ("Intent check", _intent_check_lines(state, skip_empty=True)),
+        ("Not checked", _not_checked_lines(state)),
+    )
+    out = ["## Review notes", "", _notes_line(state)]
+    empty = []
+    for title, lines in sections:
+        if not lines:
+            empty.append(title)
+            continue
+        out.extend(["", "### " + title, "", *lines])
+    fixed = [
+        f"- {f.get('id')} ({f.get('severity')}) {_one_line(f.get('title'))}" for f in _with_status(findings, "verified")
+    ]
+    if fixed:
+        out.extend(["", "### Found and fixed", "", *fixed])
+    if empty:
+        out.extend(["", "Nothing to report under: " + ", ".join(empty) + "."])
+    return "\n".join(out) + "\n"
+
+
+def _write_summary(directory: Path, state: dict) -> None:
+    """Rewrite summary.md and review-notes.md, when the latest round is recorded.
+
+    Called after every state change, so neither file goes stale. A failure to
+    write leaves the old files and never fails the command.
+    """
+    rounds = state.get("rounds") or []
+    if not rounds or "added" not in rounds[-1]:
+        return
+    try:
+        (directory / "summary.md").write_text(render_summary(state), encoding="utf-8")
+        (directory / "review-notes.md").write_text(render_review_notes(state), encoding="utf-8")
+    except OSError:
+        pass
 
 
 def cmd_summary(args: argparse.Namespace) -> dict:
     directory = state_path(Path(args.state_dir).expanduser(), Path(args.repo))
     state = _reported_state(directory)
     text = render_summary(state)
+    notes = render_review_notes(state)
     path = directory / "summary.md"
+    notes_path = directory / "review-notes.md"
     path.write_text(text, encoding="utf-8")
-    return {"path": str(path), "text": text}
+    notes_path.write_text(notes, encoding="utf-8")
+    return {"path": str(path), "text": text, "review_notes": notes, "review_notes_path": str(notes_path)}
 
 
 def _parse_ts(value: object) -> datetime | None:
@@ -1674,21 +2001,46 @@ def cmd_cleanup(args: argparse.Namespace) -> dict:
 
 
 def _build_parser() -> argparse.ArgumentParser:
+    # The global options are accepted before or after the subcommand. Both
+    # declarations suppress their default, or the subcommand's would replace a
+    # value given before it; `_apply_defaults` fills them in after parsing.
+    def add_globals(target: argparse.ArgumentParser) -> None:
+        target.add_argument(
+            "--state-dir",
+            default=argparse.SUPPRESS,
+            help=f"root directory for review state (default: {DEFAULT_STATE_DIR})",
+        )
+        target.add_argument(
+            "--repo",
+            default=argparse.SUPPRESS,
+            help="repository path (default: current directory)",
+        )
+
     common = _Parser(add_help=False)
-    common.add_argument(
-        "--state-dir",
-        default=DEFAULT_STATE_DIR,
-        help="root directory for review state (default: %(default)s)",
-    )
-    common.add_argument("--repo", default=".", help="repository path (default: current directory)")
+    add_globals(common)
 
     parser = _Parser(prog="review_state.py", description="branch-review state helper")
+    add_globals(parser)
     sub = parser.add_subparsers(dest="command", metavar="<command>")
     sub.required = True
 
     locate = sub.add_parser("locate", parents=[common], help="find state for the current branch")
     locate.add_argument("--base", help="base ref (default: the stored base ref, else the detected default)")
     locate.add_argument("--paths", nargs="+", help="the --paths the next round will use")
+    wish = locate.add_mutually_exclusive_group()
+    wish.add_argument(
+        "--second-opinion",
+        dest="second_opinion",
+        action="store_true",
+        default=None,
+        help="count the invoker's --second-opinion, which the next begin-round stores",
+    )
+    wish.add_argument(
+        "--no-second-opinion",
+        dest="second_opinion",
+        action="store_false",
+        help="count the invoker's --no-second-opinion, which the next begin-round stores",
+    )
     locate.set_defaults(func=cmd_locate)
 
     snap = sub.add_parser(
@@ -1701,7 +2053,7 @@ def _build_parser() -> argparse.ArgumentParser:
     begin = sub.add_parser("begin-round", parents=[common], help="record the start of a review round")
     begin.add_argument("--mode", required=True, choices=("deep", "followup", "merge-check"))
     begin.add_argument("--model", required=True)
-    begin.add_argument("--snapshot", required=True, help="snapshot sha to review")
+    begin.add_argument("--snapshot", help="snapshot sha to review (default: take one now)")
     begin.add_argument(
         "--base-ref",
         help="ref the branch is reviewed against (default: the stored base ref, else the detected default)",
@@ -1719,6 +2071,17 @@ def _build_parser() -> argparse.ArgumentParser:
         help="globs for generated files, kept out of the size checks; stored, and reused when absent",
     )
     begin.add_argument(
+        "--notes-file",
+        metavar="PATH",
+        help="earlier reviewers' notes for the whole-branch review; stored, and reused when absent",
+    )
+    begin.add_argument(
+        "--related-branch",
+        nargs="+",
+        metavar="REF",
+        help="branches built alongside that mirror this change; stored, and reused when absent; . clears",
+    )
+    begin.add_argument(
         "--deep-model",
         help="model for a follow-up promoted to a deep round (default: the --model value)",
     )
@@ -1728,7 +2091,7 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="second_opinion",
         action="store_true",
         default=None,
-        help="ask for a second opinion once this round converges",
+        help="ask for a second opinion once no finding is open",
     )
     opinion.add_argument(
         "--no-second-opinion",
@@ -1752,6 +2115,11 @@ def _build_parser() -> argparse.ArgumentParser:
     setst.add_argument("--id", required=True)
     setst.add_argument("--status", required=True, choices=("fixed", "invalid", "escalated", "open"))
     setst.add_argument("--commit", help="commit that fixes the finding")
+    setst.add_argument(
+        "--intent-quote-file",
+        metavar="PATH",
+        help="a line of the intent that settles a finding's fix options (needed to mark one fixed)",
+    )
     note = setst.add_mutually_exclusive_group()
     note.add_argument("--note", help="explanation")
     note.add_argument("--note-file", metavar="PATH", help="read the explanation from a UTF-8 file")
@@ -1767,11 +2135,19 @@ def _build_parser() -> argparse.ArgumentParser:
 
     res = sub.add_parser("resolve", parents=[common], help="record the developer's decision")
     res.add_argument("--id", required=True)
-    res.add_argument("--decision", required=True, choices=("fix", "defer"))
+    res.add_argument("--decision", required=True, choices=("fix", "defer", "accept"))
     note = res.add_mutually_exclusive_group(required=True)
     note.add_argument("--note", help="the decision, in the developer's words")
     note.add_argument("--note-file", metavar="PATH", help="read the decision from a UTF-8 file")
     res.set_defaults(func=cmd_resolve)
+
+    confirm = sub.add_parser(
+        "confirm-behavior",
+        parents=[common],
+        help="record a behavior change existing users rely on, for the developer to confirm",
+    )
+    confirm.add_argument("--text-file", metavar="PATH", required=True, help="the behavior, as a UTF-8 file")
+    confirm.set_defaults(func=cmd_confirm_behavior)
 
     stat = sub.add_parser("status", parents=[common], help="counts and whether to continue")
     stat.add_argument(
@@ -1825,10 +2201,19 @@ def _check_state_dir(value: str) -> None:
         raise StateError(f"--state-dir must not be the filesystem root or the home directory, got {value!r}")
 
 
+def _apply_defaults(args: argparse.Namespace) -> argparse.Namespace:
+    """Fill in the global options that neither position gave."""
+    if not hasattr(args, "state_dir"):
+        args.state_dir = DEFAULT_STATE_DIR
+    if not hasattr(args, "repo"):
+        args.repo = "."
+    return args
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     try:
-        args = parser.parse_args(argv)
+        args = _apply_defaults(parser.parse_args(argv))
         _check_state_dir(args.state_dir)
         result = args.func(args)
     except subprocess.CalledProcessError as exc:

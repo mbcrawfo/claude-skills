@@ -25,5 +25,30 @@ class RsPrefixTest(unittest.TestCase):
                     )
 
 
+class ReviewSkillTextTest(unittest.TestCase):
+    text = (SKILLS / "review" / "SKILL.md").read_text(encoding="utf-8")
+
+    def test_review_skill_has_no_snapshot_step(self):
+        lines = [line for line in self.text.splitlines() if "rs snapshot" in line or RS + " snapshot" in line]
+        self.assertEqual(lines, [])
+
+    def test_review_skill_pastes_review_notes(self):
+        self.assertIn("review_notes", self.text)
+
+    def test_resolve_run_keeps_the_rerun_locate_mode(self):
+        line = next(line for line in self.text.splitlines() if line.strip().startswith("- Then run `rs locate` again"))
+        for key in ("`mode`", "`reason`", "`focus`"):
+            self.assertIn(key, line)
+
+    def test_locate_wins_rule_spares_the_second_opinion(self):
+        line = next(line for line in self.text.splitlines() if "`locate` wins over `next_mode`" in line)
+        self.assertIn("`second-opinion`", line)
+
+    def test_argument_hint_lists_new_arguments(self):
+        hint = next(line for line in self.text.splitlines() if line.startswith("argument-hint:"))
+        self.assertIn("--notes-file", hint)
+        self.assertIn("--related-branch", hint)
+
+
 if __name__ == "__main__":
     unittest.main()
