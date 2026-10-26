@@ -106,9 +106,18 @@ def _needs(run_dir: Path, state: dict) -> list[str]:
             needs.append(f"push approved for {name} {sha[:7] if sha else '-'}, not seen yet")
         elif _behind_holder(state, name):
             needs.append(f"slot holder {name} PR #{marks['pr']} behind base")
-    if state["queue_mode"] == "serial" and state["slot"] is None and state["queue"]:
-        head = runstate.queue_order(state)[0]
-        needs.append(f"slot free with a queue, next {head['unit']} {head['sha']}")
+    if state["queue_mode"] == "serial" and state["slot"] is None:
+        # The head the watcher reports as NEXT: not done, and mergeable.
+        head = next(
+            (
+                e
+                for e in runstate.queue_order(state)
+                if not units[e["unit"]]["done"] and runstate.mergeable(state, e["unit"])
+            ),
+            None,
+        )
+        if head:
+            needs.append(f"slot free with a queue, next {head['unit']} {head['sha']}")
     needs += [f"bad request line: {line}" for line in state["bad_requests"]]
     needs += [f"gate {name} may open" for name in runstate.openable(state)]
     return needs

@@ -335,6 +335,16 @@ class StatusTests(CliTestCase):
         self.ok("open", str(self.dir), "b")
         self.assertIn("- open: b working, merges after a", self.ok("status", str(self.dir)).splitlines())
 
+    def test_status_next_skips_queue_entries_that_are_not_mergeable(self):
+        self.init()
+        self.ok("unit", str(self.dir), "a")
+        self.ok("unit", str(self.dir), "b", "--after", "a")
+        self.ok("unit", str(self.dir), "c")
+        self.ok("queue", str(self.dir), "b", SHA1)
+        self.assertNotIn("slot free with a queue", self.ok("status", str(self.dir)))
+        self.ok("queue", str(self.dir), "c", SHA2)
+        self.assertIn(f"  - slot free with a queue, next c {SHA2}", self.ok("status", str(self.dir)).splitlines())
+
     def test_status_nothing_needed(self):
         self.init()
         self.ok("unit", str(self.dir), "a")
