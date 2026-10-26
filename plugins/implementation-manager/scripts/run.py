@@ -4,7 +4,7 @@
 The run folder is always the first argument after the subcommand:
 
   init <dir> --repo O/R --base B --method merge|squash|rebase [--wip N] [--queue serial|parallel]
-  unit <dir> <name> [--prereq U ...] [--branch B] [--worktree P] [--specs]
+  unit <dir> <name> [--prereq U ...] [--after U ...|none] [--branch B] [--worktree P] [--specs]
   set <dir> wip <N|none> | set <dir> queue <serial|parallel>
                                     in parallel mode, print each request still queued: queued <unit> <sha>
   open <dir> <unit>                 open one gate
@@ -136,7 +136,11 @@ def _status(run_dir: Path, state: dict) -> str:
             gated.append(f"{name} stopped")
         elif record["gate"] == "open":
             prs = [pr for pr, status in record["prs"].items() if status == "OPEN"]
-            open_units.append(f"{name} PR #{max(prs, key=int)}" if prs else f"{name} working")
+            entry = f"{name} PR #{max(prs, key=int)}" if prs else f"{name} working"
+            unmerged = [u for u in record["after"] if not units[u]["done"] and units[u]["gate"] != "stopped"]
+            if unmerged:
+                entry += f", merges after {', '.join(unmerged)}"
+            open_units.append(entry)
         else:
             waiting_on = [p for p in record["prereqs"] if not units[p]["done"]]
             if waiting_on:
@@ -190,6 +194,7 @@ def _parser() -> argparse.ArgumentParser:
     p = command("unit", "add a unit, or update the fields given")
     p.add_argument("name")
     p.add_argument("--prereq", nargs="+", action="extend", metavar="U")
+    p.add_argument("--after", nargs="+", action="extend", metavar="U", help="units that merge first; none clears")
     p.add_argument("--branch")
     p.add_argument("--worktree")
     p.add_argument("--specs", action="store_true", default=None, help="the manager's own planning PR")
@@ -281,8 +286,15 @@ def _run(args: argparse.Namespace) -> str | None:
         return check_once(state["repo"], record["branch"], gh=run_gh, sleep=time.sleep)
     with locked(run_dir) as state:
         if command == "unit":
+            after = [] if args.after == ["none"] else args.after
             runstate.add_unit(
-                state, args.name, prereqs=args.prereq, branch=args.branch, worktree=args.worktree, specs=args.specs
+                state,
+                args.name,
+                prereqs=args.prereq,
+                after=after,
+                branch=args.branch,
+                worktree=args.worktree,
+                specs=args.specs,
             )
         elif command == "set":
             runstate.set_option(state, args.key, args.value)

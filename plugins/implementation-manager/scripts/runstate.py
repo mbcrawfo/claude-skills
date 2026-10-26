@@ -110,6 +110,10 @@ def load(run_dir: Path) -> dict:
     missing = [key for key in STATE_KEYS if key not in state]
     if missing:
         raise RunError(f"{path} is missing {', '.join(missing)}")
+    for unit in state["units"].values():  # fields added since a run began
+        unit.setdefault("after", [])
+        unit.setdefault("hold", None)
+        unit.setdefault("title", None)
     return state
 
 
@@ -134,20 +138,62 @@ def _unit(state: dict, name: str) -> dict:
         raise RunError(f"unknown unit {name!r}") from None
 
 
+def _check_order_edges(state: dict, name: str, prereqs: list[str], after: list[str]) -> None:
+    """Refuse a unit whose prerequisites or merge-order units are unknown, overlap, or lead back to the unit."""
+    units = state["units"]
+    for prereq in prereqs:
+        if prereq not in units or prereq == name:
+            raise RunError(f"unit {name!r} has unknown prerequisite {prereq!r}")
+    for other in after:
+        if other not in units or other == name:
+            raise RunError(f"unit {name!r} has unknown merge-order unit {other!r}")
+    for other in after:
+        if other in prereqs:
+            raise RunError(f"unit {name!r} cannot both need and merge after {other!r}")
+    for start in [*prereqs, *after]:
+        seen: set[str] = set()
+        pending = [start]
+        while pending:
+            current = pending.pop()
+            if current == name:
+                raise RunError(f"unit {name!r} would wait on itself through {start!r}")
+            if current not in seen:
+                seen.add(current)
+                pending += units[current]["prereqs"] + units[current]["after"]
+
+
 def add_unit(
-    state: dict, name: str, *, prereqs: list[str] | None, branch: str | None, worktree: str | None, specs: bool | None
+    state: dict,
+    name: str,
+    *,
+    prereqs: list[str] | None,
+    branch: str | None,
+    worktree: str | None,
+    specs: bool | None,
+    after: list[str] | None = None,
+    title: str | None = None,
 ) -> None:
-    """Add a unit, or update the fields given on an existing one; None keeps the old value."""
+    """Add a unit, or update the fields given on an existing one; None keeps the old value.
+
+    `after` lists the units that must merge before this one does; [] clears it. A unit may not wait on itself
+    through its prerequisites and `after` units together.
+    """
     if not re.fullmatch(UNIT_RE, name):
         raise RunError(f"bad unit name {name!r}: use letters, digits, '_' and '-', starting with a letter or digit")
-    for prereq in prereqs or []:
-        if prereq not in state["units"] or prereq == name:
-            raise RunError(f"unit {name!r} has unknown prerequisite {prereq!r}")
     unit = state["units"].get(name)
+    _check_order_edges(
+        state,
+        name,
+        prereqs if prereqs is not None else (unit["prereqs"] if unit else []),
+        after if after is not None else (unit["after"] if unit else []),
+    )
     if unit is None:
         unit = state["units"][name] = {
             "order": len(state["units"]),
             "prereqs": [],
+            "after": [],
+            "hold": None,
+            "title": None,
             "branch": None,
             "worktree": None,
             "specs": False,
@@ -156,9 +202,16 @@ def add_unit(
             "done": False,
             "prs": {},
         }
-    for key, value in (("prereqs", prereqs), ("branch", branch), ("worktree", worktree), ("specs", specs)):
+    for key, value in (
+        ("prereqs", prereqs),
+        ("after", after),
+        ("branch", branch),
+        ("worktree", worktree),
+        ("specs", specs),
+        ("title", title),
+    ):
         if value is not None:
-            unit[key] = list(value) if key == "prereqs" else value
+            unit[key] = list(value) if key in ("prereqs", "after") else value
 
 
 def set_option(state: dict, key: str, value: str) -> None:
@@ -178,9 +231,23 @@ def set_option(state: dict, key: str, value: str) -> None:
         raise RunError(f"unknown option {key!r}: use wip or queue")
 
 
-def openable(state: dict) -> list[str]:
-    """Closed-gate units whose prerequisites are done, in order, cut to the free WIP; specs units are never cut."""
+def mergeable(state: dict, unit: str) -> bool:
+    """True when the unit is not held and every unit it merges after is done or stopped."""
+    record = _unit(state, unit)
     units = state["units"]
+    return record["hold"] is None and all(units[u]["done"] or units[u]["gate"] == "stopped" for u in record["after"])
+
+
+def openable(state: dict) -> list[str]:
+    """Closed-gate units whose prerequisites are done, in order, cut to the free WIP.
+
+    Specs units are never cut, nor is a unit that an open, unmerged unit merges after: it must open for that unit
+    to merge, so it does not wait on or use up the WIP.
+    """
+    units = state["units"]
+    merged_after_by_open = {
+        other for u in units.values() if u["gate"] == "open" and not u["done"] for other in u["after"]
+    }
     wip = state["wip"]
     in_flight = sum(1 for u in units.values() if u["gate"] == "open" and not u["done"] and not u["specs"])
     free = None if wip is None else max(wip - in_flight, 0)
@@ -188,7 +255,7 @@ def openable(state: dict) -> list[str]:
     for name, unit in sorted(units.items(), key=lambda item: item[1]["order"]):
         if unit["gate"] != "closed" or not all(units[p]["done"] for p in unit["prereqs"]):
             continue
-        if unit["specs"]:
+        if unit["specs"] or name in merged_after_by_open:
             result.append(name)
         elif free is None or free > 0:
             result.append(name)
@@ -255,9 +322,9 @@ def _holds_slot(state: dict, unit: str) -> bool:
 
 
 def _first_queued(state: dict) -> str | None:
-    """The unit first in the queue, skipping done units, whose entries the watcher drops."""
+    """The unit first in the queue, skipping done units, whose entries the watcher drops, and units not mergeable."""
     for entry in queue_order(state):
-        if not state["units"][entry["unit"]]["done"]:
+        if not state["units"][entry["unit"]]["done"] and mergeable(state, entry["unit"]):
             return entry["unit"]
     return None
 
@@ -280,8 +347,8 @@ def _note_answered(run_dir: Path, state: dict, unit: str, sha: str) -> None:
 def go(run_dir: Path, state: dict, unit: str, sha: str, now: float) -> None:
     """Answer a push request with `go`: log it and, in serial mode, take the slot.
 
-    In serial mode it refuses while another unit holds the slot, or while the slot is free and another unit is
-    first in the queue.
+    In serial mode it refuses while the unit merges after an unmerged unit, while another unit holds the slot, or
+    while the slot is free and another unit is first in the queue.
     """
     record = _unit(state, unit)
     _check_sha(sha)
@@ -289,6 +356,10 @@ def go(run_dir: Path, state: dict, unit: str, sha: str, now: float) -> None:
         raise RunError(f"unit {unit!r} is done; answer its push requests with: redo <sha> pr-merged")
     _refuse_stopped(record, unit)
     if state["queue_mode"] == "serial":
+        units = state["units"]
+        for other in record["after"]:
+            if not units[other]["done"] and units[other]["gate"] != "stopped":
+                raise RunError(f"unit {unit!r} merges after {other!r}; use queue to line it up until it merges")
         holder = state["slot"]["unit"] if state["slot"] else None
         if holder not in (None, unit):
             raise RunError(f"the push slot is held by {holder!r}; use queue to line {unit!r} up behind it")
@@ -379,8 +450,8 @@ def record_closed(state: dict, unit: str, pr: int) -> None:
 
 
 def reportable(state: dict, unit: str) -> bool:
-    """True when the unit may be reported on (READY/REMIND): it is not stopped, and the run is in parallel mode or
-    the slot is free or its own."""
-    if _unit(state, unit)["gate"] == "stopped":
+    """True when the unit may be reported on (READY/REMIND): it is not stopped, it is mergeable, and the run is in
+    parallel mode or the slot is free or its own."""
+    if _unit(state, unit)["gate"] == "stopped" or not mergeable(state, unit):
         return False
     return state["queue_mode"] == "parallel" or state["slot"] is None or state["slot"]["unit"] == unit

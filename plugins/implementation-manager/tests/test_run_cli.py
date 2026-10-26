@@ -87,6 +87,14 @@ class SetupTests(CliTestCase):
         self.assertEqual(state["wip"], 1)
         self.assertEqual(state["units"]["b"]["prereqs"], ["a"])
 
+    def test_unit_after_and_none(self):
+        self.init()
+        self.ok("unit", str(self.dir), "a")
+        self.ok("unit", str(self.dir), "b", "--after", "a")
+        self.assertEqual(self.state()["units"]["b"]["after"], ["a"])
+        self.ok("unit", str(self.dir), "b", "--after", "none")
+        self.assertEqual(self.state()["units"]["b"]["after"], [])
+
     def test_init_creates_the_files(self):
         self.init()
         for name in ("run.json", "requests.log", "pushes.log", "gates.log"):
@@ -319,6 +327,13 @@ class StatusTests(CliTestCase):
         self.assertEqual(lines[5], "- gated: b on a")
         self.assertEqual(lines[6], "- needs the manager:")
         self.assertEqual(lines[7:], ["  - push approved for a 1111111, not seen yet"])
+
+    def test_status_shows_merges_after(self):
+        self.init()
+        self.ok("unit", str(self.dir), "a")
+        self.ok("unit", str(self.dir), "b", "--after", "a")
+        self.ok("open", str(self.dir), "b")
+        self.assertIn("- open: b working, merges after a", self.ok("status", str(self.dir)).splitlines())
 
     def test_status_nothing_needed(self):
         self.init()

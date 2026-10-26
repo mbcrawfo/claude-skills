@@ -387,6 +387,20 @@ class NextTests(WatcherTestCase):
         self.assertEqual(run_wait(self.dir), f"NEXT b {SHA2}")
         self.assertEqual([e["unit"] for e in load(self.dir)["queue"]], ["b"])
 
+    def test_next_skips_entries_not_mergeable(self):
+        with locked(self.dir) as state:
+            add_unit(state, "b", prereqs=None, branch=None, worktree=None, specs=None, after=["a"])
+            enqueue(self.dir, state, "b", SHA2, NOW)
+            enqueue(self.dir, state, "c", SHA3, NOW + 1)
+            self.assertEqual(next_event(state), f"NEXT c {SHA3}")
+
+    def test_no_next_when_no_entry_is_mergeable(self):
+        with locked(self.dir) as state:
+            add_unit(state, "b", prereqs=None, branch=None, worktree=None, specs=None, after=["a"])
+            enqueue(self.dir, state, "b", SHA2, NOW)
+            self.assertIsNone(next_event(state))
+            self.assertEqual(len(state["queue"]), 1)
+
     def test_no_next_in_parallel_mode(self):
         with locked(self.dir) as state:
             enqueue(self.dir, state, "b", SHA2, NOW)
