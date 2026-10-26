@@ -19,7 +19,6 @@ Do all of this in the same PR that introduces or discovers the problem.
    - **Proposed fix** - the better approach, specific enough to pick up without the original context.
    - **Trigger** - the condition that should prompt fixing it, if known.
 3. Add a row to the table in `README.md` with the id linked to the item file.  Use the status and impact values defined there.
-4. If a user can see its effect, add a known issue to the "Known issues" section of the `docs/manual/` page that documents the behaviour: the effect in the user's words and what to do about it, with no id and no link to the item.
 
 Code may reference an item by id in a comment (`TD-0003`) where the compromise lives.
 
@@ -28,7 +27,7 @@ Parallel branches can take the same id.  If `Next id` conflicts on merge or reba
 ## Changing an item
 
 - Keep the row's status and impact current as the code around the problem changes.
-- After a partial fix, rewrite the item file, the row and its known issue in `docs/manual/` to describe only what remains.
+- After a partial fix, rewrite the item file and the row to describe only what remains.
 
 ## Resolving an item
 
@@ -37,7 +36,6 @@ In the same PR as the fix:
 1. Delete the item file.
 2. Remove its row from the table in `README.md`.  The table lists active items only; git history is the record of resolved ones.
 3. Remove any references to the id from code and docs by searching for the item's actual id, for example `grep -r "TD-0003" .`.
-4. Remove its known issue from `docs/manual/`, if it has one.  A known issue names no id, so search the "Known issues" sections for the effect.
 
 Never mark an item resolved without the fix, and never merge a fix that leaves its item behind.
 
