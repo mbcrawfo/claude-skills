@@ -589,9 +589,10 @@ def cmd_begin_round(args: argparse.Namespace) -> dict:
     state["rounds"] = rounds
     state.setdefault("findings", [])
 
+    snapshot = args.snapshot or make_snapshot(repo)[0]
     # The round's head is the commit the snapshot was taken on, not whatever
     # HEAD is now, so head, merge base and snapshot always agree.
-    head = snapshot_head(repo, args.snapshot)
+    head = snapshot_head(repo, snapshot)
     if _git_try(repo, "rev-parse", "--verify", "--quiet", base_ref + "^{commit}") is None:
         raise StateError(f"base ref not found: {base_ref}")
     merge_base = _merge_base(repo, base_ref, head)
@@ -610,7 +611,7 @@ def cmd_begin_round(args: argparse.Namespace) -> dict:
             raise StateError("cannot start a merge-check round: the base update cannot be simulated; run a deep round")
         conflicts = found
         diff_from = anchor["snapshot"]
-        change_set = {f for f, _ in _numstat(repo, merge_base, args.snapshot)}
+        change_set = {f for f, _ in _numstat(repo, merge_base, snapshot)}
         upstream_files = [f for f, _ in _numstat(repo, anchor["merge_base"], merge_base)]
         upstream = set(upstream_files)
         upstream_overlap = [f for f in upstream_files if f in change_set]
@@ -643,11 +644,15 @@ def cmd_begin_round(args: argparse.Namespace) -> dict:
             )
     else:
         diff_from = merge_base
-    diff_to = args.snapshot
+    diff_to = snapshot
 
     state["base_ref"] = base_ref
     if args.intent_file:
         state["intent"] = _read_text_file(args.intent_file)
+    if args.notes_file is not None:
+        state["notes"] = _read_text_file(args.notes_file).strip() or None
+    if args.related_branch is not None:
+        state["related_branches"] = [] if args.related_branch == ["."] else list(args.related_branch)
 
     paths = normalize_paths(repo, args.paths)
     if args.generated is not None:
@@ -700,6 +705,7 @@ def cmd_begin_round(args: argparse.Namespace) -> dict:
         "focus": args.focus,
         "mode_reason": mode_reason,
         "plugin_version": PLUGIN_VERSION,
+        "intent": state.get("intent"),
     }
     if mode == "merge-check":
         rnd["conflicts"] = conflicts
@@ -731,6 +737,8 @@ def cmd_begin_round(args: argparse.Namespace) -> dict:
             "oversized": counted_files > MAX_FILES or counted_lines > MAX_LINES,
             "empty": files == 0,
             "saved": saved,
+            "notes": state.get("notes"),
+            "related_branches": state.get("related_branches", []),
         }
     )
     if mode == "merge-check":
@@ -1724,7 +1732,7 @@ def _build_parser() -> argparse.ArgumentParser:
     begin = sub.add_parser("begin-round", parents=[common], help="record the start of a review round")
     begin.add_argument("--mode", required=True, choices=("deep", "followup", "merge-check"))
     begin.add_argument("--model", required=True)
-    begin.add_argument("--snapshot", required=True, help="snapshot sha to review")
+    begin.add_argument("--snapshot", help="snapshot sha to review (default: take one now)")
     begin.add_argument(
         "--base-ref",
         help="ref the branch is reviewed against (default: the stored base ref, else the detected default)",
@@ -1740,6 +1748,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "--generated",
         nargs="+",
         help="globs for generated files, kept out of the size checks; stored, and reused when absent",
+    )
+    begin.add_argument(
+        "--notes-file",
+        metavar="PATH",
+        help="earlier reviewers' notes for the whole-branch review; stored, and reused when absent",
+    )
+    begin.add_argument(
+        "--related-branch",
+        nargs="+",
+        metavar="REF",
+        help="branches built alongside that mirror this change; stored, and reused when absent; . clears",
     )
     begin.add_argument(
         "--deep-model",
