@@ -1,6 +1,6 @@
 {
   "name": "implementation-manager",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Runs a planned multi-phase piece of work to completion through child sessions that each deliver a pull request.",
   "author": {
     "name": "Michael Crawford",
@@ -13,6 +13,9 @@
     "sessions"
   ],
   "dependencies": [
-    "branch-review"
+    {
+      "name": "branch-review",
+      "version": ">=0.10.0"
+    }
   ]
 }

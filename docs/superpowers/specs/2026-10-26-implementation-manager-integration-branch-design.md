@@ -116,7 +116,8 @@ Bump branch-review to 0.10.0.
 
 **A sync in flight blocks unit merges, in both queue modes.**
 
-- While the integration unit has an unanswered, queued or approved-but-unpushed request, no unit PR may merge into the integration branch. `status` lists `integration sync in flight`, and the merge bar gains that condition.
+- While the integration unit has an unanswered request, or an approved push not yet landed, no unit PR may merge into the integration branch. `status` lists `integration sync in flight`, and the merge bar gains that condition.
+- A request that is only queued does not count. It waits behind the slot holder, which must merge to free the slot, so blocking that merge would deadlock serial mode. The queued sync jumps the queue and is served once the holder merges; from its `go` onward, unit merges are blocked. A unit that merges while the sync is still queued costs the integration child at most one reset-and-redo.
 - In serial mode the slot already gives this. In parallel mode it is what keeps the child's reset-and-redo step from looping forever under steady merges.
 - `SYNCED` and `synced` work whether or not the unit holds the slot: they clear the outstanding `go`, and free the slot only if it was held.
 
@@ -237,6 +238,7 @@ Bump implementation-manager to 0.5.0. Setup confirms `branch-review:record` is a
 - The integration child resets and redoes its sync when a unit merged under it, rather than merging the remote branch into its local merge.
 - An owner-merges final PR is guarded by never reporting it `READY` (it gets `FINAL-READY`), not by a new merge command, so the default run's merge step is unchanged.
 - An integration sync in flight blocks unit merges in both queue modes, rather than refusing integration mode with `--queue parallel`.
+- 2026-10-26, during the build: a queued integration request does not count as a sync in flight; only an unanswered request or an approved push not yet landed does. Counting a queued one deadlocked serial mode, since the slot holder could never merge to free the slot. The cost is at most one reset-and-redo by the integration child for a unit that merges while the sync is queued.
 - After the final PR opens, late unit merges are brought under review by a follow-up review (feature review on) or a record (off).
 
 ## Left to the builder

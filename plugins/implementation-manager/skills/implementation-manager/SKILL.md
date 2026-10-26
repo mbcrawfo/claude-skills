@@ -10,7 +10,7 @@ argument-hint: "[spec, plan or epic path]"
 
 This session takes planned work from spec to merged code. It starts one child session per unit of work (a phase or sub-phase), clears each child's pushes against branch-review's state, merges each child's pull request when it is ready, and releases the units that depend on it. It writes no product code. Its own planning PR, if one is open, is the one PR it works on itself: it keeps Auto-fix on for it, fixes every finding (thread or review body), reviews it with `/branch-review:review` and gates each push with `branch-review:check`, like a child's. The user is needed only for questions and problems.
 
-**Invoking this skill authorizes** starting the child sessions and merging the run's PRs (the children's, cards the user starts from this run, and this session's own planning PR) once they meet the merge bar. It authorizes nothing else.
+**Invoking this skill authorizes** starting the child sessions and merging the run's PRs (the children's, cards the user starts from this run, and this session's own planning PR) once they meet the merge bar. It authorizes nothing else. When the owner asks for integration-branch mode, that request also authorizes creating the integration branch and deleting it once the final PR merges.
 
 Arguments: `$ARGUMENTS`
 
@@ -44,6 +44,17 @@ Arguments: `$ARGUMENTS`
 | `check <unit>` | One readiness check of the unit's PR now: `READY <pr> <sha>`, `NOT-READY …`, `MERGED <pr>`, `CLOSED <pr>` or `ERROR …`. |
 | `wait [--stall-hours N]` | Blocks until one event, prints it, exits 0. Always with `run_in_background`. |
 
+Integration-branch mode only (see "Integration-branch mode" under Setup):
+
+| Command | Does |
+|---|---|
+| `init … --integration integration/<slug> --final-merge <manager\|owner> --feature-review <yes\|no>` | Turns the mode on. All three options or none; there is no default for either choice. |
+| `unit <name> --integration` | Makes the unit the run's one integration unit. Its branch is the integration branch and may be nothing else; it has no `--prereq` or `--after`, and no unit may name it in either. `open-ready` opens its gate at once, outside the WIP limit. |
+| `set final-merge <manager\|owner>`, `set feature-review <yes\|no>` | The owner's changes to the two choices. Refused once the final gate has opened. |
+| `synced <unit> <sha>` | The integration unit pushed its `go` straight to the integration branch: clears the `go` and frees the slot if it holds it. Refuses another unit, or a sha that is not its outstanding `go`. |
+| `open-ready` | Also prints `<unit> final review` or `<unit> final no-review` (and logs it to `gates.log`), once, when every other unit is done or stopped and at least one is done. |
+| `check <unit>` | Also prints `NOT-READY <pr> head=<sha7> blocked: <reason>` while an integration block applies, and `FINAL-READY <pr> <sha>` for the final PR of an owner-merges run. |
+
 ## Setup (first turn)
 
 1. **The work breakdown.** Use this conversation's plan if it has one; otherwise read the spec, plan or epic named in the arguments. List the units: name (short, letters, digits, `-` and `_`, e.g. `5-3`), title, spec path, prerequisites, merge-order units, and a `branch_name` you choose. A prerequisite (`--prereq`) is code the unit builds on: its gate waits for it. A merge-order unit (`--after`) is an order that only matters at merge, such as changes to the same docs or files: the unit starts at once and merges after it. Take order and dependencies from the docs; units the docs allow side by side run in parallel. If this session has its own open PR the units need (e.g. the specs), it is a unit named `specs` with no child, and every unit depends on it.
@@ -55,9 +66,23 @@ Arguments: `$ARGUMENTS`
 6. **Record and watch.** `get_session` on each child for its actual branch (the app adds a prefix and suffix) and working directory, and run `run.py unit <name> --branch <branch> --worktree <path>`; if either is not set yet, do it next turn. For `specs`, record this session's own branch and working directory. Then start one `run.py wait` with `run_in_background`.
 7. Run `run.py open-ready` and reply with the tracker.
 
+### Integration-branch mode
+
+Only when the owner asks for it. The units merge into `integration/<slug>` instead of `<base>`, and one final PR from it lands the whole run in `<base>`. `<base>` stays the base of the final PR; wherever this skill has a unit, a card, the `specs` unit or a message to a unit's child use `<base>` for the units' work, use `integration/<slug>` instead. These steps add to the ones above:
+
+- **Choices,** before step 3. Unless the owner said, ask in the reply text who merges the final PR (`manager` once it meets the merge bar, or `owner`) and whether to run a whole-feature review before it. Never assume either; setup waits for the answer.
+- **Default branch,** in step 2. `<base>` must be the repository's default branch (`gh repo view <repo> --json defaultBranchRef --jq .defaultBranchRef.name`): `sync_with_base_branch` merges only that branch into the integration branch. If it is not, tell the owner and stop.
+- **CI check,** in step 2. Read the `pull_request` triggers of the repository's workflows (`.github/workflows/`). If their branch filters exclude `integration/<slug>`, tell the owner and stop: unit PRs would never get checks, so they would never be ready.
+- **Skills,** in step 2. Also confirm `branch-review:record` is among your available skills, next to `check` and `review`; if it is missing, stop and tell the user to update branch-review to 0.10.0 or later.
+- **Create the branch,** in step 3, before `init` and before starting any session. You create it; the integration child does not. `gh api repos/<repo>/git/refs -f ref=refs/heads/integration/<slug> -f sha=<base head>`, `<base head>` from `git ls-remote origin refs/heads/<base>`. Then `git fetch origin integration/<slug>:integration/<slug>`, so a local branch exists for `source_branch`.
+- **Init,** in step 3. `run.py init` with the facts from step 2 plus `--integration integration/<slug> --final-merge <manager|owner> --feature-review <yes|no>`. Then, after `run.py unit specs --specs` if there is one and before the other units, `run.py unit integration --integration --title "integration"`. Add the integration child to the units table in `notes.md`.
+- **Planning PR,** in step 3. If the `specs` PR is open against `<base>`, retarget it: `gh pr edit <pr> -R <repo> --base integration/<slug>`. Its review uses `--base origin/integration/<slug>` from then on. A `specs` PR opened later targets `integration/<slug>`.
+- **Start,** in step 5. Start the integration child first ("The integration child"), then every unit child, all with `source_branch: integration/<slug>` beside the other `start_session` arguments.
+- **Record,** in step 6. For the integration unit, record only `--worktree`: `--integration` set its branch, and `unit` refuses any other. Do the same wherever this skill records a unit's branch and worktree.
+
 ## Starting children
 
-If this session already did other work, call `mcp__ccd_session__mark_chapter` first. Write a bold title line and one sentence for each session right before its call. Each call: `initiation: "user_asked"`, `context: "fresh"`, `use_worktree: true`, `name`, `title` and `branch_name` from the unit. `get_session` with `"self"` gives your own id for the prompt.
+If this session already did other work, call `mcp__ccd_session__mark_chapter` first. Write a bold title line and one sentence for each session right before its call. Each call: `initiation: "user_asked"`, `context: "fresh"`, `use_worktree: true`, `name`, `title` and `branch_name` from the unit. `get_session` with `"self"` gives your own id for the prompt. In integration-branch mode, start the integration child first (its prompt is in "The integration child"), then every unit child, and give every call `source_branch: integration/<slug>` too.
 
 The child prompt has these parts, in this order:
 
@@ -104,7 +129,50 @@ Parts 8 to 11 follow, word for word. Replace `<run>` (the absolute run folder), 
 11. One open PR at a time, scope, and hand-over notes. Build every part in this session's own worktree, on its own branch. While part k's PR is open, you may plan part k+1 but commit nothing for it; start its code only after the manager tells you part k merged, then sync with `<base>` first. Never use a second branch, worktree or checkout. A finding whose fix belongs outside this unit's scope is escalated with the review's other escalations. A finding outside the change (status `outside`) stays as the review leaves it and goes in the PR description; the review itself escalates it when the repository's rules forbid deferring review findings. Never record any review finding as new tech debt or a follow-up without the owner's answer. Facts later units need (changed names or ids, shared-code decisions, limits found) go in the app's shared notes folder as `<name>-notes.md`, nowhere else.
 ```
 
-### A unit the owner designs with the child
+### Unit prompts in integration-branch mode
+
+- Replace `<base>` with `integration/<slug>` everywhere in the prompt, parts 8 to 11 included, so the review command is `/branch-review:review --base origin/integration/<slug>`.
+- Part 3's and part 8's `sync_with_base_branch` stay as they are, with no `base` argument. Its default is the branch the worktree was cut from, then the PR's base, and both are `integration/<slug>`.
+- Add this line to part 8, after its `On go <sha>` steps:
+
+```
+- If `sync_with_base_branch` refuses because the sync touches sandbox-protected files, push nothing and end your turn with `[blocked]`, "blocks merge: no", and the paths it names.
+```
+
+### The integration child
+
+It owns `integration/<slug>`: it keeps it current with `<base>` for the whole run, then delivers the final PR into `<base>`. Its prompt has these parts, in this order. Replace `<run>`, `<name>` (the integration unit, `integration`), `<base>`, `<slug>`, `<owner/repo>`, `<spec path>` (the spec, plan or epic the run implements) and `<manager id>`; leave every other placeholder for the child.
+
+1. **Goal:** own `integration/<slug>` on `<owner/repo>`: keep it current with `<base>` for the whole run, then deliver the final PR from it into `<base>`. The units' PRs merge into it; never merge one yourself. Write no feature code: only conflict resolutions, and fixes from the whole-feature review or the final PR's checks and reviews.
+2. **Gate:** part 2 of the unit prompt, with `^<name> (open|stop|final)` as the pattern. On `<name> final …`, do the integration-branch part's Start bullet without its watch loop, then "On the final line".
+3. **The integration-branch part,** below, word for word.
+4. **Parts 8 to 10 of the unit prompt,** word for word, with `<name>` the integration unit and `<base>` the run's base. The integration-branch part says where it replaces them.
+
+```
+Integration branch.
+- This part wins where parts 8 to 10 differ: act on `go <sha>` as "On go <sha>" below says, not as part 8 does, and review when this part says to.
+- Start: your worktree was cut from `integration/<slug>`, on a branch the app named; leave that branch unused. Run `git switch integration/<slug>`. From now on this session's own branch is `integration/<slug>`: every push request names it, and that is the branch `wrong-branch` means. Read the repository's agent instructions and `<run>/notes.md`. Then Record, and start the watch loop.
+- Record: `git fetch origin`, then `git merge --ff-only origin/integration/<slug>`. Take the PR numbers (`#<n>`) from `git log --first-parent --format=%s <last recorded>..HEAD`, `<last recorded>` the commit you last recorded (the first time, `git merge-base origin/<base> HEAD`). Write one line to `<run>/integration-reason.txt`: `merged <PR numbers> into integration/<slug>; each reviewed on its own branch`, or `integration/<slug> as created from <base>` when there are none. Invoke `branch-review:record --repo <this worktree> --commit <HEAD sha> --reason-file <run>/integration-reason.txt`. If it refuses, end your turn with `[blocked]` and its stderr line.
+- Watch loop: one Bash `run_in_background` poll, then end your turn with `[watching]`. `<merged>` is the output of `git merge-base origin/<base> HEAD` after a fetch. Until the final PR is open: `f="<run>/gates.log"; until l=$(grep -E '^<name> (final|stop)' "$f" 2>/dev/null | tail -1) && [ -n "$l" ]; do h=$(git ls-remote origin refs/heads/<base> | cut -f1); [ -n "$h" ] && [ "$h" != "<merged>" ] && { l="base $h"; break; }; sleep 60; done; echo "$l"`. Once the final PR is open, with `<pushed>` the output of `git rev-parse origin/integration/<slug>` after a fetch: `f="<run>/gates.log"; until l=$(grep -E '^<name> stop' "$f" 2>/dev/null | tail -1) && [ -n "$l" ]; do h=$(git ls-remote origin refs/heads/<base> | cut -f1); [ -n "$h" ] && [ "$h" != "<merged>" ] && { l="base $h"; break; }; i=$(git ls-remote origin refs/heads/integration/<slug> | cut -f1); [ -n "$i" ] && [ "$i" != "<pushed>" ] && { l="integration $i"; break; }; sleep 60; done; echo "$l"`.
+- When the poll prints: once the final PR is open, first run `gh pr view <pr> -R <owner/repo> --json state --jq .state`; on `MERGED`, start no poll and end your turn with `[waiting] final PR merged`. Then: `base <sha>`: "On a <base> change". `integration <sha>`: "A late unit merge". `<name> final …`: "On the final line". `<name> stop …`: push and commit nothing more, and end your turn with `[waiting]` quoting the line.
+- On a <base> change:
+  1. Record.
+  2. Merge `<base>` with ccd_host `sync_with_base_branch` and `base: <base>`; the tool allows the repository's default branch as a base.
+  3. Up to date: start the watch loop again. A clean merge: ask to push. Conflicts: resolve them, `git add`, `git commit --no-edit`, run `/branch-review:review --base origin/<base>` to convergence (it runs as a merge-check from the recorded round), then ask to push.
+- On `go <sha>`:
+  1. If HEAD is no longer that sha, do not push; ask again.
+  2. `git fetch origin integration/<slug>`. If `git merge-base --is-ancestor origin/integration/<slug> HEAD` fails, a unit merged after your merge: do not push. Note HEAD's sha as `<noted sha>`, run `git reset --hard origin/integration/<slug>` (it drops only your own unpushed merge), then Record, merge `<base>` again as above, and ask again. Where the same files conflict, reuse your earlier resolutions from `git show <noted sha>:<path>` where they still fit.
+  3. Otherwise run the validation the repository requires before a push, unless it already passed on this tree, then `git push origin HEAD:integration/<slug>`. Never force-push. A rejected push means a unit merged meanwhile: do step 2.
+  4. After the final line, with no final PR open yet: open the final PR from `integration/<slug>` into `<base>`, following the repository's PR rules, its description summarizing the run's units and PRs from `<run>/notes.md`, and turn on Auto-fix with the ccd_pr tools.
+  5. Start the watch loop again.
+- On the final line (`<name> final review` or `<name> final no-review`):
+  1. One last sync: "On a <base> change" steps 1 and 2; on conflicts, resolve, commit and review as its step 3 says.
+  2. `review`: run `/branch-review:review --full --base origin/<base>` with the run's intent (the goal of `<spec path>`) to convergence. Fix findings on `integration/<slug>`, and escalate as part 8 says.
+  3. Ask to push, even if nothing changed: the final PR opens on that `go`.
+- A late unit merge (the final PR is open and `integration/<slug>` moved): `git fetch origin`, `git merge --ff-only origin/integration/<slug>`. Final line `review`: run `/branch-review:review` to convergence; it is a follow-up from the whole-feature review, and a fix it needs is committed and asked to push. Final line `no-review`: Record. Nothing to push otherwise, since the commit is already on the remote. Start the watch loop again.
+- Status token: as in part 9, plus `[watching]` while your watch loop runs with nothing else to do.
+```
+
 
 For a unit added mid-run that the owner will design in the child's session, leave out part 2 when `run.py open-ready` opened its gate, keep every other part, and add this to part 6:
 
@@ -125,15 +193,22 @@ Every turn: handle what woke you, then make sure exactly one `run.py wait` is ru
 - `requests.log has lines no wait has read yet`: start a `wait`; it reports those you have not answered yet.
 - `bad request line: …`: if a child wrote it, send that child one message with the exact request line format. Tell the user in one line otherwise. Once every listed line is handled, run `run.py clear-bad`.
 - `gate <unit> may open`: run `run.py open-ready`.
+- `final gate for <unit> may open: run open-ready` (integration mode): run `run.py open-ready`.
+- `every unit stopped: ask the owner what to do with <branch>` (integration mode): ask the owner, in the reply text and under "Waiting on you", whether to close the integration branch or add units. Close: `run.py stop integration every unit stopped`, send the integration child one message that it is stopped, close the final PR if one is open, and delete the branch (Finishing's command).
+
+In integration mode, `run.py check` can also print `NOT-READY <pr> head=<sha7> blocked: <reason>` (nothing to do; the watcher reports the PR again once the block clears) or `FINAL-READY <pr> <sha>` (handle it as `FINAL-READY`).
 
 | Event | Do |
 |---|---|
 | `REQUEST <unit> <sha> <branch>` or `PENDING <unit> <sha> <branch>` | "Answering a push request", below. Send the child no message. `PENDING` is a request still unanswered 15 minutes after its `REQUEST`: handle it exactly like `REQUEST`. |
 | `NEXT <unit> <sha>` | The slot is free and this queued request is first. Answer it again (the child may have changed something): covered gets `go`, not covered gets `redo`. Do not tell the child to sync first; the `go` covers it. |
 | `READY <unit> <pr> <sha>` or `REMIND <unit> <pr> <sha>` | Apply the merge bar (below) and merge. The child may be running; that does not matter. |
+| `SYNCED <unit> <sha>` | The integration child pushed its `go` to the integration branch. `run.py synced <unit> <sha>`. The reply is one line. |
+| `FINAL-READY <unit> <pr> <sha>` | The final PR of an owner-merges run is ready. Tell the owner once, with the PR link, and list it under "Waiting on you". Never merge it: the owner does, and the watcher's `MERGED` then leads to "After a merge". |
+| `open-ready` prints `<unit> final review` or `<unit> final no-review` | The final gate opened. Nothing to send; the integration child's poll reads it. |
 | `MERGED <unit> <pr>` | If you already ran `run.py merged` for that PR, ignore it. Otherwise someone else merged it: confirm with `gh pr view`, then "After a merge". |
 | `CLOSED <unit> <pr>` | `run.py closed <unit> <pr>`. Tell the user; ask whether the unit is dropped or redone. Its dependents stay gated meanwhile. |
-| `BEHIND <unit> <pr> <sha>` | Send the child one message: sync with `<base>` and ask to push. |
+| `BEHIND <unit> <pr> <sha>` | Send the child one message: sync with `<base>` and ask to push. For the integration unit: nothing; its watch loop syncs it. |
 | `STUCK <unit> <pr> no-push` or `STUCK <unit> - no-push` | `list_events` on the child (limit 5). Idle at `[push-request] <sha>`, with `<unit> go <sha>` in `pushes.log` after that request: its answer poll died. Do not yield; send it one message to read `<run>/pushes.log`. At `[pushing] <sha>`, or syncing, validating or pushing: nothing; it is acting on the `go`, and its push, its next request or a `STALLED` settles it. Only at `[waiting]` or `[blocked]`, or with its session gone or idle at anything else: `run.py yield <unit> stuck`; a cause the owner must decide: tell the user in one line. |
 | `STUCK <unit> <pr> <reasons>` (failing checks, unresolved threads, a conflict) | Serial mode: `run.py yield <unit> stuck`. `list_events` on the child (limit 5); a cause the owner must decide: tell the user in one line. Otherwise nothing; it asks again when it is ready. |
 | `ORPHAN <unit> <pr>` | A PR opened on a done unit's branch after its last merge. Tell the user in one line what it changes (`gh pr view <pr> -R <repo>`) and ask whether to merge or close it. Merge: the merge bar, with `run.py check <unit>` for readiness, then `run.py merged <unit> <pr>`. Close: `gh pr close <pr> -R <repo>`, then `run.py closed <unit> <pr>`. |
@@ -165,6 +240,8 @@ Once a `no-worktree-path` or `check-error` is sorted out, send the child one mes
 
 **Messages** go to a child only for what no file carries: an owner answer, a `BEHIND` sync, a merged part k of N, a dead poll, a request format fix, a merge bar the check failed, a stopped unit that had started. Never send one alongside a `go`, `redo` or `open`, or a `stop` to a unit still gated: the child's poll reads the file within a minute. A started unit's `stop` is the one exception, since nothing polls `gates.log` for it any more. Never mention reviews; `redo` reasons say when one is needed. A gated child gets a message only if it is still `[gated]` 5 minutes or more after its gate opened: its gate loop died, so tell it its gate is open.
 
+**Late work in integration mode.** Every card, every unit the user adds, every ORPHAN and every owner-approved fix from an escalation targets `integration/<slug>`, before or after the final gate: its prompt uses the unit prompt's integration-mode changes, its session starts with `source_branch: integration/<slug>`, and a PR opened against `<base>` is retargeted with `gh pr edit <pr> -R <repo> --base integration/<slug>`. The final PR waits until that work lands (`status` lists `final PR #<pr> waits on <units>`).
+
 ## The merge bar
 
 All of:
@@ -174,10 +251,11 @@ All of:
 - the unit is not stopped (`run.py status` does not list it `stopped`);
 - the unit is not held and every `--after` unit has merged (`run.py status` shows neither `hold <unit>` nor `<unit> … merges after`);
 - no approved push is outstanding for that unit (`run.py status` does not list `push approved for <unit>`). The child is about to push a newer commit, so wait for it; a `READY` for its new head follows.
+- the run is not in integration mode, or `run.py status` lists no `integration sync in flight` for a unit PR, no `final PR … waits on` for the final PR, and the final PR is not owner-merged (`final merge: owner` in the `integration:` line).
 
 The child being idle is not required: it cannot push without a `go`, an outstanding `go` holds the merge, and `--match-head-commit` guards it.
 
-Not met because the check says not covered: send the child one message: its PR head `<sha7>` is not covered (`<reasons>`); fix that and ask to push. Not met because the check errors or the unit has no worktree: tell the user in one line. An unanswered request: answer it first. A queued request, another unit's slot, a hold or an unmerged `--after` unit: do nothing; the unit's turn comes through `NEXT`, its next request or the watcher's next `READY`.
+Not met because the check says not covered: send the child one message: its PR head `<sha7>` is not covered (`<reasons>`); fix that and ask to push. Not met because the check errors or the unit has no worktree: tell the user in one line. An unanswered request: answer it first. A queued request, another unit's slot, a hold or an unmerged `--after` unit: do nothing; the unit's turn comes through `NEXT`, its next request or the watcher's next `READY`. An integration sync in flight or a final PR that waits on units: do nothing; the watcher reports `READY` or `REMIND` once it clears. An owner-merged final PR: never merge it.
 
 **Merge:** `gh pr merge <pr> -R <repo> --<method> --match-head-commit <sha> && gh pr view <pr> -R <repo> --json state --jq .state`, which prints `MERGED`. If it fails because the head moved, do nothing more: the watcher reports the new head. For anything else (approval required, conflicts, branch protection), tell the user.
 
@@ -193,7 +271,7 @@ This session's own PR goes through the same queue. Before each push of its branc
 
 ## Finishing
 
-When every unit is merged: confirm with `gh` that each PR merged into the base, and check whatever the repository uses to track the work (an epic table, a changelog). Report the merged PRs, decisions recorded along the way, and the follow-ups left (tech debt, deferred items, a release, tracking docs that are out of date). Propose real follow-ups as cards. Offer once to archive the child sessions; archive only on a yes.
+When every unit is merged: confirm with `gh` that each PR merged into the base (in integration mode, each unit PR into `integration/<slug>` and the final PR into the base, and then delete the integration branch: `gh api -X DELETE repos/<repo>/git/refs/heads/integration/<slug>`), and check whatever the repository uses to track the work (an epic table, a changelog). Report the merged PRs, decisions recorded along the way, and the follow-ups left (tech debt, deferred items, a release, tracking docs that are out of date). Propose real follow-ups as cards. Offer once to archive the child sessions; archive only on a yes.
 
 ## Tracker
 
@@ -201,6 +279,7 @@ After setup, after every merge, and whenever something waits on the user, end th
 
 ```
 Run <run> (<owner/repo>)
+- Integration: <branch> into <base> · final merge: <manager|owner> · feature review: <yes|no>
 - Slot: <unit> since <HH:MM> | free
 - Queue: <unit> · <unit> | empty
 - <unit> merged #<pr> · <unit> merged #<pr>
@@ -208,6 +287,8 @@ Run <run> (<owner/repo>)
 - <unit> gated on <units>
 - Waiting on you: nothing | <what>, holds included except `answer sent:` ones
 ```
+
+The `Integration:` line appears only in integration mode.
 
 ## Red flags
 
@@ -237,3 +318,5 @@ Run <run> (<owner/repo>)
 | "I'll let the child know its PR merged" | It doesn't need to know, except a non-final part. Every message spends the 10-send budget. |
 | "The child gave a status update; I'll summarize it for the user" | One line at most, nothing about progress. |
 | "The next prompt should mention what 5-3 changed" | Prompts are written up front. Put it in `notes.md` before opening the gate. |
+| "The final PR is ready; merge it" | Only when the owner chose `manager`. `FINAL-READY` is never merged: the owner merges it. |
+| "I'll sync main into the integration branch myself" | The integration child does it. The manager writes no code. |

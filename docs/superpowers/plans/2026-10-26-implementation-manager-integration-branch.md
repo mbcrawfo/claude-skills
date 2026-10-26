@@ -275,7 +275,7 @@ git commit -m "feat(implementation-manager): integration mode, unit kind and fin
 - Produces:
   - `go(...)`: for the integration unit only, also sets `marks[unit]["go_sha"] = sha`.
   - `redo`, `stop_gate` and `take_request` pop `go_sha` wherever they pop `go_head`. `hold` and `yield_slot` keep it: the `go` stays outstanding.
-  - `sync_in_flight(state) -> bool`: the integration unit has a `pending` entry, a `queue` entry, or `go_sha` in its marks.
+  - `sync_in_flight(state) -> bool`: the integration unit has a `pending` entry or `go_sha` in its marks. A `queue` entry does not count: blocking the slot holder's merge behind a queued sync would deadlock serial mode.
   - `integration_block(state, unit) -> str | None`:
     - `"integration sync in flight"` for a non-integration unit while `sync_in_flight`;
     - `"waits on <a>, <b>"` for the integration unit while `late_units` is non-empty;
@@ -289,7 +289,7 @@ git commit -m "feat(implementation-manager): integration mode, unit kind and fin
   - `record_synced(state, "int", SHA1)` clears it and frees the slot.
   - `record_synced` with `SHA2` is refused, and so is `record_synced(state, "a", SHA1)`.
   - `hold(int)` after `go` keeps `go_sha`; `redo(int, SHA1, "x")` clears it.
-  - A queued request from `int` makes `sync_in_flight` True.
+  - A queued request from `int` leaves `sync_in_flight` False.
   - `enqueue` order `a`, `b`, then `int` gives `queue_order` starting with `int`, and `queue_head` is `int`.
   - With unit `a` open and undone, `integration_block(state, "int")` is `"waits on a"`; once `a` is done, None.
   - In a run without the mode, `integration_block` is None for every unit and `go` sets no `go_sha`.
