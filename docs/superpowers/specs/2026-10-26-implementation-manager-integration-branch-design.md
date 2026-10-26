@@ -171,7 +171,7 @@ Bump implementation-manager to 0.5.0. Setup confirms `branch-review:record` is a
   4. Start the watch loop again.
 - **On `go`.** If `origin/integration/<slug>` moved past the merge's first parent (a unit merged meanwhile):
   1. Don't push.
-  2. Note HEAD, and list the non-merge commits in `origin/integration/<slug>..<noted sha>` (`git log --no-merges --format=%H --reverse`): fixes the child committed after its merge, which reviews asked for. Reset the local branch to the remote. The reset drops every unpushed commit, the merge and those fixes alike; `rerere` keeps only the merge's resolutions.
+  2. Note HEAD, and list the non-merge commits reachable from it but from neither `origin/integration/<slug>` nor `origin/<base>` (`git log --no-merges --format=%H --reverse <noted sha> --not origin/integration/<slug> origin/<base>`; excluding the base matters when the base merge fast-forwarded): fixes the child committed after its merge, which reviews asked for. Reset the local branch to the remote. The reset drops every unpushed commit, the merge and those fixes alike; `rerere` keeps only the merge's resolutions.
   3. Record and merge `<base>` again, then `git cherry-pick -x` the noted fix commits in order, resolving as before. If any was cherry-picked or the merge conflicted, run `/branch-review:review --base origin/<base>` to convergence. Then ask again.
   
   Otherwise push HEAD to the integration branch. Never force-push.
