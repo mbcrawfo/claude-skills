@@ -1682,11 +1682,32 @@ class IntegrationMergeTests(IntegrationTestCase):
         stop_gate(self.dir, state, "int", "gave up")
         self.assertFalse(sync_in_flight(state))
 
-    def test_a_queued_request_is_a_sync_in_flight(self):
+    def test_a_queued_request_does_not_block_the_slot_holder(self):
         state = self.setup_run()
-        go(self.dir, state, "a", SHA2, NOW)
+        go(self.dir, state, "a", SHA2, NOW)  # takes the slot
         enqueue(self.dir, state, "int", SHA1, NOW)
-        self.assertTrue(sync_in_flight(state))
+        self.assertFalse(sync_in_flight(state))
+        self.assertIsNone(integration_block(state, "a"))
+        self.assertTrue(reportable(state, "a"))
+        record_merged(state, "a", 7, more=False)
+        self.assertIsNone(state["slot"])
+        self.assertEqual(queue_head(state)["unit"], "int")
+
+    def test_an_unrelated_units_go_does_not_block_another_unit(self):
+        state = self.setup_run(queue_mode="parallel")
+        go(self.dir, state, "a", SHA2, NOW)
+        self.assertIsNone(integration_block(state, "b"))
+
+    def test_queue_order_is_unchanged_in_a_default_run(self):
+        state = self.init()
+        add(state, "a")
+        add(state, "b")
+        add(state, "c")
+        go(self.dir, state, "a", SHA2, NOW)
+        enqueue(self.dir, state, "b", SHA2, NOW + 1)
+        enqueue(self.dir, state, "c", SHA2, NOW + 2)
+        state["queue"][1]["front"] = True
+        self.assertEqual([e["unit"] for e in queue_order(state)], ["c", "b"])
 
     def test_a_pending_request_is_a_sync_in_flight(self):
         state = self.setup_run()

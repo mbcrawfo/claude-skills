@@ -725,13 +725,17 @@ def record_closed(state: dict, unit: str, pr: int) -> None:
 
 
 def sync_in_flight(state: dict) -> bool:
-    """True when the integration unit has a request pending, queued or a `go` not yet recorded as synced."""
+    """True when the integration unit has an unanswered request or a `go` not yet recorded as synced.
+
+    A request that is only queued does not count: it waits behind the slot holder, and blocking that holder's
+    merge would deadlock serial mode, since the holder must merge to free the slot.
+    """
     name = integration_unit(state)
     if name is None:
         return False
-    return any(entry["unit"] == name for key in ("pending", "queue") for entry in state[key]) or "go_sha" in state[
-        "marks"
-    ].get(name, {})
+    if any(entry["unit"] == name for entry in state["pending"]):
+        return True
+    return "go_sha" in state["marks"].get(name, {})
 
 
 def integration_block(state: dict, unit: str) -> str | None:
