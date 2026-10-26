@@ -8,9 +8,9 @@ The run folder is always the first argument after the subcommand:
   unit <dir> <name> [--prereq U ...] [--after U ...|none] [--branch B] [--worktree P] [--specs] [--title T]
        [--integration]              the run's one integration unit (needs init --integration)
   set <dir> wip <N|none> | set <dir> queue <serial|parallel>
+                                    in parallel mode, print each request still queued: queued <unit> <sha>
   set <dir> final-merge <manager|owner> | set <dir> feature-review <yes|no>
                                     integration mode, until the final gate opens
-                                    in parallel mode, print each request still queued: queued <unit> <sha>
   open <dir> <unit>                 open one gate
   open-ready <dir>                  open every gate that may open; print one unit name per line, then the
                                     final gate's gates.log line when it opens (integration mode)
@@ -178,7 +178,12 @@ def _integration_lines(state: dict) -> list[str]:
         if late:
             lines.append(f"- final PR #{pr} waits on {', '.join(late)}")
         marks = state["marks"].get(name, {})
-        if _owner_merges(state, name) and marks.get("ready_head") == f"{pr} {marks.get('head')}":
+        # A ready mark from before a unit was added is stale: the owner would merge while unit work is still out.
+        if (
+            _owner_merges(state, name)
+            and not runstate.integration_block(state, name)
+            and marks.get("ready_head") == f"{pr} {marks.get('head')}"
+        ):
             lines.append(f"- final PR #{pr} ready: the owner merges it")
     return lines
 
@@ -426,7 +431,7 @@ def _run(args: argparse.Namespace) -> str | None:
             )
         elif command == "set":
             runstate.set_option(state, args.key, args.value)
-            if state["queue_mode"] == "parallel":
+            if args.key in ("wip", "queue") and state["queue_mode"] == "parallel":
                 # Parallel mode has no queue turns: each request still queued needs its own go.
                 queued = [f"queued {entry['unit']} {entry['sha']}" for entry in runstate.queue_order(state)]
                 return "\n".join(queued) or None

@@ -744,6 +744,16 @@ class IntegrationCliTests(CliTestCase):
         self.assertIn("final gate", self.fail("set", str(d), "final-merge", "manager"))
         self.fail("set", str(d), "feature-review", "yes")
 
+    def test_set_final_merge_prints_no_queued_lines_in_parallel_mode(self):
+        self.init_integration()
+        self.ok("set", str(self.dir), "queue", "parallel")
+        state = self.state()
+        state["queue"] = [{"unit": "a", "sha": SHA1, "at": 1000.0, "front": False}]
+        (self.dir / "run.json").write_text(json.dumps(state))
+        self.assertEqual(self.ok("set", str(self.dir), "queue", "parallel"), f"queued a {SHA1}\n")
+        self.assertEqual(self.ok("set", str(self.dir), "final-merge", "owner"), "")
+        self.assertEqual(self.ok("set", str(self.dir), "feature-review", "yes"), "")
+
     def test_unit_integration_needs_the_mode(self):
         self.init()
         self.assertIn("integration", self.fail("unit", str(self.dir), "int", "--integration"))
@@ -832,6 +842,18 @@ class IntegrationCliTests(CliTestCase):
         self.ok("open-ready", str(self.dir))
         self.open_pr("int", 9, ready_sha=HEAD_A, head=SHA2)
         self.assertFalse([line for line in self.status() if "owner merges" in line])
+
+    def test_a_ready_final_pr_stops_being_ready_when_a_unit_is_added(self):
+        self.init_integration()
+        self.ok("open-ready", str(self.dir))
+        self.ok("merged", str(self.dir), "a", "7")
+        self.ok("open-ready", str(self.dir))
+        self.open_pr("int", 9, ready_sha=HEAD_A)
+        self.assertIn("- final PR #9 ready: the owner merges it", self.status())
+        self.ok("unit", str(self.dir), "late")
+        lines = self.status()
+        self.assertIn("- final PR #9 waits on late", lines)
+        self.assertFalse([line for line in lines if "owner merges" in line])
 
     def test_a_manager_merged_final_pr_is_reported_as_ready_since(self):
         self.init_integration("manager")
