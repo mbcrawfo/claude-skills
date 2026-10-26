@@ -192,6 +192,17 @@ class RequestTests(WatcherTestCase):
         self.assertNotIn("go_head", marks["a"])
         self.assertIn("go_head", marks["b"])
 
+    def test_a_request_clears_that_units_go_sha(self):
+        with locked(self.dir) as state:
+            go(self.dir, state, "a", SHA1, NOW)
+            state["marks"]["a"]["go_sha"] = SHA1
+            state["marks"]["b"] = {"go_sha": SHA2}
+        append(self.dir, f"a push {SHA3} feat/a\n")
+        self.assertEqual(run_wait(self.dir), f"REQUEST a {SHA3} feat/a")
+        marks = load(self.dir)["marks"]
+        self.assertNotIn("go_sha", marks["a"])
+        self.assertIn("go_sha", marks["b"])
+
     def test_no_event_sleeps_request_seconds_without_gh(self):
         clock = StopClock(limit=3)
         with self.assertRaises(Timeout):

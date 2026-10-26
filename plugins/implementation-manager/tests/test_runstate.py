@@ -18,6 +18,7 @@ from runstate import (
     has_open_pr,
     hold,
     init_run,
+    integration_block,
     integration_unit,
     late_units,
     load,
@@ -30,11 +31,13 @@ from runstate import (
     queue_order,
     record_closed,
     record_merged,
+    record_synced,
     redo,
     release,
     reportable,
     set_option,
     stop_gate,
+    sync_in_flight,
     unit_base,
     yield_slot,
 )
@@ -1562,6 +1565,174 @@ class FinalGateTests(IntegrationTestCase):
         with self.assertRaises(RunError):
             open_final(self.dir, state)
         self.assertEqual((self.dir / "gates.log").read_text(), "int open\n")
+
+
+class IntegrationMergeTests(IntegrationTestCase):
+    def setup_run(self, queue_mode="serial"):
+        if queue_mode == "serial":
+            state = self.init_integration()
+        else:
+            state = init_run(
+                self.dir,
+                repo="o/r",
+                base="main",
+                method="merge",
+                wip=None,
+                queue_mode=queue_mode,
+                now=NOW,
+                integration=dict(INTEGRATION),
+            )
+        self.add_integration(state)
+        add(state, "a")
+        add(state, "b")
+        self.open_unit(state, "int")
+        self.open_unit(state, "a")
+        self.open_unit(state, "b")
+        return state
+
+    def test_go_on_the_integration_unit_blocks_unit_merges(self):
+        state = self.setup_run()
+        self.assertFalse(sync_in_flight(state))
+        go(self.dir, state, "int", SHA1, NOW)
+        self.assertEqual(state["marks"]["int"]["go_sha"], SHA1)
+        self.assertTrue(sync_in_flight(state))
+        self.assertEqual(integration_block(state, "a"), "integration sync in flight")
+        self.assertFalse(reportable(state, "a"))
+
+    def test_the_block_holds_in_parallel_mode_too(self):
+        state = self.setup_run(queue_mode="parallel")
+        go(self.dir, state, "int", SHA1, NOW)
+        self.assertEqual(integration_block(state, "a"), "integration sync in flight")
+        self.assertFalse(reportable(state, "a"))
+
+    def test_the_integration_unit_is_not_blocked_by_its_own_sync(self):
+        state = self.setup_run()
+        record_merged(state, "a", 1, more=False)
+        record_merged(state, "b", 2, more=False)
+        go(self.dir, state, "int", SHA1, NOW)
+        self.assertIsNone(integration_block(state, "int"))
+
+    def test_a_go_on_another_unit_sets_no_go_sha(self):
+        state = self.setup_run(queue_mode="parallel")
+        go(self.dir, state, "a", SHA1, NOW)
+        self.assertNotIn("go_sha", state["marks"]["a"])
+        self.assertFalse(sync_in_flight(state))
+
+    def test_record_synced_clears_the_block_and_frees_the_slot(self):
+        state = self.setup_run()
+        go(self.dir, state, "int", SHA1, NOW)
+        self.assertEqual(state["slot"]["unit"], "int")
+        record_synced(state, "int", SHA1)
+        self.assertFalse(sync_in_flight(state))
+        self.assertIsNone(state["slot"])
+        self.assertNotIn("go_sha", state["marks"]["int"])
+        self.assertNotIn("go_head", state["marks"]["int"])
+        self.assertIsNone(integration_block(state, "a"))
+
+    def test_record_synced_leaves_another_holders_slot(self):
+        state = self.setup_run(queue_mode="parallel")
+        go(self.dir, state, "int", SHA1, NOW)
+        state["slot"] = {"unit": "a", "sha": SHA2, "at": NOW, "head": None}
+        record_synced(state, "int", SHA1)
+        self.assertEqual(state["slot"]["unit"], "a")
+
+    def test_record_synced_refuses_a_sha_that_is_not_the_go(self):
+        state = self.setup_run()
+        go(self.dir, state, "int", SHA1, NOW)
+        with self.assertRaisesRegex(RunError, "no outstanding go for 2222222"):
+            record_synced(state, "int", SHA2)
+        self.assertTrue(sync_in_flight(state))
+
+    def test_record_synced_refuses_without_a_go(self):
+        state = self.setup_run()
+        with self.assertRaisesRegex(RunError, "no outstanding go for 1111111"):
+            record_synced(state, "int", SHA1)
+
+    def test_record_synced_refuses_a_non_integration_unit(self):
+        state = self.setup_run()
+        go(self.dir, state, "int", SHA1, NOW)
+        with self.assertRaisesRegex(RunError, "only the integration unit pushes directly"):
+            record_synced(state, "a", SHA1)
+
+    def test_record_synced_refuses_an_unknown_unit(self):
+        state = self.setup_run()
+        with self.assertRaises(RunError):
+            record_synced(state, "nope", SHA1)
+
+    def test_hold_keeps_the_go_sha_and_redo_clears_it(self):
+        state = self.setup_run()
+        go(self.dir, state, "int", SHA1, NOW)
+        hold(self.dir, state, "int", "waiting", NOW)
+        self.assertEqual(state["marks"]["int"]["go_sha"], SHA1)
+        self.assertTrue(sync_in_flight(state))
+        release(state, "int")
+        redo(self.dir, state, "int", SHA1, "x")
+        self.assertNotIn("go_sha", state["marks"]["int"])
+        self.assertFalse(sync_in_flight(state))
+
+    def test_yield_keeps_the_go_sha(self):
+        state = self.setup_run()
+        go(self.dir, state, "int", SHA1, NOW)
+        yield_slot(state, "int", "later", NOW)
+        self.assertTrue(sync_in_flight(state))
+
+    def test_stop_clears_the_go_sha(self):
+        state = self.setup_run()
+        go(self.dir, state, "int", SHA1, NOW)
+        stop_gate(self.dir, state, "int", "gave up")
+        self.assertFalse(sync_in_flight(state))
+
+    def test_a_queued_request_is_a_sync_in_flight(self):
+        state = self.setup_run()
+        go(self.dir, state, "a", SHA2, NOW)
+        enqueue(self.dir, state, "int", SHA1, NOW)
+        self.assertTrue(sync_in_flight(state))
+
+    def test_a_pending_request_is_a_sync_in_flight(self):
+        state = self.setup_run()
+        state["pending"].append({"unit": "int", "sha": SHA1, "branch": "integration/x", "at": NOW})
+        self.assertTrue(sync_in_flight(state))
+
+    def test_integration_requests_jump_the_queue(self):
+        state = self.setup_run()
+        go(self.dir, state, "a", SHA2, NOW)  # takes the slot
+        enqueue(self.dir, state, "b", SHA2, NOW)
+        enqueue(self.dir, state, "int", SHA1, NOW + 5)
+        self.assertEqual([e["unit"] for e in queue_order(state)], ["int", "b"])
+        self.assertEqual(queue_head(state)["unit"], "int")
+
+    def test_integration_waits_on_the_late_units(self):
+        state = self.setup_run()
+        self.assertEqual(integration_block(state, "int"), "waits on a, b")
+        record_merged(state, "a", 1, more=False)
+        self.assertEqual(integration_block(state, "int"), "waits on b")
+        record_merged(state, "b", 2, more=False)
+        self.assertIsNone(integration_block(state, "int"))
+
+    def test_a_waiting_integration_unit_is_not_reportable(self):
+        state = self.setup_run()
+        self.assertFalse(reportable(state, "int"))
+        record_merged(state, "a", 1, more=False)
+        record_merged(state, "b", 2, more=False)
+        self.assertTrue(reportable(state, "int"))
+
+    def test_a_stopped_unit_does_not_make_integration_wait(self):
+        state = self.setup_run()
+        stop_gate(self.dir, state, "a", "gave up")
+        record_merged(state, "b", 2, more=False)
+        self.assertIsNone(integration_block(state, "int"))
+
+    def test_a_default_run_has_no_block(self):
+        state = self.init()
+        add(state, "a")
+        add(state, "b")
+        self.open_unit(state, "a")
+        go(self.dir, state, "a", SHA1, NOW)
+        self.assertNotIn("go_sha", state["marks"]["a"])
+        self.assertFalse(sync_in_flight(state))
+        self.assertIsNone(integration_block(state, "a"))
+        self.assertIsNone(integration_block(state, "b"))
+        self.assertTrue(reportable(state, "a"))
 
 
 if __name__ == "__main__":

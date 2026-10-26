@@ -84,6 +84,7 @@ def take_request(run_dir: Path, state: dict, now: float) -> str | None:
         state["pending"] = [entry for entry in state["pending"] if entry["unit"] != unit]
         state["pending"].append({"unit": unit, "sha": sha, "branch": branch, "at": now})
         state["marks"].get(unit, {}).pop("go_head", None)
+        state["marks"].get(unit, {}).pop("go_sha", None)
         return f"REQUEST {unit} {sha} {branch}"
     return None
 

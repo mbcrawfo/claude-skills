@@ -488,7 +488,8 @@ def stop_gate(run_dir: Path, state: dict, unit: str, reason: str) -> None:
         state["slot"] = None
     _drop_entries(state, unit, "pending", "queue")
     _forget_freed(state, unit)
-    state["marks"].get(unit, {}).pop("go_head", None)  # a stopped unit is not pushing
+    for key in ("go_head", "go_sha"):  # a stopped unit is not pushing
+        state["marks"].get(unit, {}).pop(key, None)
 
 
 def _refuse_stopped(record: dict, unit: str) -> None:
@@ -589,6 +590,8 @@ def go(run_dir: Path, state: dict, unit: str, sha: str, now: float) -> None:
     else:
         # The watcher holds READY and REMIND while the PR's head is still this one, until the push lands.
         marks["go_head"] = marks.get("head")
+    if _is_integration(record):
+        marks["go_sha"] = sha  # the integration unit pushes straight to the branch: unit merges wait for `synced`
     if state["queue_mode"] == "serial":
         state["slot"] = {"unit": unit, "sha": sha, "at": now, "head": marks.get("head")}
         # The watcher's last NEXT has been answered; when the slot frees, the queue head is reported afresh.
@@ -608,7 +611,8 @@ def redo(run_dir: Path, state: dict, unit: str, sha: str, reasons: str) -> None:
     _note_answered(run_dir, state, unit, sha)
     _drop_entries(state, unit, "pending", "queue")
     _forget_freed(state, unit)
-    state["marks"].get(unit, {}).pop("go_head", None)
+    for key in ("go_head", "go_sha"):
+        state["marks"].get(unit, {}).pop(key, None)
     if _holds_slot(state, unit):
         state["slot"] = None
 
@@ -637,9 +641,13 @@ def enqueue(run_dir: Path, state: dict, unit: str, sha: str, now: float) -> None
 
 
 def queue_order(state: dict) -> list[dict]:
-    """Queue entries in service order: units with an open PR first, then the rest, each by time."""
+    """Queue entries in service order: the integration unit's first, then units with an open PR, then the rest,
+    each by time."""
     entries = sorted(state["queue"], key=lambda entry: entry["at"])
-    return [e for e in entries if e["front"]] + [e for e in entries if not e["front"]]
+    name = integration_unit(state)
+    first = [e for e in entries if e["unit"] == name]
+    entries = [e for e in entries if e["unit"] != name]
+    return first + [e for e in entries if e["front"]] + [e for e in entries if not e["front"]]
 
 
 def yield_slot(state: dict, unit: str, reason: str, now: float) -> None:
@@ -716,9 +724,50 @@ def record_closed(state: dict, unit: str, pr: int) -> None:
         state["slot"] = None
 
 
+def sync_in_flight(state: dict) -> bool:
+    """True when the integration unit has a request pending, queued or a `go` not yet recorded as synced."""
+    name = integration_unit(state)
+    if name is None:
+        return False
+    return any(entry["unit"] == name for key in ("pending", "queue") for entry in state[key]) or "go_sha" in state[
+        "marks"
+    ].get(name, {})
+
+
+def integration_block(state: dict, unit: str) -> str | None:
+    """Why the unit may not merge for the integration branch's sake, or None.
+
+    Units wait while an integration sync is in flight; the integration unit waits for every other unit.
+    """
+    name = integration_unit(state)
+    if name is None:
+        return None
+    if unit != name:
+        return "integration sync in flight" if sync_in_flight(state) else None
+    late = late_units(state)
+    return f"waits on {', '.join(late)}" if late else None
+
+
+def record_synced(state: dict, unit: str, sha: str) -> None:
+    """Note that the integration unit pushed its approved `go` straight to the integration branch.
+
+    The go is spent: it stops blocking unit merges, and the unit gives up the slot if it holds it.
+    """
+    record = _unit(state, unit)
+    if not _is_integration(record):
+        raise RunError("only the integration unit pushes directly")
+    marks = state["marks"].get(unit, {})
+    if marks.get("go_sha") != sha:
+        raise RunError(f"no outstanding go for {sha[:7]}")
+    marks.pop("go_sha")
+    marks.pop("go_head", None)
+    if _holds_slot(state, unit):
+        state["slot"] = None
+
+
 def reportable(state: dict, unit: str) -> bool:
-    """True when the unit may be reported on (READY/REMIND): it is not stopped, it is mergeable, and the run is in
-    parallel mode or the slot is free or its own."""
-    if _unit(state, unit)["gate"] == "stopped" or not mergeable(state, unit):
+    """True when the unit may be reported on (READY/REMIND): it is not stopped, it is mergeable, nothing blocks it
+    for the integration branch, and the run is in parallel mode or the slot is free or its own."""
+    if _unit(state, unit)["gate"] == "stopped" or not mergeable(state, unit) or integration_block(state, unit):
         return False
     return state["queue_mode"] == "parallel" or state["slot"] is None or state["slot"]["unit"] == unit
