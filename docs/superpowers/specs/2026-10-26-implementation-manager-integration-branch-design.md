@@ -158,7 +158,7 @@ Bump implementation-manager to 0.5.0. Setup confirms `branch-review:record` is a
 **The integration child's prompt** (a new prompt alongside the unit prompt; it follows parts 8–10 of the unit prompt with the changes below):
 
 - **Goal.** Own `integration/<slug>`: keep it current with `<base>` throughout the run, then deliver the final PR into `<base>`. Write no feature code except conflict resolutions and fixes from the whole-feature review.
-- **Start.** Its worktree is cut from `integration/<slug>`. It switches to that branch itself (`git switch integration/<slug>`); no worktree has it checked out, since the manager only created the ref. The app-made branch is left unused; this is the one child allowed a different branch, and its push requests name the integration branch.
+- **Start.** Its worktree is cut from `integration/<slug>`. It switches to that branch itself (`git switch integration/<slug>`); no worktree has it checked out, since the manager only created the ref. The app-made branch is left unused; this is the one child allowed a different branch, and its push requests name the integration branch. It writes `<run>/integration-intent.md` once (keep `integration/<slug>` current with `<base>` for the run implementing the spec; merge `<base>`, resolve conflicts keeping both sides' intent; the units' own work was reviewed on their branches) and passes it with `--intent-file` to every review except the `--full` final one, since recorded rounds carry no intent.
 - **Watch loop.** One background poll that ends on either of two events:
   - `<base>`'s remote head differs from what the integration branch last merged (`git ls-remote origin refs/heads/<base>`, every 60 s);
   - a `<name> final` or `<name> stop` line in `gates.log`.
@@ -167,12 +167,12 @@ Bump implementation-manager to 0.5.0. Setup confirms `branch-review:record` is a
   2. Invoke `branch-review:record` on that commit, with the reason listing the unit PRs merged since the last record (`git log --merges --first-parent` or the PR numbers in commit subjects).
   3. Merge `<base>` with `sync_with_base_branch` and `base: <base>`. The tool allows the default branch as a base, and merges protected files from it.
      - Clean: commit if needed and ask to push. It's covered.
-     - Conflicted: resolve, commit, run `/branch-review:review --base origin/<base>` to convergence. It runs as a merge-check from the recorded round. Then ask to push.
+     - Conflicted: resolve, commit, run `/branch-review:review --base origin/<base> --intent-file <run>/integration-intent.md` to convergence. It runs as a merge-check from the recorded round. Then ask to push.
   4. Start the watch loop again.
 - **On `go`.** If `origin/integration/<slug>` moved past the merge's first parent (a unit merged meanwhile):
   1. Don't push.
   2. Note HEAD, and list the non-merge commits reachable from it but from neither `origin/integration/<slug>` nor `origin/<base>` (`git log --no-merges --format=%H --reverse <noted sha> --not origin/integration/<slug> origin/<base>`; excluding the base matters when the base merge fast-forwarded): fixes the child committed after its merge, which reviews asked for. Reset the local branch to the remote. The reset drops every unpushed commit, the merge and those fixes alike; `rerere` keeps only the merge's resolutions.
-  3. Record and merge `<base>` again, then `git cherry-pick -x` the noted fix commits in order, resolving as before. If any was cherry-picked or the merge conflicted, run `/branch-review:review --base origin/<base>` to convergence. Then ask again.
+  3. Record and merge `<base>` again, then `git cherry-pick -x` the noted fix commits in order, resolving as before. If any was cherry-picked or the merge conflicted, run `/branch-review:review --base origin/<base> --intent-file <run>/integration-intent.md` to convergence. Then ask again.
   
   Otherwise push HEAD to the integration branch. Never force-push.
 - **On `final`:**
