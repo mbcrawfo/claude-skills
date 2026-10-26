@@ -139,6 +139,11 @@ def finding(**over):
     return base
 
 
+def full_coverage(done="checked"):
+    """A `coverage` list with one entry per required item."""
+    return [{"item": item, "done": done} for item in review_state.COVERAGE_ITEMS]
+
+
 def output(**over):
     base = {
         "summary": "Adds b. Looks fine.",
@@ -147,6 +152,8 @@ def output(**over):
         "verdicts": [],
         "findings": [finding(), finding(title="Second problem.")],
         "outside_change": [],
+        "coverage": full_coverage(),
+        "not_checked": [],
     }
     base.update(over)
     return base

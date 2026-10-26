@@ -469,6 +469,22 @@ def _read_text_file(path: str) -> str:
         raise StateError(f"{path} is not valid UTF-8: {exc.reason}") from exc
 
 
+def _earlier_not_checked(state: dict | None) -> list[dict]:
+    """`not_checked` entries of the current cycle's recorded deep rounds, latest per `what`."""
+    if state is None:
+        return []
+    rounds = [r for r in _recorded(state.get("rounds", [])) if isinstance(r, dict)]
+    start = _cycle_start(rounds)
+    found: dict[str, dict] = {}
+    for rnd in rounds:
+        if rnd.get("mode") != "deep" or rnd.get("number", 0) < start:
+            continue
+        for entry in rnd.get("not_checked") or []:
+            found.pop(entry["what"], None)
+            found[entry["what"]] = {**entry, "round": rnd.get("number")}
+    return list(found.values())
+
+
 def cmd_locate(args: argparse.Namespace) -> dict:
     repo = Path(args.repo)
     rkey, branch, directory = _locate_keys(Path(args.state_dir).expanduser(), repo)
@@ -500,6 +516,7 @@ def cmd_locate(args: argparse.Namespace) -> dict:
         "open_findings": open_findings,
         "conflicts": conflicts,
         "plugin_version": PLUGIN_VERSION,
+        "earlier_not_checked": _earlier_not_checked(state),
     }
 
 
@@ -760,6 +777,19 @@ CATEGORIES = (
     "docs",
     "build-ci",
 )
+# The steps a deep round must account for, besides the checklist categories.
+COVERAGE_STEPS = (
+    "break-tests",
+    "doc-grep",
+    "fulfilled-promises",
+    "real-system",
+    "related-records",
+    "broad-mappings",
+    "measurement-tests",
+    "consumer-build",
+)
+COVERAGE_ITEMS = CATEGORIES + COVERAGE_STEPS
+VARIANT_RESULTS = ("fails", "ok")
 RISK_LEVELS = ("minimal", "low", "moderate", "high")
 REACHABLE = ("yes", "no", "unclear")
 EFFORTS = ("quick", "heavy")
@@ -834,10 +864,67 @@ def _require_str_list(obj: dict, key: str, where: str) -> list:
     return items
 
 
-def _validate_output(data: object, known: dict) -> dict:
-    """Check the reviewer block; return its verdicts, findings and outside entries.
+def _require_text(obj: dict, key: str, where: str) -> str:
+    value = _require_str(obj, key, where)
+    if not value.strip():
+        raise _bad(f"{where}.{key} must not be empty")
+    return value
 
-    `known` maps each ledger finding id to its status.
+
+def _objects(data: dict, key: str, where: str, required: bool) -> list:
+    """The list at `data[key]`, each entry an object; `[]` when absent and not required."""
+    if key not in data and not required:
+        return []
+    items = _require_list(data, key, where)
+    for i, item in enumerate(items):
+        if not isinstance(item, dict):
+            raise _bad(f"{where}.{key}[{i}] must be an object")
+    return items
+
+
+def _validate_coverage(data: dict, required: bool) -> tuple[list, list]:
+    """`coverage` and `not_checked`; both must be present, and cover every item, when `required`."""
+    coverage = []
+    for i, c in enumerate(_objects(data, "coverage", "output", required)):
+        where = f"coverage[{i}]"
+        coverage.append({"item": _require_text(c, "item", where), "done": _require_text(c, "done", where)})
+    if required:
+        listed = {c["item"] for c in coverage}
+        missing = [item for item in COVERAGE_ITEMS if item not in listed]
+        if missing:
+            raise _bad("coverage is missing " + ", ".join(missing))
+    not_checked = []
+    for i, n in enumerate(_objects(data, "not_checked", "output", required)):
+        where = f"not_checked[{i}]"
+        not_checked.append({"what": _require_text(n, "what", where), "reason": _require_text(n, "reason", where)})
+    return coverage, not_checked
+
+
+def _validate_variants(f: dict, where: str) -> list:
+    variants = []
+    for i, v in enumerate(_objects(f, "variants", where, False)):
+        at = f"{where}.variants[{i}]"
+        variants.append(
+            {"input": _require_text(v, "input", at), "result": _require_enum(v, "result", VARIANT_RESULTS, at)}
+        )
+    return variants
+
+
+def _validate_fix_options(f: dict, where: str) -> list:
+    if "fix_options" not in f:
+        return []
+    options = _require_str_list(f, "fix_options", where)
+    if len(options) < 2 or not all(o.strip() for o in options):
+        raise _bad(f"{where}.fix_options must hold two or more non-empty alternatives")
+    return options
+
+
+def _validate_output(data: object, known: dict, *, require_coverage: bool = False) -> dict:
+    """Check the reviewer block; return its verdicts, findings, outside entries and coverage.
+
+    `known` maps each ledger finding id to its status. With `require_coverage`
+    (a deep round begun under 0.9 or later), `coverage` must list every item of
+    `COVERAGE_ITEMS` and `not_checked` must be present.
     """
     if not isinstance(data, dict):
         raise _bad("expected a JSON object")
@@ -853,6 +940,7 @@ def _validate_output(data: object, known: dict) -> dict:
         raise _bad("output is missing intent_check")
     _require_str_list(check, "unmet_claims", "intent_check")
     _require_str_list(check, "unmentioned_behavior", "intent_check")
+    coverage, not_checked = _validate_coverage(data, require_coverage)
 
     verdicts = []
     seen: set = set()
@@ -889,6 +977,8 @@ def _validate_output(data: object, known: dict) -> dict:
         for key in FINDING_OPTIONAL:
             rec[key] = _optional_str(f, key, "", where)
         rec["effort"] = _require_enum(f, "effort", EFFORTS, where) if "effort" in f else "quick"
+        rec["variants"] = _validate_variants(f, where)
+        rec["fix_options"] = _validate_fix_options(f, where)
         findings.append(rec)
 
     outside = []
@@ -910,7 +1000,13 @@ def _validate_output(data: object, known: dict) -> dict:
             rec["category"] = _require_enum(o, "category", CATEGORIES, where)
         outside.append(rec)
 
-    return {"verdicts": verdicts, "findings": findings, "outside": outside}
+    return {
+        "verdicts": verdicts,
+        "findings": findings,
+        "outside": outside,
+        "coverage": coverage,
+        "not_checked": not_checked,
+    }
 
 
 def _load_output(path: str) -> object:
@@ -953,7 +1049,8 @@ def cmd_record_findings(args: argparse.Namespace) -> dict:
         raise StateError(f"round {number} already has recorded findings")
     known = {f.get("id"): f.get("status") for f in state["findings"]}
     data = _load_output(args.file)
-    checked = _validate_output(data, known)
+    required = rnd.get("mode") == "deep" and _version_at_least(rnd.get("plugin_version"), V09)
+    checked = _validate_output(data, known, require_coverage=required)
 
     for v in checked["verdicts"]:
         f = _find(state, v["id"])
@@ -1001,6 +1098,8 @@ def cmd_record_findings(args: argparse.Namespace) -> dict:
     rnd["summary"] = data["summary"]
     rnd["merge_risk"] = data["merge_risk"]
     rnd["intent_check"] = data["intent_check"]
+    rnd["coverage"] = checked["coverage"]
+    rnd["not_checked"] = checked["not_checked"]
     rnd["added"] = added
 
     # Copy first: a failed copy must leave the ledger as it was.
