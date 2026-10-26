@@ -177,6 +177,7 @@ def add_unit(
 
     `after` lists the units that must merge before this one does; [] clears it. A unit may not wait on itself
     through its prerequisites and `after` units together. `title` is a one-line display label for status.
+    A slot holder that can no longer merge gives the slot up, as for `hold`: it would block the units it waits for.
     """
     if not re.fullmatch(UNIT_RE, name):
         raise RunError(f"bad unit name {name!r}: use letters, digits, '_' and '-', starting with a letter or digit")
@@ -214,6 +215,8 @@ def add_unit(
     ):
         if value is not None:
             unit[key] = list(value) if key in ("prereqs", "after") else value
+    if _holds_slot(state, name) and not mergeable(state, name):
+        state["slot"] = None  # a `go` not pushed yet stays outstanding, as for `hold`
 
 
 def set_option(state: dict, key: str, value: str) -> None:
@@ -410,7 +413,10 @@ def redo(run_dir: Path, state: dict, unit: str, sha: str, reasons: str) -> None:
 
 
 def enqueue(run_dir: Path, state: dict, unit: str, sha: str, now: float) -> None:
-    """Line a unit's request up behind the slot holder, replacing any earlier entry; the same sha keeps its time."""
+    """Line a unit's request up behind the slot holder, replacing any earlier entry; the same sha keeps its time.
+
+    A slot holder that can no longer merge (it gained an `--after` unit) gives the slot up and is queued.
+    """
     record = _unit(state, unit)
     _refuse_stopped(record, unit)
     _refuse_held(record, unit)
@@ -418,7 +424,9 @@ def enqueue(run_dir: Path, state: dict, unit: str, sha: str, now: float) -> None
     if state["queue_mode"] == "parallel":
         raise RunError("queue is not used in parallel mode; answer with go")
     if _holds_slot(state, unit):
-        raise RunError(f"unit {unit!r} already holds the push slot")
+        if mergeable(state, unit):
+            raise RunError(f"unit {unit!r} already holds the push slot")
+        state["slot"] = None
     # The same sha queued again (a NEXT whose go was refused) keeps its place.
     at = next((entry["at"] for entry in state["queue"] if entry["unit"] == unit and entry["sha"] == sha), now)
     _drop_entries(state, unit, "pending", "queue")

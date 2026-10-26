@@ -168,6 +168,14 @@ class PushTests(CliTestCase):
         self.assertIn("held by 'a'", result.stderr)
         self.assertEqual(self.read("pushes.log"), f"a go {SHA1}\n")
 
+    def test_after_on_the_slot_holder_frees_the_slot(self):
+        self.ok("go", str(self.dir), "b", SHA1)
+        self.ok("unit", str(self.dir), "b", "--after", "a")
+        self.assertIn("- slot: free", self.ok("status", str(self.dir)).splitlines())
+        self.ok("go", str(self.dir), "a", SHA2)
+        self.ok("queue", str(self.dir), "b", SHA3)
+        self.assertEqual(self.read("pushes.log"), f"b go {SHA1}\na go {SHA2}\n")
+
     def test_go_refused_while_another_unit_is_first_in_the_queue_exit_1(self):
         self.ok("unit", str(self.dir), "c")
         self.ok("go", str(self.dir), "a", SHA1)

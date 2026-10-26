@@ -1049,5 +1049,58 @@ class AfterTests(RunStateTestCase):
         self.assertEqual(state["slot"]["unit"], "c")
 
 
+class SlotHolderAfterTests(RunStateTestCase):
+    """`--after` added to the slot holder mid-run: the holder can no longer merge, so it must not keep the slot."""
+
+    def setup_holder(self):
+        state = self.init()
+        add(state, "a")
+        add(state, "b")
+        state["marks"]["b"] = {"head": SHA2}
+        go(self.dir, state, "b", SHA1, NOW)
+        return state
+
+    def test_after_on_the_slot_holder_frees_the_slot_and_keeps_go_head(self):
+        state = self.setup_holder()
+        add(state, "b", after=["a"])
+        self.assertIsNone(state["slot"])
+        self.assertEqual(state["marks"]["b"]["go_head"], SHA2)
+
+    def test_after_on_the_slot_holder_keeps_the_slot_when_the_after_unit_is_done(self):
+        state = self.setup_holder()
+        record_merged(state, "a", 1, more=False)
+        add(state, "b", after=["a"])
+        self.assertEqual(state["slot"]["unit"], "b")
+
+    def test_after_on_another_unit_leaves_the_slot_alone(self):
+        state = self.setup_holder()
+        add(state, "c", after=["a"])
+        self.assertEqual(state["slot"]["unit"], "b")
+
+    def test_go_for_the_after_unit_succeeds_once_the_holder_gains_after(self):
+        state = self.setup_holder()
+        add(state, "b", after=["a"])
+        go(self.dir, state, "a", SHA2, NOW + 1)
+        self.assertEqual(state["slot"]["unit"], "a")
+        enqueue(self.dir, state, "b", SHA1, NOW + 2)
+        self.assertEqual([e["unit"] for e in state["queue"]], ["b"])
+
+    def test_queue_by_an_unmergeable_slot_holder_drops_the_slot_and_queues_it(self):
+        state = self.setup_holder()
+        state["units"]["b"]["after"] = ["a"]  # a run.json written before add_unit freed the slot
+        enqueue(self.dir, state, "b", SHA1, NOW + 1)
+        self.assertIsNone(state["slot"])
+        self.assertEqual([(e["unit"], e["sha"]) for e in state["queue"]], [("b", SHA1)])
+        go(self.dir, state, "a", SHA2, NOW + 2)
+        self.assertEqual(state["slot"]["unit"], "a")
+
+    def test_queue_by_a_mergeable_slot_holder_is_still_refused(self):
+        state = self.setup_holder()
+        with self.assertRaises(RunError) as caught:
+            enqueue(self.dir, state, "b", SHA1, NOW + 1)
+        self.assertIn("already holds the push slot", str(caught.exception))
+        self.assertEqual(state["slot"]["unit"], "b")
+
+
 if __name__ == "__main__":
     unittest.main()
