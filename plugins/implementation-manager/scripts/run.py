@@ -320,6 +320,8 @@ def _run(args: argparse.Namespace) -> str | None:
         return check_once(state["repo"], record["branch"], gh=run_gh, sleep=time.sleep)
     with locked(run_dir) as state:
         if command == "unit":
+            if args.after and "none" in args.after and len(args.after) > 1:
+                raise RunError("--after none clears the list; give it alone")
             after = [] if args.after == ["none"] else args.after
             runstate.add_unit(
                 state,

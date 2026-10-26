@@ -707,7 +707,7 @@ class HoldTests(RunStateTestCase):
         self.assertEqual(state["units"]["u"]["hold"], {"reason": "waiting on owner", "at": 5.0})
 
     def test_hold_rejects_unknown_done_multiline_and_double_hold(self):
-        state = self.setup_units("u", "d", "s")
+        state = self.setup_units("u", "d", "s", "v")
         record_merged(state, "d", 1, more=False)
         stop_gate(self.dir, state, "s", "dropped")
         hold(self.dir, state, "u", "first", NOW)
@@ -718,8 +718,8 @@ class HoldTests(RunStateTestCase):
             ("s", "reason"),
             ("u", "second"),
             ("u", "one\ntwo"),
-            ("u", "  "),
-            ("u", ""),
+            ("v", "  "),  # R4-F1: blank reasons on a unit that is not held
+            ("v", ""),
         )
         for unit, reason in cases:
             with self.subTest(unit=unit, reason=reason), self.assertRaises(RunError):

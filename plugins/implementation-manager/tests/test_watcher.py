@@ -694,6 +694,24 @@ class BehindStuckStalledTests(PrTestCase):
         self.assertEqual(self.wait(gh), f"BEHIND b 8 {HEAD_B}")
         self.assert_quiet(gh)
 
+    def test_parallel_mode_reports_behind_for_a_held_unit(self):
+        # R4-F3: holds suppress READY, REMIND and STALLED only.
+        with locked(self.dir) as state:
+            yield_slot(state, "a", "test", self.clock.now())
+            set_option(state, "queue", "parallel")
+            hold(self.dir, state, "a", "owner question", self.clock.now())
+        self.assertEqual(self.wait(self.gh_a(make_pr(merge="BEHIND"))), f"BEHIND a 7 {HEAD_A}")
+
+    def test_parallel_mode_reports_stuck_for_an_after_blocked_unit(self):
+        # R4-F3: an --after-blocked unit still gets STUCK.
+        self.add_b()
+        with locked(self.dir) as state:
+            yield_slot(state, "a", "test", self.clock.now())
+            set_option(state, "queue", "parallel")
+            add_unit(state, "a", prereqs=None, branch=None, worktree=None, specs=None, after=["b"])
+        gh = FakeGh({"feat/a": [PR7], "feat/b": [NO_PR]}, {7: [make_pr(checks=FAILING)]})
+        self.assertEqual(self.wait(gh, sleeps=400), "STUCK a 7 checks-failed=1")
+
     def test_stuck_after_twenty_minutes_failing(self):
         start = self.clock.t
         gh = self.gh_a(make_pr(checks=FAILING))

@@ -497,6 +497,17 @@ class StatusTests(CliTestCase):
         self.ok("stop", str(self.dir), "a", "dropped")
         self.assertIn("- open: b working", self.ok("status", str(self.dir)).splitlines())
 
+    def test_unit_refuses_none_mixed_with_unit_names_in_after(self):
+        # R4-F4: `--after none` clears the list and is given alone.
+        self.init()
+        self.ok("unit", str(self.dir), "none")
+        self.ok("unit", str(self.dir), "a")
+        result = self.run_cli("unit", str(self.dir), "b", "--after", "a", "none")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(len(result.stderr.splitlines()), 1)
+        self.assertIn("give it alone", result.stderr)
+        self.assertNotIn("b", self.state()["units"])
+
     def test_status_ready_pr(self):
         self.init()
         self.ok("unit", str(self.dir), "a", "--branch", "feat/a")
@@ -562,6 +573,14 @@ class StatusTests(CliTestCase):
         state["marks"]["b"].pop("go_head")
         (self.dir / "run.json").write_text(json.dumps(state))
         self.assertIn(line, self.ok("status", str(self.dir)).splitlines())
+        # R4-F2: its re-ask read by a wait is a pending request; the request line is what needs the manager.
+        state["pending"] = [{"unit": "b", "sha": SHA2, "branch": "feat/b", "at": 1000.0}]
+        (self.dir / "run.json").write_text(json.dumps(state))
+        status = self.ok("status", str(self.dir)).splitlines()
+        self.assertNotIn(line, status)
+        self.assertTrue(any(entry.startswith("  - request b ") for entry in status))
+        state["pending"] = []
+        (self.dir / "run.json").write_text(json.dumps(state))
         self.ok("queue", str(self.dir), "b", SHA2)  # it asked again; the request is what the manager answers
         self.assertNotIn(line, self.ok("status", str(self.dir)).splitlines())
 
