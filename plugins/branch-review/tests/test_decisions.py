@@ -79,6 +79,16 @@ class DecisionTest(LedgerHarness, unittest.TestCase):
         self.set_status("R1-F1", "fixed", "--note", "n", "--intent-quote-file", quote)
         self.assertEqual(self.find("R1-F1")["resolution"]["intent_quote"], "Keys are written bare.")
 
+    def test_only_a_fix_decision_opens_the_gate(self):
+        for decision in ("defer", "accept"):
+            with self.subTest(decision=decision):
+                self.setUp()
+                self.seed(fix_options=["a", "b"])
+                self.escalate()
+                self.resolve(decision)
+                self.set_status("R1-F1", "open", "--note", "reopened")
+                self.gate_error()
+
     def test_v08_finding_without_fix_options_unaffected(self):
         self.seed()
         state = self.state()

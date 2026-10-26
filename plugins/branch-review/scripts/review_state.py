@@ -713,6 +713,10 @@ def cmd_begin_round(args: argparse.Namespace) -> dict:
         diff_from = merge_base
         changed, lines, generated, counted_files, counted_lines = measure(diff_from)
     files = len(changed)
+    if args.focus == SECOND_OPINION_FOCUS and mode != "deep":
+        # Any round with this focus counts as the second opinion, so it must be
+        # the deep review the second opinion is.
+        raise StateError(f"--focus {SECOND_OPINION_FOCUS} needs a deep round, not {mode}")
 
     rnd = {
         "number": len(rounds) + 1,
@@ -1634,9 +1638,10 @@ def _notes_line(state: dict) -> str:
     plural = "" if len(rounds) == 1 else "s"
     by_mode = []
     for mode in ("deep", "followup", "merge-check"):
-        n = sum(1 for r in rounds if r.get("mode") == mode)
-        if n:
-            by_mode.append(f"{n} {mode}")
+        chosen = [r for r in rounds if r.get("mode") == mode]
+        if chosen:
+            models = list(dict.fromkeys(str(r.get("model")) for r in chosen))
+            by_mode.append(f"{len(chosen)} {mode} with {' and '.join(models)}")
     opinion = "yes" if any(r.get("focus") == SECOND_OPINION_FOCUS for r in rounds) else "no"
     deep = _latest_deep(rounds)
     risk = (deep or {}).get("merge_risk")
@@ -2063,7 +2068,7 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="second_opinion",
         action="store_true",
         default=None,
-        help="ask for a second opinion once this round converges",
+        help="ask for a second opinion once no finding is open",
     )
     opinion.add_argument(
         "--no-second-opinion",

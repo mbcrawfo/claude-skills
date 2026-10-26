@@ -107,6 +107,23 @@ class SecondOpinionTest(LedgerHarness, unittest.TestCase):
         self.assertIn("second-opinion-pending", covered["reasons"])
         self.assertFalse(covered["second_opinion_held"])
 
+    def test_focus_requires_a_deep_round(self):
+        self.begin()
+        self.record(output(findings=[finding(severity="major")]))
+        self.set_status("R1-F1", "fixed", "--commit", "c1")
+        (self.repo / "more.txt").write_text("x\n")
+        self.assert_error(
+            "begin-round", "--mode", "followup", "--model", "m", "--base-ref", "main", "--focus", "second-opinion"
+        )
+        self.assertEqual(len(self.state()["rounds"]), 1)
+
+    def test_locate_follows_up_when_no_second_opinion_is_due(self):
+        self.begin()
+        self.record(output(findings=[finding()]))
+        self.set_status("R1-F1", "fixed", "--commit", "c1")
+        found = self.cli("locate", "--base", "main")
+        self.assertEqual((found["mode"], found["reason"], found["focus"]), ("followup", "continuing", None))
+
     def test_skip_still_suppresses_early(self):
         self.begin("deep", "--no-second-opinion")
         self.record(output(findings=[finding(severity="major")]))

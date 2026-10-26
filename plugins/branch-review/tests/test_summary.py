@@ -101,25 +101,30 @@ class SummaryTest(LedgerHarness, unittest.TestCase):
         self.assertNotIn("- mid", text)
 
     # review-notes.md
+    def round_with(self, mode, model, *extra):
+        (self.repo / f"{mode}-{model}-{len(extra)}.txt").write_text("x\n")
+        self.cli("begin-round", "--mode", mode, "--model", model, "--base-ref", "main", *extra)
+        self.record(output(findings=[]))
+
     def test_review_notes_generated_line(self):
-        self.begin()
-        self.record(output(findings=[]))
-        self.begin("followup")
-        self.record(output(findings=[]))
-        self.begin("deep", "--focus", "second-opinion")
-        self.record(output(findings=[]))
+        self.round_with("deep", "opus")
+        self.round_with("followup", "sonnet")
+        self.round_with("deep", "fable", "--focus", "second-opinion")
         lines = self.cli("summary")["review_notes"].splitlines()
         self.assertEqual(lines[0], "## Review notes")
         self.assertEqual(
             lines[2],
-            "3 rounds (2 deep, 1 followup); second opinion: yes; merge risk low (round 3, the latest deep round).",
+            "3 rounds (2 deep with opus and fable, 1 followup with sonnet); second opinion: yes; "
+            "merge risk low (round 3, the latest deep round).",
         )
 
     def test_review_notes_one_round(self):
         self.begin()
         self.record(output(findings=[]))
         line = self.cli("summary")["review_notes"].splitlines()[2]
-        self.assertEqual(line, "1 round (1 deep); second opinion: no; merge risk low (round 1, the latest deep round).")
+        self.assertEqual(
+            line, "1 round (1 deep with m); second opinion: no; merge risk low (round 1, the latest deep round)."
+        )
 
     def test_review_notes_collapses_empty(self):
         self.begin()

@@ -81,6 +81,21 @@ class CoverageTest(LedgerHarness, unittest.TestCase):
         found = self.cli("locate", "--base", "main")["earlier_not_checked"]
         self.assertEqual(found, [{"what": "probe X", "reason": "image not pinned", "round": 2}])
 
+    def test_earlier_not_checked_leaves_out_follow_ups(self):
+        self.begin()
+        self.record(output(findings=[]))
+        self.begin("followup")
+        self.record(output(findings=[], not_checked=[{"what": "probe F", "reason": "no docker"}]))
+        self.assertEqual(self.cli("locate", "--base", "main")["earlier_not_checked"], [])
+
+    def test_earlier_not_checked_is_limited_to_the_cycle(self):
+        self.begin()
+        self.record(output(findings=[], not_checked=[{"what": "probe old", "reason": "no docker"}]))
+        self.begin("deep", "--mode-reason", "history-rewritten")
+        self.record(output(findings=[], not_checked=[{"what": "probe new", "reason": "no docker"}]))
+        found = self.cli("locate", "--base", "main")["earlier_not_checked"]
+        self.assertEqual([e["what"] for e in found], ["probe new"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -42,7 +42,7 @@ Text you pass to the script never goes inside a quoted shell argument: notes, di
    - Write the developer's note to `<tmp>/note.md`. Run `rs resolve --id <id> --decision fix --note-file <tmp>/note.md` when the note asks for a fix, `--decision defer` when it says to fix it later, and `--decision accept` when it says to keep the behavior, document it as a known issue, or not fix it. When the note's direction is unclear, ask the developer before resolving.
    - After `fix`, the finding is `open` again. Handle it now as a **Valid** finding from section 7 (fix it, add the test, `set-status fixed`). The next round verifies the fix. For a finding with `fix_options`, this decision is what lets `set-status fixed` through.
    - After `defer` or `accept`, the finding shows under Deferred or Accepted in the summary that section 9 writes.
-   - Then run `rs locate` again and keep its `open_findings` for the dispatch in section 5, so the fixed finding and its note reach the reviewer. Do not repeat items 2.3 to 2.5. Go on to section 3.
+   - Then run `rs locate` again. Its `mode`, `reason`, `focus`, `open_findings` and `earlier_not_checked` replace item 2.3's (a fix that leaves nothing open can make the next round the second opinion), so the fixed finding and its note reach the reviewer. Apply item 2.4 again. Do not repeat items 2.3 to 2.5. Go on to section 3.
 
 ## 3. Intent
 
@@ -176,7 +176,7 @@ Run `rs status --since-round <prior_rounds>`, after `record-findings`; it exits 
 - `continue` is false with `reason: awaiting-decisions`: the loop is done except for the developer's decisions on escalated findings. Go on to section 9 and list those decisions first. When `second_opinion_held` is true, say that a second opinion will run once they are answered.
 - `continue` is false with `reason: max-rounds`: the cap is reached and the loop would otherwise go on, so it stops. Run `rs locate`. Escalate each finding still `open` or `still-open` with `rs set-status --id <id> --status escalated --note-file <tmp>/note.md`, the note being `unresolved after six rounds: <state of the fix>`. List any finding still `fixed` as an unverified fix in your report. Then go on to section 9.
 
-When the `locate` before a second-opinion or final-verification round gives a reason other than `continuing` or `base-updated` (a conflicting base merge landed, say), `locate` wins over `next_mode`: run the round it gives, without `--focus`, then run `status` again.
+When the `locate` before a second-opinion or final-verification round gives a reason other than `continuing`, `base-updated` or `second-opinion` (a conflicting base merge landed, say), `locate` wins over `next_mode`: run the round it gives, without `--focus`, then run `status` again.
 
 ## 9. Report
 
