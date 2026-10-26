@@ -11,7 +11,7 @@ import re
 from typing import Callable
 
 from prstate import GhError, Summary, find_open_pr, poll_pr
-from runstate import NEXT_MARK, REQUESTS, SHA_RE, UNIT_RE, load, locked, mergeable, queue_order, reportable
+from runstate import NEXT_MARK, REQUESTS, SHA_RE, UNIT_RE, load, locked, queue_head, reportable
 
 # The branch is printable non-space characters: no whitespace or control characters.
 REQUEST_RE = rf"^({UNIT_RE}) push ({SHA_RE}) ([^\s\x00-\x1f\x7f]+)$"
@@ -112,7 +112,7 @@ def next_event(state: dict) -> str | None:
         state["marks"].pop(NEXT_MARK, None)
         return None
     state["queue"] = [entry for entry in state["queue"] if not state["units"][entry["unit"]]["done"]]
-    head = next((entry for entry in queue_order(state) if mergeable(state, entry["unit"])), None)
+    head = queue_head(state)
     if head is None:
         return None
     key = [head["unit"], head["sha"]]

@@ -21,6 +21,7 @@ from runstate import (
     mergeable,
     open_gate,
     openable,
+    queue_head,
     queue_order,
     record_closed,
     record_merged,
@@ -1100,6 +1101,20 @@ class SlotHolderAfterTests(RunStateTestCase):
             enqueue(self.dir, state, "b", SHA1, NOW + 1)
         self.assertIn("already holds the push slot", str(caught.exception))
         self.assertEqual(state["slot"]["unit"], "b")
+
+
+class QueueHeadTests(RunStateTestCase):
+    def test_queue_head_is_the_first_entry_not_done_and_mergeable(self):
+        state = self.init()
+        for name in ("a", "b", "c", "d"):
+            add(state, name)
+        add(state, "c", after=["d"])
+        self.assertIsNone(queue_head(state))
+        enqueue(self.dir, state, "a", SHA1, 1.0)
+        enqueue(self.dir, state, "c", SHA2, 2.0)
+        enqueue(self.dir, state, "b", SHA2, 3.0)
+        record_merged(state, "a", 1, more=False)
+        self.assertEqual(queue_head(state), {"unit": "b", "sha": SHA2, "at": 3.0, "front": False})
 
 
 if __name__ == "__main__":

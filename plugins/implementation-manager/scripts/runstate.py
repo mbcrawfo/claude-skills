@@ -333,12 +333,18 @@ def _holds_slot(state: dict, unit: str) -> bool:
     return state["slot"] is not None and state["slot"]["unit"] == unit
 
 
-def _first_queued(state: dict) -> str | None:
-    """The unit first in the queue, skipping done units, whose entries the watcher drops, and units not mergeable."""
+def queue_head(state: dict) -> dict | None:
+    """The queue entry served next: the first in queue order whose unit is not done and is mergeable."""
     for entry in queue_order(state):
         if not state["units"][entry["unit"]]["done"] and mergeable(state, entry["unit"]):
-            return entry["unit"]
+            return entry
     return None
+
+
+def _first_queued(state: dict) -> str | None:
+    """The unit at the head of the queue, if any."""
+    head = queue_head(state)
+    return head["unit"] if head else None
 
 
 def _note_answered(run_dir: Path, state: dict, unit: str, sha: str) -> None:

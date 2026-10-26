@@ -118,15 +118,7 @@ def _needs(run_dir: Path, state: dict) -> list[str]:
         elif _behind_holder(state, name):
             needs.append(f"slot holder {name} PR #{marks['pr']} behind base")
     if state["queue_mode"] == "serial" and state["slot"] is None:
-        # The head the watcher reports as NEXT: not done, and mergeable.
-        head = next(
-            (
-                e
-                for e in runstate.queue_order(state)
-                if not units[e["unit"]]["done"] and runstate.mergeable(state, e["unit"])
-            ),
-            None,
-        )
+        head = runstate.queue_head(state)  # the head the watcher reports as NEXT
         if head:
             needs.append(f"slot free with a queue, next {head['unit']} {head['sha']}")
     needs += [f"bad request line: {line}" for line in state["bad_requests"]]
