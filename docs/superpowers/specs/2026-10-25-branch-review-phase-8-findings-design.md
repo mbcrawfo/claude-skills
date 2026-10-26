@@ -1,7 +1,7 @@
 # Branch review: fixes from the phase 8 run (v0.9)
 
 Date: 2026-10-25
-Status: draft, for the developer's review
+Status: approved 2026-10-25
 Builds on: `2026-10-23-branch-review-recall-and-mechanics-design.md` (v0.8)
 
 ## Intent
