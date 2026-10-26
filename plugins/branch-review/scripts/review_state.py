@@ -1674,6 +1674,7 @@ def _with_model(rnd: dict) -> str:
 
 
 def _model_in_parens(rnd: dict) -> str:
+    """` (<model>)` for a reviewed round, nothing for a recorded one."""
     return "" if rnd.get("model") is None else f" ({rnd.get('model')})"
 
 
@@ -1708,20 +1709,11 @@ def render_summary(state: dict) -> str:
     for f in findings:
         counts[f.get("status")] = counts.get(f.get("status"), 0) + 1
     listed = ", ".join(f"{r.get('number')} {_round_mode(r)}{_model_in_parens(r)}" for r in rounds)
-    out = [
-        header,
-        "",
-        f"Rounds: {listed}",
-        "",
-        "## Recorded without review",
-        "",
-        *(_recorded_lines(state) or ["None."]),
-        "",
-        "## Counts",
-        "",
-        "| Status | Count |",
-        "| --- | --- |",
-    ]
+    out = [header, "", f"Rounds: {listed}"]
+    recorded = _recorded_lines(state)
+    if recorded:
+        out.extend(["", "## Recorded without review", "", *recorded])
+    out.extend(["", "## Counts", "", "| Status | Count |", "| --- | --- |"])
     out.extend(f"| {s} | {n} |" for s, n in counts.items())
 
     sections = (
@@ -1774,9 +1766,11 @@ def _notes_line(state: dict) -> str:
     by_mode = []
     for mode in ("deep", "followup", "merge-check", "recorded"):
         chosen = [r for r in rounds if r.get("mode") == mode]
-        if chosen and mode == "recorded":
+        if not chosen:
+            continue
+        if mode == "recorded":
             by_mode.append(f"{len(chosen)} recorded")
-        elif chosen:
+        else:
             models = list(dict.fromkeys(str(r.get("model")) for r in chosen))
             by_mode.append(f"{len(chosen)} {mode} with {' and '.join(models)}")
     opinion = "yes" if any(r.get("focus") == SECOND_OPINION_FOCUS for r in rounds) else "no"
@@ -1798,6 +1792,7 @@ def render_review_notes(state: dict) -> str:
             lines.extend(_entry(f, details(f)))
         return lines
 
+    recorded = _recorded_lines(state)
     sections = (
         ("Escalated", entries("escalated", _resolution_note)),
         ("Behavior changes to confirm", _behavior_lines(state)),
@@ -1805,7 +1800,7 @@ def render_review_notes(state: dict) -> str:
         ("Accepted", entries("accepted", _resolution_note)),
         ("Invalid", entries("invalid", _invalid_details)),
         ("Outside the change", entries("outside", _resolution_note)),
-        ("Recorded without review", _recorded_lines(state)),
+        *([("Recorded without review", recorded)] if recorded else []),
         ("Intent check", _intent_check_lines(state, skip_empty=True)),
         ("Not checked", _not_checked_lines(state)),
     )

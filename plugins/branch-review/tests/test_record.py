@@ -247,10 +247,11 @@ class RecordedRoundsTest(RecordHarness, unittest.TestCase):
         self.assertIn("last recorded,", text.splitlines()[0])
         self.assertNotIn("with None", text)
 
-    def test_summary_without_recorded_rounds_says_none(self):
+    def test_no_recorded_section_without_recorded_rounds(self):
         self.review()
-        lines = self.summary_text().splitlines()
-        self.assertEqual(lines[lines.index("## Recorded without review") + 2], "None.")
+        self.assertNotIn("Recorded without review", self.summary_text())
+        self.assertNotIn("Recorded without review", self.notes_text())
+        self.assertNotIn("recorded", self.notes_text())
 
     def test_review_notes_name_recorded_rounds(self):
         self.review()
