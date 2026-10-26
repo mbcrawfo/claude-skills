@@ -26,6 +26,9 @@ Run `/plugin` to browse what's available. Pull updates with `/plugin marketplace
 plugins/<plugin-name>/
   .claude-plugin/plugin.json      # plugin manifest
   skills/<skill-name>/SKILL.md    # one folder per skill
+docs/superpowers/specs/           # design docs
+docs/deferred/                    # planned work not delivered as planned
+docs/tech-debt/                   # known problems and sub-optimal choices
 ```
 
 A plugin can hold several related skills. Plugins can also ship `commands/`, `agents/` and `hooks/` alongside `skills/`.
