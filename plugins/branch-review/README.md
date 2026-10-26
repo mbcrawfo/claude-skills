@@ -84,7 +84,7 @@ Two skills exist for agents in other plugins, such as an implementation manager 
 
 ### Check a commit
 
-`/branch-review:check` answers whether a clean review covers a commit. It exists for other agents, such as a manager in another plugin that must know a commit was reviewed before a push, PR or merge, and cannot find this plugin's script or data directory itself. It prints the JSON verdict and one line, `covered` or `not covered: <reasons>`, and changes no refs, index or files:
+`/branch-review:check` answers whether a clean review, or a recorded round, covers a commit. A `recorded` round anchors coverage like a reviewed round, so `covered` means the commit was reviewed or recorded on `origin/<branch>`; the summary's "Recorded without review" section names which. It exists for other agents, such as a manager in another plugin that must know a commit was reviewed or recorded before a push, PR or merge, and cannot find this plugin's script or data directory itself. It prints the JSON verdict and one line, `covered` or `not covered: <reasons>`, and changes no refs, index or files:
 
 ```
 /branch-review:check --repo PATH [--commit SHA] [--state-dir PATH]

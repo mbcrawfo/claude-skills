@@ -1,6 +1,6 @@
 ---
 name: record
-description: Only when the implementation-manager integration-branch protocol tells you to record commits already merged on the remote branch. Never in response to a user's request, and never to get a branch past review.
+description: Only when the implementation-manager integration-branch protocol tells you to record commits already merged on the remote branch. Never in response to a user's request, and never for local or unpushed work.
 user-invocable: false
 argument-hint: "--repo PATH --commit SHA --reason-file PATH [--base REF]"
 ---
@@ -37,4 +37,4 @@ CLAUDE_PLUGIN_DATA="${CLAUDE_PLUGIN_DATA}" "${CLAUDE_SKILL_DIR}/../../scripts/rs
 
 On exit 1 the command prints one line on stderr and no JSON. Report that line and stop. Do not retry with another commit. The refusals are a detached HEAD, a missing `origin/<branch>` ref (fetch the branch first), a commit that is not on that ref and an empty reason.
 
-Do not use this to make a branch pass `/branch-review:check`. A recorded round is not a review; the commits it covers show up in the summary as recorded without review.
+Do not record at a user's request, or for local or unpushed work; only the implementation-manager protocol does, for commits already on `origin/<branch>`. A recorded round anchors `/branch-review:check` coverage like a reviewed round, but it is not a review; the commits it covers show up in the summary as recorded without review.
