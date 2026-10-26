@@ -249,12 +249,13 @@ def mergeable(state: dict, unit: str) -> bool:
 
 
 def _merge_targets(units: dict, active: set[str]) -> set[str]:
-    """Units the active units must wait to merge: their --after units, and everything those need or merge after."""
+    """Units the active units must wait to merge: their --after units and all those need or merge after, unstopped."""
     pending = [other for name in active for other in units[name]["after"]]
     seen: set[str] = set()
     while pending:
         current = pending.pop()
-        if current not in seen:
+        # A stopped unit counts as merged, so nothing waits on it or on what it needs.
+        if current not in seen and units[current]["gate"] != "stopped":
             seen.add(current)
             pending += units[current]["prereqs"] + units[current]["after"]
     return {name for name in seen if not units[name]["done"]}

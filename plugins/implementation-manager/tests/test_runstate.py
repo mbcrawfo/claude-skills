@@ -1007,6 +1007,19 @@ class AfterTests(RunStateTestCase):
         self.open_unit(state, "a")
         self.assertEqual(openable(state), ["c"])
 
+    def test_wip_exemption_skips_a_stopped_after_unit(self):
+        # R2-F1: a stopped --after unit counts as merged, so nothing waits on its prerequisites.
+        state = self.init(wip=1)
+        add(state, "a")
+        add(state, "s")
+        add(state, "c")
+        add(state, "x")
+        add(state, "s", prereqs=["c"])
+        add(state, "a", after=["s"])
+        self.open_unit(state, "a")
+        stop_gate(self.dir, state, "s", "dropped")
+        self.assertEqual(openable(state), [])
+
     def test_wip_exemption_applies_within_one_open_ready(self):
         # R1-F2: a opens and takes the WIP place; b, which a merges after, opens in the same call.
         state = self.init(wip=1)
