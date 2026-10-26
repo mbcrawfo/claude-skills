@@ -274,7 +274,9 @@ def _unit_events(
     seen_since = marks.get("signature")
     if seen_since is None or seen_since["key"] != signature:
         seen_since = marks["signature"] = {"key": signature, "at": now}
-    held = state["units"][unit]["hold"] is not None  # waiting on purpose: not stalled
+    # A hold waits on purpose, so it is not stalled; an `answer sent:` hold waits on the child, so it can be.
+    hold = state["units"][unit]["hold"]
+    held = hold is not None and not hold["reason"].startswith("answer sent:")
     if not held and now - seen_since["at"] >= timings.stall_seconds and marks.get("stalled_key") != signature:
         line = f"STALLED {unit} {pr} head={head[:7]}{reasons}"
         events.append((STALLED, line, _setter(marks, stalled_key=signature)))

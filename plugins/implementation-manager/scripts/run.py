@@ -12,7 +12,7 @@ The run folder is always the first argument after the subcommand:
   stop <dir> <unit> <reason...>     the unit never opens, gets go or queues again, and gives up the slot
   go <dir> <unit> <sha>             serial mode: take the push slot, or refuse while another unit holds it
   redo <dir> <unit> <sha> <reasons...>
-  hold <dir> <unit> <reason...>     hold the unit's merge: no READY, REMIND or STALLED, no go, not first in the queue
+  hold <dir> <unit> <reason...>     hold the unit's merge: no READY or REMIND, no go, not first in the queue
   release <dir> <unit>              lift the hold
   queue <dir> <unit> <sha>          line a covered request up behind the slot holder
   yield <dir> <unit> <reason...>    the slot holder gives the slot up

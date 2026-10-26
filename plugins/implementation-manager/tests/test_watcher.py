@@ -801,6 +801,21 @@ class HoldTests(PrTestCase):
         self.assert_quiet(gh, sleeps=500, stall_seconds=3600, remind_seconds=1e9)
         self.assertLess(self.clock.t - start, 3600)
 
+    def test_stalled_while_held_answer_sent(self):
+        # An `answer sent:` hold waits on the child to ask again, so a child that never does is reported.
+        with locked(self.dir) as state:
+            hold(self.dir, state, "a", "answer sent: naming", self.clock.now())
+        gh = self.gh_a(make_pr())
+        line = self.wait(gh, sleeps=2000, stall_seconds=3600, remind_seconds=1e9)
+        self.assertEqual(line, f"STALLED a 7 head={SHA_A7}")
+        self.assertNotIn("ready_head", load(self.dir)["marks"]["a"])
+
+    def test_no_stalled_while_held_for_another_reason(self):
+        with locked(self.dir) as state:
+            hold(self.dir, state, "a", "own session: naming", self.clock.now())
+        gh = self.gh_a(make_pr())
+        self.assert_quiet(gh, sleeps=2000, stall_seconds=3600, remind_seconds=1e9)
+
 
 class OrphanTests(PrTestCase):
     def test_orphan_reported_once_for_an_open_pr_on_a_done_units_branch(self):

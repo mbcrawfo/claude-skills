@@ -461,9 +461,10 @@ def yield_slot(state: dict, unit: str, reason: str, now: float) -> None:
 def hold(run_dir: Path, state: dict, unit: str, reason: str, now: float) -> None:
     """Hold a unit's merge, with a one-line reason, until `release`, `merged`, `closed` or `stop`.
 
-    A held unit is not mergeable: it is not reported READY or REMIND, not STALLED, and never heads the queue, and
-    `go` and `queue` refuse it. Its pending and queued requests are answered `redo held`, and it gives up the
-    slot. A `go` it has not pushed yet stays outstanding, as for `yield`.
+    A held unit is not mergeable: it is not reported READY or REMIND, not STALLED unless the reason starts with
+    `answer sent:` (that hold waits on the child), and never heads the queue, and `go` and `queue` refuse it. Its
+    pending and queued requests are answered `redo held`, and it gives up the slot. A `go` it has not pushed yet
+    stays outstanding, as for `yield`.
     """
     record = _unit(state, unit)
     if "\n" in reason or "\r" in reason or not reason.strip():
