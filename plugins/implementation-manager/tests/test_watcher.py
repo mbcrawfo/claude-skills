@@ -816,6 +816,16 @@ class HoldTests(PrTestCase):
         gh = self.gh_a(make_pr())
         self.assert_quiet(gh, sleeps=2000, stall_seconds=3600, remind_seconds=1e9)
 
+    def test_ready_reported_afresh_after_hold_and_release_on_the_same_head(self):
+        gh = self.gh_a(make_pr())
+        self.assertEqual(self.wait(gh), f"READY a 7 {HEAD_A}")
+        with locked(self.dir) as state:
+            hold(self.dir, state, "a", "waiting on owner", self.clock.now())
+        self.assert_quiet(gh)
+        with locked(self.dir) as state:
+            release(state, "a")
+        self.assertEqual(self.wait(gh), f"READY a 7 {HEAD_A}")
+
 
 class OrphanTests(PrTestCase):
     def test_orphan_reported_once_for_an_open_pr_on_a_done_units_branch(self):

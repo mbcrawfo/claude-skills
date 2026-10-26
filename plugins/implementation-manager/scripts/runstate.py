@@ -487,13 +487,16 @@ def hold(run_dir: Path, state: dict, unit: str, reason: str, now: float) -> None
 def release(state: dict, unit: str) -> None:
     """Lift a unit's hold; it is mergeable again, and the watcher reports it afresh.
 
-    The stall clock restarts: the hold was waiting on purpose, so the watcher starts a new stall window.
+    The stall clock restarts: the hold was waiting on purpose, so the watcher starts a new stall window. A READY
+    or REMIND reported before the hold is forgotten, so the same head is reported READY again.
     """
     record = _unit(state, unit)
     if record["hold"] is None:
         raise RunError(f"unit {unit!r} is not held")
     record["hold"] = None
-    state["marks"].get(unit, {}).pop("signature", None)
+    marks = state["marks"].get(unit, {})
+    for key in ("signature", "ready_head", "ready_at", "remind_head"):
+        marks.pop(key, None)
 
 
 def record_merged(state: dict, unit: str, pr: int, *, more: bool) -> None:

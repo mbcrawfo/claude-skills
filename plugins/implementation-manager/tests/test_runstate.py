@@ -848,6 +848,14 @@ class HoldTests(RunStateTestCase):
         self.assertNotIn("signature", state["marks"]["u"])
         self.assertEqual(state["marks"]["u"]["head"], "abc")
 
+    def test_release_forgets_the_ready_report(self):
+        state = self.setup_units("u")
+        ready = {"ready_head": "7 abc", "ready_at": 1.0, "remind_head": "7 abc"}
+        state["marks"]["u"] = {**ready, "head": "abc", "behind_head": "abc"}
+        hold(self.dir, state, "u", "why", NOW)
+        release(state, "u")
+        self.assertEqual(state["marks"]["u"], {"head": "abc", "behind_head": "abc"})
+
     def test_release_without_marks_is_fine(self):
         state = self.setup_units("u")
         hold(self.dir, state, "u", "why", NOW)
