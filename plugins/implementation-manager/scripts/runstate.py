@@ -592,6 +592,7 @@ def go(run_dir: Path, state: dict, unit: str, sha: str, now: float) -> None:
         marks["go_head"] = marks.get("head")
     if _is_integration(record):
         marks["go_sha"] = sha  # the integration unit pushes straight to the branch: unit merges wait for `synced`
+        marks.pop("synced_sha", None)  # a redo then a go of the same sha is a new sync, reported again
     if state["queue_mode"] == "serial":
         state["slot"] = {"unit": unit, "sha": sha, "at": now, "head": marks.get("head")}
         # The watcher's last NEXT has been answered; when the slot frees, the queue head is reported afresh.

@@ -107,6 +107,21 @@ class BranchHeadTests(unittest.TestCase):
         self.assertEqual(branch_head("owner/repo", "integration/x", gh), HEAD_A)
         self.assertEqual(gh.calls, [["api", "repos/owner/repo/branches/integration/x", "--jq", ".commit.sha"]])
 
+    def test_the_branch_is_url_quoted_but_keeps_its_slashes(self):
+        calls = []
+
+        def gh(args):
+            calls.append(args)
+            return HEAD_A
+
+        branch_head("owner/repo", "feat/a b#1?", gh)
+        self.assertEqual(calls[0][1], "repos/owner/repo/branches/feat/a%20b%231%3F")
+
+    def test_an_unexpected_answer_names_the_branch(self):
+        gh = FakeGh([PR7], branches={"integration/x": ["Not Found"]})
+        with self.assertRaisesRegex(GhError, r"integration/x.*Not Found"):
+            branch_head("owner/repo", "integration/x", gh)
+
     def test_a_failing_call_is_a_failure(self):
         gh = FakeGh([PR7], branches={"integration/x": [GhError("Not Found")]})
         with self.assertRaises(GhError):

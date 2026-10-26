@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import json
 import re
 import subprocess
+from urllib.parse import quote
 
 QUERY = """query($o:String!,$n:String!,$p:Int!){repository(owner:$o,name:$n){pullRequest(number:$p){
   state isDraft mergeStateStatus headRefOid
@@ -116,9 +117,9 @@ def find_open_pr(repo: str, branch: str, gh: Callable[[list[str]], str]) -> int 
 
 def branch_head(repo: str, branch: str, gh: Callable[[list[str]], str]) -> str:
     """The commit sha at the tip of the branch on the remote. Raises GhError when gh fails or answers no sha."""
-    out = gh(["api", f"repos/{repo}/branches/{branch}", "--jq", ".commit.sha"]).strip()
+    out = gh(["api", f"repos/{repo}/branches/{quote(branch, safe='/')}", "--jq", ".commit.sha"]).strip()
     if not re.fullmatch(r"[0-9a-f]{40}", out):
-        raise GhError(f"unexpected output: {out[:200]}")
+        raise GhError(f"unexpected output for branch {branch}: {out[:200]}")
     return out
 
 

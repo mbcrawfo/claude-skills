@@ -948,6 +948,16 @@ class IntegrationWatcherTests(unittest.TestCase):
         gh.branches["integration/x"] = [SHA2]
         self.assertEqual(self.wait(gh), f"SYNCED int {SHA2}")
 
+    def test_synced_again_when_a_redo_is_followed_by_a_new_go_of_the_same_sha(self):
+        self.go_int()
+        gh = FakeGh({"integration/x": [NO_PR]}, branches={"integration/x": [SHA1]})
+        self.assertEqual(self.wait(gh), f"SYNCED int {SHA1}")
+        with locked(self.dir) as state:
+            redo(self.dir, state, "int", SHA1, "rebase again")
+            go(self.dir, state, "int", SHA1, self.clock.now())
+        self.assertNotIn("synced_sha", load(self.dir)["marks"]["int"])
+        self.assertEqual(self.wait(gh), f"SYNCED int {SHA1}")
+
     def test_no_synced_while_the_branch_is_behind_the_go_and_then_stuck(self):
         self.go_int()
         gh = FakeGh({"integration/x": [NO_PR]}, branches={"integration/x": [SHA2]})
