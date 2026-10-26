@@ -109,6 +109,33 @@ class RecordTest(RecordHarness, unittest.TestCase):
         self.assertIn("not on origin/feature/x", err)
         self.assertEqual(out, "")
 
+    def test_records_the_commit_named_by_commit_not_head(self):
+        # R4-F3: HEAD is ahead of the remote and has a different merge base with main than the published commit.
+        self.publish()
+        x = git(self.repo, "rev-parse", "HEAD")
+        old_main = git(self.repo, "rev-parse", "main")
+        git(self.repo, "checkout", "main")
+        commit_file(self.repo, "m.txt", "m\n", "advance main")
+        git(self.repo, "checkout", "feature/x")
+        git(self.repo, "merge", "--no-edit", "main")
+        commit_file(self.repo, "c.txt", "c\n", "add c")
+        y = git(self.repo, "rev-parse", "HEAD")
+        self.assertNotEqual(x, y)
+        result = self.record("--commit", x)
+        self.assertEqual(result["commit"], x)
+        self.assertEqual(result["files"], 1)
+        rnd = self.state()["rounds"][0]
+        for key in ("snapshot", "head", "diff_to"):
+            self.assertEqual(rnd[key], x, key)
+        self.assertEqual(rnd["merge_base"], old_main)
+        self.assertEqual(rnd["diff_from"], old_main)
+        self.assertEqual(rnd["changed_files"], ["b.txt"])
+        code, out, err = self.call("record", "--commit", y, "--reason-file", self.reason(), "--base", "main")
+        self.assertEqual(code, 1)
+        self.assertIn("not on origin/feature/x", err)
+        self.assertEqual(out, "")
+        self.assertEqual(len(self.state()["rounds"]), 1)
+
     def test_refuses_without_a_remote_ref(self):
         code, _, err = self.call("record", "--reason-file", self.reason(), "--base", "main")
         self.assertEqual(code, 1)
