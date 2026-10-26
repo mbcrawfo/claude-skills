@@ -303,6 +303,12 @@ def _refuse_stopped(record: dict, unit: str) -> None:
         raise RunError(f"unit {unit!r} is stopped; answer its push requests with: redo <sha> unit-stopped")
 
 
+def _refuse_held(record: dict, unit: str) -> None:
+    if record["hold"] is not None:
+        reason = record["hold"]["reason"]
+        raise RunError(f"unit {unit!r} is held: {reason}; answer its push requests with: redo <sha> held")
+
+
 def has_open_pr(state: dict, unit: str) -> bool:
     """True when any of the unit's PRs is still open."""
     return any(status == "OPEN" for status in _unit(state, unit)["prs"].values())
@@ -356,9 +362,7 @@ def go(run_dir: Path, state: dict, unit: str, sha: str, now: float) -> None:
     if record["done"]:
         raise RunError(f"unit {unit!r} is done; answer its push requests with: redo <sha> pr-merged")
     _refuse_stopped(record, unit)
-    if record["hold"] is not None:
-        reason = record["hold"]["reason"]
-        raise RunError(f"unit {unit!r} is held: {reason}; answer its push requests with: redo <sha> held")
+    _refuse_held(record, unit)
     if state["queue_mode"] == "serial":
         units = state["units"]
         for other in record["after"]:
@@ -405,7 +409,9 @@ def redo(run_dir: Path, state: dict, unit: str, sha: str, reasons: str) -> None:
 
 def enqueue(run_dir: Path, state: dict, unit: str, sha: str, now: float) -> None:
     """Line a unit's request up behind the slot holder, replacing any earlier entry; the same sha keeps its time."""
-    _refuse_stopped(_unit(state, unit), unit)
+    record = _unit(state, unit)
+    _refuse_stopped(record, unit)
+    _refuse_held(record, unit)
     _check_sha(sha)
     if state["queue_mode"] == "parallel":
         raise RunError("queue is not used in parallel mode; answer with go")
@@ -440,8 +446,8 @@ def hold(run_dir: Path, state: dict, unit: str, reason: str, now: float) -> None
     """Hold a unit's merge, with a one-line reason, until `release`, `merged`, `closed` or `stop`.
 
     A held unit is not mergeable: it is not reported READY or REMIND, not STALLED, and never heads the queue, and
-    `go` refuses it. Its unanswered requests are answered `redo held`, and it gives up the queue and the slot. A
-    `go` it has not pushed yet stays outstanding, as for `yield`.
+    `go` and `queue` refuse it. Its pending and queued requests are answered `redo held`, and it gives up the
+    slot. A `go` it has not pushed yet stays outstanding, as for `yield`.
     """
     record = _unit(state, unit)
     if "\n" in reason or "\r" in reason or not reason.strip():
@@ -451,9 +457,10 @@ def hold(run_dir: Path, state: dict, unit: str, reason: str, now: float) -> None
     _refuse_stopped(record, unit)
     if record["hold"] is not None:
         raise RunError(f"unit {unit!r} is already held: {record['hold']['reason']}")
-    for entry in [e for e in state["pending"] if e["unit"] == unit]:
-        _append(run_dir, PUSHES, f"{unit} redo {entry['sha']} held\n")
-        _note_answered(run_dir, state, unit, entry["sha"])
+    unanswered = [e["sha"] for key in ("pending", "queue") for e in state[key] if e["unit"] == unit]
+    for sha in dict.fromkeys(unanswered):  # each sha once, in order
+        _append(run_dir, PUSHES, f"{unit} redo {sha} held\n")
+        _note_answered(run_dir, state, unit, sha)
     _drop_entries(state, unit, "pending", "queue")
     if _holds_slot(state, unit):
         state["slot"] = None
@@ -461,11 +468,15 @@ def hold(run_dir: Path, state: dict, unit: str, reason: str, now: float) -> None
 
 
 def release(state: dict, unit: str) -> None:
-    """Lift a unit's hold; it is mergeable again, and the watcher reports it afresh."""
+    """Lift a unit's hold; it is mergeable again, and the watcher reports it afresh.
+
+    The stall clock restarts: the hold was waiting on purpose, so the watcher starts a new stall window.
+    """
     record = _unit(state, unit)
     if record["hold"] is None:
         raise RunError(f"unit {unit!r} is not held")
     record["hold"] = None
+    state["marks"].get(unit, {}).pop("signature", None)
 
 
 def record_merged(state: dict, unit: str, pr: int, *, more: bool) -> None:

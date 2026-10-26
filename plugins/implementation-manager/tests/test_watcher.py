@@ -788,6 +788,19 @@ class HoldTests(PrTestCase):
             release(state, "a")
         self.assertEqual(self.wait(gh), f"READY a 7 {HEAD_A}")
 
+    def test_no_stalled_right_after_a_long_hold_ends(self):
+        with locked(self.dir) as state:
+            hold(self.dir, state, "a", "waiting on owner", self.clock.now())
+        gh = self.gh_a(make_pr())
+        self.assert_quiet(gh, sleeps=2500, stall_seconds=3600)  # several stall windows pass while held
+        with locked(self.dir) as state:
+            release(state, "a")
+        start = self.clock.t
+        self.assertEqual(self.wait(gh, stall_seconds=3600, remind_seconds=1e9), f"READY a 7 {HEAD_A}")
+        # The stall window starts afresh at the release; the PR stays unchanged and ready for less than that.
+        self.assert_quiet(gh, sleeps=500, stall_seconds=3600, remind_seconds=1e9)
+        self.assertLess(self.clock.t - start, 3600)
+
 
 class OrphanTests(PrTestCase):
     def test_orphan_reported_once_for_an_open_pr_on_a_done_units_branch(self):

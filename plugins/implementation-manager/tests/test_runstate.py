@@ -808,6 +808,49 @@ class HoldTests(RunStateTestCase):
         self.assertEqual([e["unit"] for e in state["pending"]], ["v"])
         self.assertEqual(state["marks"]["u"]["answered"][SHA1], (self.dir / "requests.log").stat().st_size)
 
+    def test_hold_answers_a_queued_request_with_redo_held(self):
+        state = self.setup_units("u", "v")
+        (self.dir / "requests.log").write_text(f"u push {SHA1} b\n")
+        enqueue(self.dir, state, "u", SHA1, 1.0)
+        enqueue(self.dir, state, "v", SHA2, 2.0)
+        hold(self.dir, state, "u", "why", NOW)
+        self.assertEqual(self.pushes(), f"u redo {SHA1} held\n")
+        self.assertEqual([e["unit"] for e in state["queue"]], ["v"])
+        self.assertEqual(state["marks"]["u"]["answered"][SHA1], (self.dir / "requests.log").stat().st_size)
+
+    def test_hold_answers_a_sha_pending_and_queued_once(self):
+        state = self.setup_units("u")
+        state["pending"] = [{"unit": "u", "sha": SHA1, "branch": "b", "at": 1.0}]
+        state["queue"] = [{"unit": "u", "sha": SHA1, "at": 1.0, "front": False}]
+        hold(self.dir, state, "u", "why", NOW)
+        self.assertEqual(self.pushes(), f"u redo {SHA1} held\n")
+
+    def test_queue_refuses_a_held_unit_and_writes_nothing(self):
+        state = self.setup_units("u")
+        hold(self.dir, state, "u", "waiting on owner", NOW)
+        before = json.dumps(state, sort_keys=True)
+        with self.assertRaises(RunError) as caught:
+            enqueue(self.dir, state, "u", SHA1, NOW)
+        self.assertEqual(
+            str(caught.exception), "unit 'u' is held: waiting on owner; answer its push requests with: redo <sha> held"
+        )
+        self.assertEqual(json.dumps(state, sort_keys=True), before)
+        self.assertEqual(self.pushes(), "")
+
+    def test_release_restarts_the_stall_clock(self):
+        state = self.setup_units("u")
+        state["marks"]["u"] = {"signature": {"key": "7 abc", "at": 1.0}, "head": "abc"}
+        hold(self.dir, state, "u", "why", NOW)
+        release(state, "u")
+        self.assertNotIn("signature", state["marks"]["u"])
+        self.assertEqual(state["marks"]["u"]["head"], "abc")
+
+    def test_release_without_marks_is_fine(self):
+        state = self.setup_units("u")
+        hold(self.dir, state, "u", "why", NOW)
+        release(state, "u")
+        self.assertNotIn("u", state["marks"])
+
     def test_hold_notes_no_answer_for_requests_already_read(self):
         state = self.setup_units("u")
         (self.dir / "requests.log").write_text(f"u push {SHA1} b\n")
