@@ -1355,21 +1355,92 @@ class IntegrationUnitTests(IntegrationTestCase):
         self.assertIsNone(integration_unit(state))
         self.assertIs(state["units"]["a"]["integration"], False)
 
-    def test_refusals_leave_the_state_unchanged(self):
+    def test_a_second_integration_unit_is_refused(self):
+        state = self.init_integration()
+        self.add_integration(state)
+        before = json.dumps(state)
+        with self.assertRaises(RunError) as caught:
+            self.add_integration(state, "int2")
+        self.assertIn("already has an integration unit", str(caught.exception))
+        self.assertEqual(json.dumps(state), before)
+
+    def test_prereqs_and_after_are_refused_on_a_fresh_run(self):
+        for kwargs in ({"prereqs": ["a"]}, {"after": ["a"]}):
+            with self.subTest(kwargs):
+                self.dir = self.dir.parent / f"run-{next(iter(kwargs))}"
+                state = self.init_integration()
+                add(state, "a")
+                before = json.dumps(state)
+                with self.assertRaises(RunError) as caught:
+                    self.add_integration(state, "int", **kwargs)
+                self.assertIn("no prerequisites or merge-order units", str(caught.exception))
+                self.assertEqual(json.dumps(state), before)
+
+    def test_another_branch_is_refused(self):
+        state = self.init_integration()
+        before = json.dumps(state)
+        with self.assertRaises(RunError) as caught:
+            self.add_integration(state, "int", branch="other")
+        self.assertIn("integration/x", str(caught.exception))
+        self.assertEqual(json.dumps(state), before)
+
+    def test_an_existing_unit_on_another_branch_cannot_be_converted(self):
+        state = self.init_integration()
+        add_unit(state, "a", prereqs=None, branch="feat", worktree=None, specs=None)
+        with self.assertRaises(RunError) as caught:
+            self.add_integration(state, "a")
+        self.assertIn("'feat'", str(caught.exception))
+        self.assertIsNone(integration_unit(state))
+
+    def test_an_existing_unit_with_no_branch_converts_and_gets_the_integration_branch(self):
+        state = self.init_integration()
+        add(state, "a")
+        self.add_integration(state, "a")
+        self.assertEqual(state["units"]["a"]["branch"], "integration/x")
+        self.assertEqual(integration_unit(state), "a")
+
+    def test_an_existing_unit_on_the_integration_branch_converts(self):
+        state = self.init_integration()
+        add_unit(state, "a", prereqs=None, branch="integration/x", worktree=None, specs=None)
+        self.add_integration(state, "a")
+        self.assertEqual(integration_unit(state), "a")
+
+    def test_the_integration_unit_cannot_gain_prereqs_or_be_demoted(self):
         state = self.init_integration()
         self.add_integration(state)
         add(state, "a")
-        before = json.dumps(state)
-        cases = {
-            "a second integration unit": lambda: self.add_integration(state, "int2"),
-            "prereqs": lambda: self.add_integration(state, "int3", prereqs=["a"]),
-            "after": lambda: self.add_integration(state, "int", after=["a"]),
-            "another branch": lambda: self.add_integration(state, "int", branch="other"),
-        }
-        for label, call in cases.items():
-            with self.subTest(label), self.assertRaises(RunError):
-                call()
-        self.assertEqual(json.dumps(state), before)
+        with self.assertRaises(RunError):
+            add(state, "int", prereqs=["a"])
+        with self.assertRaises(RunError) as caught:
+            add_unit(state, "int", prereqs=None, branch=None, worktree=None, specs=None, integration=False)
+        self.assertIn("cannot be changed back", str(caught.exception))
+        self.assertEqual(integration_unit(state), "int")
+
+    def test_false_on_a_default_run_writes_no_key(self):
+        state = self.init()
+        add_unit(state, "a", prereqs=None, branch=None, worktree=None, specs=None, integration=False)
+        self.assertNotIn("integration", state["units"]["a"])
+
+    def test_init_refuses_an_incomplete_or_mistyped_block(self):
+        for block in (
+            {"final_merge": "manager", "feature_review": True},
+            {"branch": "integration/x", "feature_review": True},
+            {"branch": 5, "final_merge": "manager", "feature_review": True},
+            {"branch": None, "final_merge": "manager", "feature_review": True},
+        ):
+            with self.subTest(block):
+                with self.assertRaises(RunError):
+                    init_run(
+                        self.dir,
+                        repo="o/r",
+                        base="main",
+                        method="merge",
+                        wip=None,
+                        queue_mode="serial",
+                        now=NOW,
+                        integration=block,
+                    )
+                self.assertFalse((self.dir / "run.json").exists())
 
     def test_an_existing_unit_that_something_waits_on_cannot_become_the_integration_unit(self):
         state = self.init_integration()
@@ -1449,6 +1520,12 @@ class FinalGateTests(IntegrationTestCase):
         self.assertEqual(late_units(state), ["s"])
         self.assertFalse(final_due(state))
 
+    def test_all_stopped_is_false_in_a_default_run_with_only_stopped_units(self):
+        state = self.init()
+        add(state, "a")
+        stop_gate(self.dir, state, "a", "gave up")
+        self.assertFalse(all_stopped(state))
+
     def test_all_stopped_needs_the_mode_and_a_unit(self):
         self.assertFalse(all_stopped(self.init()))
         self.dir = self.dir.parent / "run-b"
@@ -1459,13 +1536,7 @@ class FinalGateTests(IntegrationTestCase):
     def test_open_final_logs_a_review_line(self):
         state = self.setup_run()
         record_merged(state, "a", 1, more=False)
-        self.assertEqual(
-            open_final(
-                self.dir,
-                state,
-            ),
-            "int final review",
-        )
+        self.assertEqual(open_final(self.dir, state), "int final review")
         self.assertEqual((self.dir / "gates.log").read_text(), "int open\nint final review\n")
         self.assertTrue(state["integration"]["final_gate"])
         self.assertFalse(final_due(state))

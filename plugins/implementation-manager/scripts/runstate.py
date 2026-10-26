@@ -72,8 +72,11 @@ def init_run(
         raise RunError(f"queue must be one of {', '.join(QUEUE_MODES)}, got {queue_mode!r}")
     _check_wip(wip)
     if integration is not None:
+        missing = [key for key in ("branch", "final_merge") if key not in integration]
+        if missing:
+            raise RunError(f"integration is missing {', '.join(missing)}")
         branch = integration["branch"]
-        if not branch or re.search(r"\s", branch):
+        if not isinstance(branch, str) or not branch or re.search(r"\s", branch):
             raise RunError(f"integration branch must be non-empty with no whitespace, got {branch!r}")
         if integration["final_merge"] not in FINAL_MERGES:
             raise RunError(f"final-merge must be one of {', '.join(FINAL_MERGES)}, got {integration['final_merge']!r}")
@@ -99,7 +102,7 @@ def init_run(
         state["integration"] = {
             "branch": integration["branch"],
             "final_merge": integration["final_merge"],
-            "feature_review": bool(integration["feature_review"]),
+            "feature_review": bool(integration.get("feature_review", True)),
             "final_gate": False,
         }
     for name in (LOCK_FILE, REQUESTS, PUSHES, GATES):
@@ -257,7 +260,9 @@ def add_unit(
         prereqs if prereqs is not None else (unit["prereqs"] if unit else []),
         after if after is not None else (unit["after"] if unit else []),
     )
-    if integration:
+    if integration is False and unit and _is_integration(unit):
+        raise RunError("the integration unit cannot be changed back")
+    if integration or (unit and _is_integration(unit)):
         _check_integration_unit(state, name, unit, prereqs, after, branch)
     if unit is None:
         unit = state["units"][name] = {
@@ -282,12 +287,12 @@ def add_unit(
         ("branch", branch),
         ("worktree", worktree),
         ("specs", specs),
-        ("integration", integration),
+        ("integration", integration or None),  # False is the default and not written
         ("title", title),
     ):
         if value is not None:
             unit[key] = list(value) if key in ("prereqs", "after") else value
-    if integration and unit["branch"] is None:
+    if _is_integration(unit) and unit["branch"] is None:
         unit["branch"] = _block(state)["branch"]
     if _holds_slot(state, name) and not mergeable(state, name):
         state["slot"] = None  # a `go` not pushed yet stays outstanding, as for `hold`
@@ -303,17 +308,20 @@ def _check_integration_unit(
     after: list[str] | None,
     branch: str | None,
 ) -> None:
-    """Refuse `integration=True` unless this can be the run's one integration unit."""
+    """Refuse a unit that is (or becomes) the integration unit unless it can be the run's one."""
     if not _block(state):
         raise RunError("run has no integration branch")
     other = integration_unit(state)
     if other not in (None, name):
         raise RunError(f"run already has an integration unit, {other!r}")
-    if prereqs or after or (unit and (unit["prereqs"] or unit["after"])):
+    if (prereqs if prereqs is not None else unit and unit["prereqs"]) or (
+        after if after is not None else unit and unit["after"]
+    ):
         raise RunError("the integration unit has no prerequisites or merge-order units")
     wanted = _block(state)["branch"]
-    if branch not in (None, wanted):
-        raise RunError(f"the integration unit's branch is {wanted!r}, not {branch!r}")
+    effective = branch if branch is not None else (unit["branch"] if unit else None)
+    if effective not in (None, wanted):
+        raise RunError(f"the integration unit's branch is {wanted!r}, not {effective!r}")
     for waiter, record in state["units"].items():
         if name in record["prereqs"] or name in record["after"]:
             raise RunError(f"unit {waiter!r} waits on {name!r}: no unit may wait on the integration unit")
@@ -451,13 +459,11 @@ def all_stopped(state: dict) -> bool:
 
 def open_final(run_dir: Path, state: dict) -> str:
     """Open the final gate and log it; returns the log line, without its newline. Refused unless `final_due`."""
+    block = _block(state)
     if not final_due(state):
         raise RunError(
-            "the final gate is not due"
-            if not _block(state) or not _block(state)["final_gate"]
-            else "the final gate is already open"
+            "the final gate is already open" if block and block["final_gate"] else "the final gate is not due"
         )
-    block = _block(state)
     line = f"{integration_unit(state)} final {'review' if block['feature_review'] else 'no-review'}"
     _append(run_dir, GATES, line + "\n")
     block["final_gate"] = True
