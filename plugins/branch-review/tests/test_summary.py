@@ -154,7 +154,7 @@ class SummaryTest(LedgerHarness, unittest.TestCase):
         self.assertEqual(
             notes.strip().splitlines()[-1],
             "Nothing to report under: Escalated, Behavior changes to confirm, Deferred, Accepted, Invalid, "
-            "Outside the change, Intent check, Not checked.",
+            "Outside the change, Recorded without review, Intent check, Not checked.",
         )
 
     def test_review_notes_lists_non_empty_sections(self):

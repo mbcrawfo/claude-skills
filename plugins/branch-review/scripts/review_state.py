@@ -869,6 +869,7 @@ def cmd_record(args: argparse.Namespace) -> dict:
     }
     rounds.append(rnd)
     save_state(directory, state)
+    _write_summary(directory, state)
     return {
         "recorded": True,
         "round": rnd["number"],
@@ -1476,7 +1477,8 @@ def cmd_status(args: argparse.Namespace) -> dict:
         cont, reason = False, "converged"
     # The cap only stops a loop that would otherwise go on.
     floor = _cap_floor(rounds, args.since_round)
-    run_rounds = sum(1 for r in rounds if r.get("number", 0) > floor)
+    # A recorded round reviewed nothing, so it does not use up the cap.
+    run_rounds = sum(1 for r in rounds if r.get("number", 0) > floor and r.get("mode") != "recorded")
     if cont and run_rounds >= MAX_ROUNDS:
         if reason == "unverified-fixes" and run_rounds == MAX_ROUNDS:
             reason = "final-verification"
@@ -1666,6 +1668,24 @@ def _round_mode(rnd: dict) -> str:
     return mode
 
 
+def _with_model(rnd: dict) -> str:
+    """` with <model>` for a reviewed round, nothing for a recorded one."""
+    return "" if rnd.get("model") is None else f" with {rnd.get('model')}"
+
+
+def _model_in_parens(rnd: dict) -> str:
+    return "" if rnd.get("model") is None else f" ({rnd.get('model')})"
+
+
+def _recorded_lines(state: dict) -> list[str]:
+    """One bullet per recorded round: the commit and why it was recorded."""
+    return [
+        f"- round {r.get('number')} at {str(r.get('head'))[:7]}: {_one_line(r.get('reason'))}"
+        for r in state["rounds"]
+        if r.get("mode") == "recorded"
+    ]
+
+
 def render_summary(state: dict) -> str:
     rounds = state["rounds"]
     findings = state.get("findings", [])
@@ -1680,15 +1700,28 @@ def render_summary(state: dict) -> str:
     plural = "" if len(rounds) == 1 else "s"
     header = (
         f"# Review of `{state.get('branch')}` ({state.get('repo_key')}): {len(rounds)} round{plural}, "
-        f"last {_round_mode(last)} with {last.get('model')}, merge risk {risk_text}; "
+        f"last {_round_mode(last)}{_with_model(last)}, merge risk {risk_text}; "
         f"written by branch-review {PLUGIN_VERSION}"
     )
 
     counts = {s: 0 for s in STATUSES}
     for f in findings:
         counts[f.get("status")] = counts.get(f.get("status"), 0) + 1
-    listed = ", ".join(f"{r.get('number')} {_round_mode(r)} ({r.get('model')})" for r in rounds)
-    out = [header, "", f"Rounds: {listed}", "", "## Counts", "", "| Status | Count |", "| --- | --- |"]
+    listed = ", ".join(f"{r.get('number')} {_round_mode(r)}{_model_in_parens(r)}" for r in rounds)
+    out = [
+        header,
+        "",
+        f"Rounds: {listed}",
+        "",
+        "## Recorded without review",
+        "",
+        *(_recorded_lines(state) or ["None."]),
+        "",
+        "## Counts",
+        "",
+        "| Status | Count |",
+        "| --- | --- |",
+    ]
     out.extend(f"| {s} | {n} |" for s, n in counts.items())
 
     sections = (
@@ -1739,9 +1772,11 @@ def _notes_line(state: dict) -> str:
     rounds = state["rounds"]
     plural = "" if len(rounds) == 1 else "s"
     by_mode = []
-    for mode in ("deep", "followup", "merge-check"):
+    for mode in ("deep", "followup", "merge-check", "recorded"):
         chosen = [r for r in rounds if r.get("mode") == mode]
-        if chosen:
+        if chosen and mode == "recorded":
+            by_mode.append(f"{len(chosen)} recorded")
+        elif chosen:
             models = list(dict.fromkeys(str(r.get("model")) for r in chosen))
             by_mode.append(f"{len(chosen)} {mode} with {' and '.join(models)}")
     opinion = "yes" if any(r.get("focus") == SECOND_OPINION_FOCUS for r in rounds) else "no"
@@ -1770,6 +1805,7 @@ def render_review_notes(state: dict) -> str:
         ("Accepted", entries("accepted", _resolution_note)),
         ("Invalid", entries("invalid", _invalid_details)),
         ("Outside the change", entries("outside", _resolution_note)),
+        ("Recorded without review", _recorded_lines(state)),
         ("Intent check", _intent_check_lines(state, skip_empty=True)),
         ("Not checked", _not_checked_lines(state)),
     )

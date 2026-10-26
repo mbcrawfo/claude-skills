@@ -10,7 +10,9 @@ from helpers import commit_file, finding, git, make_repo, output, report, run
 import review_state
 
 
-class RecordTest(unittest.TestCase):
+class RecordHarness:
+    """Fixtures for the record command: a repo on feature/x, a state dir and a review helper."""
+
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
@@ -61,6 +63,8 @@ class RecordTest(unittest.TestCase):
         directory = review_state.state_path(self.state_dir, self.repo)
         return json.loads((directory / "review.json").read_text())
 
+
+class RecordTest(RecordHarness, unittest.TestCase):
     def test_records_a_published_commit(self):
         self.publish()
         result = self.record()
@@ -183,6 +187,82 @@ class RecordTest(unittest.TestCase):
         rnd = self.state()["rounds"][1]
         self.assertEqual(rnd["diff_from"], first)
         self.assertEqual(rnd["changed_files"], ["c.txt"])
+
+
+class RecordedRoundsTest(RecordHarness, unittest.TestCase):
+    """Recorded rounds are not review: no cap, no second opinion, shown as recorded."""
+
+    def summary_text(self):
+        directory = review_state.state_path(self.state_dir, self.repo)
+        return (directory / "summary.md").read_text()
+
+    def notes_text(self):
+        directory = review_state.state_path(self.state_dir, self.repo)
+        return (directory / "review-notes.md").read_text()
+
+    def test_recorded_rounds_do_not_count_toward_the_cap(self):
+        self.review([finding()])
+        for _ in range(4):
+            self.review()
+        commit_file(self.repo, "c.txt", "c\n", "add c")
+        self.publish()
+        self.assertTrue(self.record()["recorded"])
+        # Six rounds, five reviewed: only the reviewed ones count toward the cap.
+        result = self.cli("status", "--since-round", "0")
+        self.assertEqual(result["rounds"], 6)
+        self.assertTrue(result["continue"], result)
+        self.assertEqual(result["reason"], "open-findings")
+        self.review()
+        result = self.cli("status", "--since-round", "0")
+        self.assertEqual(result["rounds"], 7)
+        self.assertFalse(result["continue"])
+        self.assertEqual(result["reason"], "max-rounds")
+
+    def test_recorded_round_does_not_satisfy_a_requested_second_opinion(self):
+        self.review([], "--second-opinion")
+        commit_file(self.repo, "c.txt", "c\n", "add c")
+        self.publish()
+        self.record()
+        result = self.cli("covered", "--base", "main")
+        self.assertIn("second-opinion-pending", result["reasons"])
+        self.assertFalse(result["covered"])
+
+    def test_recorded_round_triggers_no_second_opinion(self):
+        self.publish()
+        self.record()
+        result = self.cli("status")
+        self.assertFalse(result["continue"])
+        self.assertEqual(result["reason"], "converged")
+
+    def test_summary_lists_recorded_rounds(self):
+        self.review()
+        commit_file(self.repo, "c.txt", "c\n", "add c")
+        self.publish()
+        self.record()
+        head = git(self.repo, "rev-parse", "HEAD")
+        text = self.summary_text()
+        self.assertIn("Rounds: 1 deep (test-model), 2 recorded", text)
+        self.assertIn("## Recorded without review", text)
+        self.assertIn(f"- round 2 at {head[:7]}: Merged from the integration branch.", text)
+        self.assertIn("last recorded,", text.splitlines()[0])
+        self.assertNotIn("with None", text)
+
+    def test_summary_without_recorded_rounds_says_none(self):
+        self.review()
+        lines = self.summary_text().splitlines()
+        self.assertEqual(lines[lines.index("## Recorded without review") + 2], "None.")
+
+    def test_review_notes_name_recorded_rounds(self):
+        self.review()
+        commit_file(self.repo, "c.txt", "c\n", "add c")
+        self.publish()
+        self.record()
+        text = self.notes_text()
+        first = next(line for line in text.splitlines()[1:] if line.strip())
+        self.assertIn("1 recorded", first)
+        self.assertNotIn("None", first)
+        self.assertIn("### Recorded without review", text)
+        self.assertIn("Merged from the integration branch.", text)
 
 
 if __name__ == "__main__":
