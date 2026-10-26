@@ -1543,6 +1543,22 @@ class FinalGateTests(IntegrationTestCase):
         self.assertEqual(late_units(state), ["s"])
         self.assertFalse(final_due(state))
 
+    def test_all_stopped_is_false_once_the_integration_unit_is_stopped_or_done(self):
+        state = self.setup_run()
+        stop_gate(self.dir, state, "a", "gave up")
+        self.assertTrue(all_stopped(state))
+        stop_gate(self.dir, state, "int", "every unit stopped")
+        self.assertFalse(all_stopped(state))
+        state["units"]["int"]["gate"] = "open"
+        state["units"]["int"]["done"] = True
+        self.assertFalse(all_stopped(state))
+
+    def test_all_stopped_is_false_without_an_integration_unit(self):
+        state = self.init_integration()
+        add(state, "a")
+        stop_gate(self.dir, state, "a", "gave up")
+        self.assertFalse(all_stopped(state))
+
     def test_all_stopped_is_false_in_a_default_run_with_only_stopped_units(self):
         state = self.init()
         add(state, "a")
@@ -1804,10 +1820,14 @@ class IntegrationMergeTests(IntegrationTestCase):
 
     def test_integration_requests_jump_the_queue(self):
         state = self.setup_run()
+        add(state, "c")
         go(self.dir, state, "a", SHA2, NOW)  # takes the slot
-        enqueue(self.dir, state, "b", SHA2, NOW)
+        state["units"]["b"]["prs"]["5"] = "OPEN"
+        enqueue(self.dir, state, "c", SHA2, NOW)
+        enqueue(self.dir, state, "b", SHA2, NOW + 1)  # an open PR: front
         enqueue(self.dir, state, "int", SHA1, NOW + 5)
-        self.assertEqual([e["unit"] for e in queue_order(state)], ["int", "b"])
+        self.assertTrue({e["unit"]: e["front"] for e in state["queue"]}["b"])
+        self.assertEqual([e["unit"] for e in queue_order(state)], ["int", "b", "c"])
         self.assertEqual(queue_head(state)["unit"], "int")
 
     def test_integration_waits_on_the_late_units(self):

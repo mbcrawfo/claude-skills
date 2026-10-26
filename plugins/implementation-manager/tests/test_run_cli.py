@@ -795,6 +795,27 @@ class IntegrationCliTests(CliTestCase):
         )
         self.assertEqual(self.ok("open-ready", str(self.dir)), "")
 
+    def test_a_stopped_integration_unit_ends_the_every_unit_stopped_ask(self):
+        self.init_integration()
+        self.ok("open-ready", str(self.dir))
+        self.ok("stop", str(self.dir), "a", "dropped")
+        self.ok("stop", str(self.dir), "int", "every unit stopped")
+        self.assertNotIn("every unit stopped: ask the owner", "\n".join(self.status()))
+
+    def test_a_landed_integration_push_points_to_synced(self):
+        self.init_integration()
+        self.ok("open-ready", str(self.dir))
+        self.ok("go", str(self.dir), "int", SHA1)
+        self.assertIn("  - push approved for int 1111111, not seen yet", self.status())
+        state = self.state()
+        state["marks"]["int"]["synced_sha"] = SHA1  # the watcher's mark when it printed SYNCED
+        (self.dir / "run.json").write_text(json.dumps(state))
+        lines = self.status()
+        self.assertIn(f"  - integration push landed: run synced int {SHA1}", lines)
+        self.assertFalse([line for line in lines if "not seen yet" in line], lines)
+        self.ok("synced", str(self.dir), "int", SHA1)
+        self.assertFalse([line for line in self.status() if "int" in line and "push" in line])
+
     def test_synced_clears_the_sync_in_flight_line(self):
         self.init_integration()
         self.ok("open-ready", str(self.dir))

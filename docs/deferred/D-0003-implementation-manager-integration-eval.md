@@ -25,6 +25,7 @@ Add a case under [`plugins/implementation-manager/evals/`](../../plugins/impleme
 - In `scaffold.sh`, create a bare remote, push `main` and `integration/<slug>` to it, merge one unit commit into the integration branch with a `(#N)` subject, and add a commit to `main` after that. Initialise a run with `run.py init … --integration integration/<slug> --final-merge owner --feature-review no` and an integration unit with its worktree on the integration branch.
 - In the prompt, have the session act as the integration child on a `base <sha>` wake-up.
 - Graders: a `tool_used` grader for `branch-review:record` before the base merge, with a reason naming the merged PR; a grader that the merge used `base: main`; a file grader on `requests.log` for a push request naming `integration/<slug>`; and, in a second step where the remote integration branch moved after the merge, a grader for `git reset --hard origin/integration/<slug>` and no force-push.
+- The reset step should also cover a fix commit the child made after its merge: grade that the fix is cherry-picked back (`git cherry-pick -x`) and survives the reset.
 - Run the case with `claude plugin eval` and record the result.
 
 ## Trigger

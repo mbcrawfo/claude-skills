@@ -488,8 +488,12 @@ def final_due(state: dict) -> bool:
 
 
 def all_stopped(state: dict) -> bool:
-    """True in the integration mode when there are units besides the integration unit and all are stopped."""
+    """True in the integration mode when there are units besides the integration unit and all are stopped, and the
+    integration unit is still live: once it is stopped or done, the branch is closed and nothing is left to ask."""
     if not _block(state):
+        return False
+    name = integration_unit(state)
+    if name is None or state["units"][name]["gate"] == "stopped" or state["units"][name]["done"]:
         return False
     others = [u for u in state["units"].values() if not _is_integration(u)]
     return bool(others) and all(u["gate"] == "stopped" for u in others)

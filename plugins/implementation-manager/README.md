@@ -131,7 +131,7 @@ Integration-branch mode adds:
 | `open-ready <dir>` | After the gate names, prints the final gate's line, `<unit> final review` or `<unit> final no-review`, once it opens. |
 | `check <dir> <unit>` | Prints `NOT-READY <pr> head=<sha7> blocked: <reason>` while an integration sync is in flight (unit PRs), late units or ORPHAN PRs are still out (the final PR), or the PR targets the wrong base (`targets <ref>, not <expected>`), and `FINAL-READY <pr> <sha>` for an owner-merged final PR. |
 
-`status` adds `integration: <branch> into <base> · final merge: … · feature review: …`, and when they apply `integration sync in flight`, `final PR #<pr> waits on <units>` and `final PR #<pr> ready: the owner merges it`. Its "needs the manager" list adds `<unit> PR #<pr> targets <ref>, not <expected>: tell its child to retarget it`, `final gate for <unit> may open: run open-ready` and `every unit stopped: ask the owner what to do with <branch>`.
+`status` adds `integration: <branch> into <base> · final merge: … · feature review: …`, and when they apply `integration sync in flight`, `final PR #<pr> waits on <units>` and `final PR #<pr> ready: the owner merges it`. Its "needs the manager" list adds `<unit> PR #<pr> targets <ref>, not <expected>: tell its child to retarget it`, `final gate for <unit> may open: run open-ready`, `integration push landed: run synced <unit> <sha>` (the watcher saw the push land but `synced` never ran) and `every unit stopped: ask the owner what to do with <branch>` (not once the integration unit is stopped or done).
 
 It exits 0 on success, 1 when a command is refused (one line on stderr, nothing changed) and 2 on a usage error.
 
