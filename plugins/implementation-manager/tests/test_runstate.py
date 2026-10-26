@@ -27,6 +27,7 @@ from runstate import (
     open_final,
     open_gate,
     openable,
+    pr_base,
     queue_head,
     queue_order,
     record_closed,
@@ -39,6 +40,7 @@ from runstate import (
     stop_gate,
     sync_in_flight,
     unit_base,
+    wrong_base,
     yield_slot,
 )
 
@@ -1259,6 +1261,22 @@ class IntegrationConfigTests(IntegrationTestCase):
         self.assertEqual(state["integration"], expected)
         self.assertEqual(json.loads((self.dir / "run.json").read_text())["integration"], expected)
 
+    def test_init_refuses_a_rebase_merge(self):
+        with self.assertRaisesRegex(RunError, "rebase.*merge or squash"):
+            init_run(
+                self.dir,
+                repo="o/r",
+                base="main",
+                method="rebase",
+                wip=None,
+                queue_mode="serial",
+                now=NOW,
+                integration=dict(INTEGRATION),
+            )
+        self.assertFalse((self.dir / "run.json").exists())
+        state = init_run(self.dir, repo="o/r", base="main", method="rebase", wip=None, queue_mode="serial", now=NOW)
+        self.assertEqual(state["method"], "rebase")
+
     def test_init_refuses_a_bad_final_merge_or_branch(self):
         for overrides in ({"final_merge": "later"}, {"branch": "a b"}, {"branch": ""}):
             with self.subTest(overrides):
@@ -1670,11 +1688,81 @@ class IntegrationMergeTests(IntegrationTestCase):
         self.assertNotIn("go_sha", state["marks"]["int"])
         self.assertFalse(sync_in_flight(state))
 
-    def test_yield_keeps_the_go_sha(self):
+    def test_yield_spends_the_integration_units_go(self):
         state = self.setup_run()
         go(self.dir, state, "int", SHA1, NOW)
-        yield_slot(state, "int", "later", NOW)
-        self.assertTrue(sync_in_flight(state))
+        state["marks"]["int"]["synced_sha"] = SHA1
+        yield_slot(state, "int", "stuck", NOW)
+        self.assertFalse(sync_in_flight(state))
+        self.assertNotIn("go_sha", state["marks"]["int"])
+        self.assertNotIn("synced_sha", state["marks"]["int"])
+        self.assertIn("go_head", state["marks"]["int"])  # its old final PR head stays unready, as for any unit
+        self.assertIsNone(integration_block(state, "a"))
+
+    def test_merged_spends_the_integration_units_go(self):
+        state = self.setup_run(queue_mode="parallel")
+        go(self.dir, state, "int", SHA1, NOW)
+        record_merged(state, "int", 9, more=False)
+        self.assertNotIn("go_sha", state["marks"]["int"])
+        self.assertFalse(sync_in_flight(state))
+
+    def test_closed_spends_the_integration_units_go(self):
+        state = self.setup_run(queue_mode="parallel")
+        go(self.dir, state, "int", SHA1, NOW)
+        record_closed(state, "int", 9)
+        self.assertNotIn("go_sha", state["marks"]["int"])
+        self.assertFalse(sync_in_flight(state))
+
+    def test_record_synced_forgets_the_other_units_ready_marks(self):
+        state = self.setup_run(queue_mode="parallel")
+        ready = {"ready_head": f"7 {SHA2}", "ready_at": NOW, "remind_head": f"7 {SHA2}"}
+        state["marks"]["a"] = {"head": SHA2, **ready}
+        go(self.dir, state, "int", SHA1, NOW)
+        state["marks"]["int"].update(ready)
+        record_synced(state, "int", SHA1)
+        self.assertEqual(state["marks"]["a"], {"head": SHA2})
+        self.assertEqual(state["marks"]["int"]["ready_head"], f"7 {SHA2}")
+
+    def report_orphan(self, state, unit, pr):
+        state["marks"].setdefault(unit, {}).setdefault("orphans", []).append(pr)
+
+    def test_a_reported_orphan_makes_the_final_pr_wait_until_it_merges(self):
+        state = self.setup_run()
+        record_merged(state, "a", 1, more=False)
+        record_merged(state, "b", 2, more=False)
+        self.report_orphan(state, "a", 9)
+        self.assertEqual(late_units(state), ["a"])
+        self.assertEqual(integration_block(state, "int"), "waits on a")
+        self.assertFalse(reportable(state, "int"))
+        self.assertFalse(final_due(state))
+        record_merged(state, "a", 9, more=False)
+        self.assertEqual(late_units(state), [])
+        self.assertIsNone(integration_block(state, "int"))
+        self.assertTrue(final_due(state))
+
+    def test_a_reported_orphan_makes_the_final_pr_wait_until_it_closes(self):
+        state = self.setup_run()
+        record_merged(state, "a", 1, more=False)
+        record_merged(state, "b", 2, more=False)
+        self.report_orphan(state, "b", 9)
+        self.assertEqual(integration_block(state, "int"), "waits on b")
+        record_closed(state, "b", 9)
+        self.assertIsNone(integration_block(state, "int"))
+
+    def test_wrong_base(self):
+        state = self.setup_run()
+        self.assertEqual((pr_base(state, "a"), pr_base(state, "int")), ("integration/x", "main"))
+        self.assertIsNone(wrong_base(state, "a", "integration/x"))
+        self.assertEqual(wrong_base(state, "a", "main"), "targets main, not integration/x")
+        self.assertIsNone(wrong_base(state, "int", "main"))
+        self.assertEqual(wrong_base(state, "int", "integration/x"), "targets integration/x, not main")
+        self.assertIsNone(wrong_base(state, "a", None))
+
+    def test_a_default_run_has_no_wrong_base(self):
+        state = self.init()
+        add(state, "a")
+        self.assertIsNone(pr_base(state, "a"))
+        self.assertIsNone(wrong_base(state, "a", "elsewhere"))
 
     def test_stop_clears_the_go_sha(self):
         state = self.setup_run()

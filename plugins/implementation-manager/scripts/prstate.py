@@ -10,7 +10,7 @@ import subprocess
 from urllib.parse import quote
 
 QUERY = """query($o:String!,$n:String!,$p:Int!){repository(owner:$o,name:$n){pullRequest(number:$p){
-  state isDraft mergeStateStatus headRefOid
+  state isDraft mergeStateStatus headRefOid baseRefName
   reviewThreads(first:100){totalCount nodes{isResolved}}
   commits(last:1){nodes{commit{statusCheckRollup{contexts(first:100){nodes{
     __typename
@@ -44,6 +44,7 @@ class Summary:
     draft: bool
     merge: str
     head: str
+    base: str
     unresolved: int
     many_threads: bool
     total: int
@@ -56,7 +57,7 @@ class Summary:
         return self.merge in ("DIRTY", "CONFLICTING")
 
     def reasons(self) -> str:
-        """Why the PR is not ready: a space-led list, empty when it is."""
+        """Why the PR is not ready: a space-led list, empty when it is. The base branch is judged by the caller."""
         reasons = []
         if self.draft:
             reasons.append("draft")
@@ -93,11 +94,15 @@ def summarize(pr: dict) -> Summary:
     head = pr["headRefOid"]
     if not isinstance(head, str):
         raise TypeError("headRefOid is not a string")
+    base = pr["baseRefName"]
+    if not isinstance(base, str):
+        raise TypeError("baseRefName is not a string")
     return Summary(
         state=pr["state"],
         draft=bool(pr["isDraft"]),
         merge=pr["mergeStateStatus"],
         head=head,
+        base=base,
         unresolved=sum(1 for thread in threads["nodes"] if not thread["isResolved"]),
         many_threads=threads["totalCount"] > 100,
         total=len(checks),
@@ -141,11 +146,14 @@ def check_once(
     gh: Callable[[list[str]], str],
     sleep: Callable[[float], None],
     confirm_seconds: float = 30,
+    base: str | None = None,
 ) -> str:
     """Checks the branch's PR now and returns exactly one line:
 
     READY <pr> <head-sha>                    two identical clean polls `confirm_seconds` apart
     NOT-READY <pr> head=<sha7><reasons>      open but not ready; a PR behind its base says `merge=BEHIND`
+    NOT-READY <pr> head=<sha7> blocked: targets <ref>, not <base>
+                                             it would be READY, but `base` is given and the PR targets another branch
     NOT-READY - no open PR from <branch>
     MERGED <pr> | CLOSED <pr>                the PR was seen in that state
     ERROR <message>                          the first failing gh call
@@ -169,6 +177,8 @@ def check_once(
         polls += 1
         if not reasons:
             if prev == s:
+                if base is not None and s.base != base:
+                    return f"NOT-READY {pr} head={s.head[:7]} blocked: targets {s.base}, not {base}"
                 return f"READY {pr} {s.head}"
         elif polls >= 2:
             return f"NOT-READY {pr} head={s.head[:7]}{reasons}"

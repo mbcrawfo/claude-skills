@@ -16,14 +16,17 @@ def status_context(state="SUCCESS", context="ci/legacy"):
     return {"__typename": "StatusContext", "context": context, "state": state, "description": ""}
 
 
-def make_pr(*, state="OPEN", draft=False, merge="CLEAN", head=HEAD_A, checks=None, threads=(), total_threads=None):
-    """A GraphQL `pullRequest` object; a green CheckRun by default."""
+def make_pr(
+    *, state="OPEN", draft=False, merge="CLEAN", head=HEAD_A, base="main", checks=None, threads=(), total_threads=None
+):
+    """A GraphQL `pullRequest` object into `base`; a green CheckRun by default."""
     contexts = [check_run()] if checks is None else checks
     return {
         "state": state,
         "isDraft": draft,
         "mergeStateStatus": merge,
         "headRefOid": head,
+        "baseRefName": base,
         "reviewThreads": {
             "totalCount": len(threads) if total_threads is None else total_threads,
             "nodes": [{"isResolved": resolved} for resolved in threads],

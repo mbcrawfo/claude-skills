@@ -681,7 +681,7 @@ class IntegrationCliTests(CliTestCase):
     def status(self):
         return self.ok("status", str(self.dir)).splitlines()
 
-    def fail(self, *args):
+    def refused(self, *args):
         result = self.run_cli(*args)
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertEqual(len(result.stderr.splitlines()), 1, result.stderr)
@@ -698,8 +698,18 @@ class IntegrationCliTests(CliTestCase):
             ("--integration", "integration/x", "--feature-review", "no"),
         ):
             with self.subTest(extra=extra):
-                self.fail(*base, *extra)
+                self.refused(*base, *extra)
                 self.assertFalse(self.dir.exists())
+
+    def test_init_refuses_the_rebase_method(self):
+        d = str(self.dir)
+        args = ("init", d, "--repo", "o/r", "--base", "main", "--method", "rebase")
+        stderr = self.refused(
+            *args, "--integration", "integration/x", "--final-merge", "owner", "--feature-review", "no"
+        )
+        self.assertIn("use merge or squash", stderr)
+        self.assertFalse(self.dir.exists())
+        self.ok(*args)
 
     def test_init_stores_the_choices_as_a_bool(self):
         self.init_integration("manager", "yes")
@@ -729,20 +739,20 @@ class IntegrationCliTests(CliTestCase):
         self.ok("set", str(self.dir), "final-merge", "manager")
         self.ok("set", str(self.dir), "feature-review", "yes")
         self.assertIn("final merge: manager · feature review: yes", "\n".join(self.status()))
-        self.fail("set", str(self.dir), "final-merge", "nobody")
-        self.fail("set", str(self.dir), "feature-review", "maybe")
+        self.refused("set", str(self.dir), "final-merge", "nobody")
+        self.refused("set", str(self.dir), "feature-review", "maybe")
 
     def test_set_is_refused_without_the_mode_and_once_the_final_gate_is_open(self):
         self.init()
-        self.assertIn("integration", self.fail("set", str(self.dir), "final-merge", "owner"))
+        self.assertIn("integration", self.refused("set", str(self.dir), "final-merge", "owner"))
         d = self.tmp / "run2"
         self.dir = d
         self.init_integration()
         self.ok("open-ready", str(d))
         self.ok("merged", str(d), "a", "7")
         self.assertEqual(self.ok("open-ready", str(d)), "int final no-review\n")
-        self.assertIn("final gate", self.fail("set", str(d), "final-merge", "manager"))
-        self.fail("set", str(d), "feature-review", "yes")
+        self.assertIn("final gate", self.refused("set", str(d), "final-merge", "manager"))
+        self.refused("set", str(d), "feature-review", "yes")
 
     def test_set_final_merge_prints_no_queued_lines_in_parallel_mode(self):
         self.init_integration()
@@ -756,7 +766,7 @@ class IntegrationCliTests(CliTestCase):
 
     def test_unit_integration_needs_the_mode(self):
         self.init()
-        self.assertIn("integration", self.fail("unit", str(self.dir), "int", "--integration"))
+        self.assertIn("integration", self.refused("unit", str(self.dir), "int", "--integration"))
 
     def test_open_ready_opens_the_final_gate_after_the_last_unit_merges(self):
         self.init_integration()
@@ -792,12 +802,12 @@ class IntegrationCliTests(CliTestCase):
         self.assertIn("- integration sync in flight", self.status())
         self.ok("synced", str(self.dir), "int", SHA1)
         self.assertNotIn("- integration sync in flight", self.status())
-        self.assertIn("no outstanding go", self.fail("synced", str(self.dir), "int", SHA2))
+        self.assertIn("no outstanding go", self.refused("synced", str(self.dir), "int", SHA2))
 
     def test_synced_is_for_the_integration_unit(self):
         self.init_integration()
-        self.fail("synced", str(self.dir), "a", SHA1)
-        self.fail("synced", str(self.dir), "nobody", SHA1)
+        self.refused("synced", str(self.dir), "a", SHA1)
+        self.refused("synced", str(self.dir), "nobody", SHA1)
 
     def test_a_pending_request_is_a_sync_in_flight(self):
         self.init_integration()
@@ -807,10 +817,12 @@ class IntegrationCliTests(CliTestCase):
         (self.dir / "run.json").write_text(json.dumps(state))
         self.assertIn("- integration sync in flight", self.status())
 
-    def open_pr(self, unit, pr, ready_sha=None, head=HEAD_A):
+    def open_pr(self, unit, pr, ready_sha=None, head=HEAD_A, base=None):
         state = self.state()
         state["units"][unit]["prs"][str(pr)] = "OPEN"
         marks = {"pr": pr, "head": head}
+        if base:
+            marks["base"] = base
         if ready_sha:
             marks |= {"ready_head": f"{pr} {ready_sha}", "ready_at": 1000.0}
         state["marks"][unit] = marks
@@ -873,29 +885,100 @@ class IntegrationCliTests(CliTestCase):
         self.ok("go", str(self.dir), "int", SHA1)
         self.assertFalse([line for line in self.status() if "PR #8 ready since" in line])
         self.ok("synced", str(self.dir), "int", SHA1)
+        # The sync forgot the ready mark: the watcher reports the PR READY afresh, not REMIND half an hour on.
+        self.assertNotIn("ready_head", self.state()["marks"]["a"])
+        self.open_pr("a", 8, ready_sha=HEAD_A)
         self.assertTrue([line for line in self.status() if "PR #8 ready since" in line])
         self.open_pr("int", 9, ready_sha=HEAD_A)  # the integration unit waits on `a`
         self.assertFalse([line for line in self.status() if "PR #9 ready since" in line])
 
-    def clean_pr(self):
-        self.fake_gh({"pr_list": [{"number": 7}], "graphql": {"data": {"repository": {"pullRequest": make_pr()}}}})
+    def test_status_lists_a_unit_pr_on_the_wrong_base(self):
+        self.init_integration("manager")
+        self.ok("open-ready", str(self.dir))
+        self.open_pr("a", 8, ready_sha=HEAD_A, base="main")
+        lines = self.status()
+        self.assertIn("  - a PR #8 targets main, not integration/x: tell its child to retarget it", lines)
+        self.assertFalse([line for line in lines if "ready since" in line])
+        self.open_pr("a", 8, ready_sha=HEAD_A, base="integration/x")
+        lines = self.status()
+        self.assertFalse([line for line in lines if "targets" in line])
+        self.assertTrue([line for line in lines if "PR #8 ready since" in line])
+
+    def test_status_lists_a_final_pr_on_the_wrong_base(self):
+        self.init_integration()
+        self.ok("open-ready", str(self.dir))
+        self.ok("merged", str(self.dir), "a", "7")
+        self.ok("open-ready", str(self.dir))
+        self.open_pr("int", 9, ready_sha=HEAD_A, base="integration/x")
+        lines = self.status()
+        self.assertIn("  - int PR #9 targets integration/x, not main: tell its child to retarget it", lines)
+        self.assertFalse([line for line in lines if "owner merges" in line])
+
+    def test_an_orphan_holds_the_final_pr_until_it_is_recorded(self):
+        for command in ("merged", "closed"):
+            with self.subTest(command=command):
+                self.dir = self.tmp / f"run-{command}"
+                self.init_integration()
+                self.ok("open-ready", str(self.dir))
+                self.ok("merged", str(self.dir), "a", "7")
+                self.ok("open-ready", str(self.dir))
+                self.open_pr("int", 9, ready_sha=HEAD_A)
+                state = self.state()
+                state["marks"]["a"] = {"orphans": [11]}
+                (self.dir / "run.json").write_text(json.dumps(state))
+                lines = self.status()
+                self.assertIn("- final PR #9 waits on a", lines)
+                self.assertFalse([line for line in lines if "owner merges" in line])
+                self.ok(command, str(self.dir), "a", "11")
+                lines = self.status()
+                self.assertFalse([line for line in lines if "waits on" in line])
+                self.assertIn("- final PR #9 ready: the owner merges it", lines)
+
+    def clean_pr(self, base="integration/x"):
+        pr = make_pr(base=base)
+        self.fake_gh({"pr_list": [{"number": 7}], "graphql": {"data": {"repository": {"pullRequest": pr}}}})
+
+    def test_check_blocks_a_unit_pr_on_the_wrong_base(self):
+        self.clean_pr(base="main")
+        self.init_integration("owner")
+        self.ok("open-ready", str(self.dir))
+        self.assertEqual(
+            self.ok("check", str(self.dir), "a"),
+            f"NOT-READY 7 head={HEAD_A[:7]} blocked: targets main, not integration/x\n",
+        )
+
+    def test_check_blocks_a_final_pr_on_the_wrong_base(self):
+        self.clean_pr()
+        self.init_integration("manager")
+        self.ok("open-ready", str(self.dir))
+        self.ok("merged", str(self.dir), "a", "7")
+        self.assertEqual(
+            self.ok("check", str(self.dir), "int"),
+            f"NOT-READY 7 head={HEAD_A[:7]} blocked: targets integration/x, not main\n",
+        )
+
+    def test_check_in_a_default_run_ignores_the_pr_base(self):
+        self.clean_pr(base="elsewhere")
+        self.init()
+        self.ok("unit", str(self.dir), "a", "--branch", "feat/a")
+        self.assertEqual(self.ok("check", str(self.dir), "a"), f"READY 7 {HEAD_A}\n")
 
     def test_check_reports_final_ready_for_an_owner_merged_final_pr(self):
-        self.clean_pr()
+        self.clean_pr(base="main")
         self.init_integration("owner")
         self.ok("open-ready", str(self.dir))
         self.ok("merged", str(self.dir), "a", "7")
         self.assertEqual(self.ok("check", str(self.dir), "int"), f"FINAL-READY 7 {HEAD_A}\n")
 
     def test_check_reports_ready_for_a_manager_merged_final_pr(self):
-        self.clean_pr()
+        self.clean_pr(base="main")
         self.init_integration("manager")
         self.ok("open-ready", str(self.dir))
         self.ok("merged", str(self.dir), "a", "7")
         self.assertEqual(self.ok("check", str(self.dir), "int"), f"READY 7 {HEAD_A}\n")
 
     def test_check_blocks_the_final_pr_while_a_unit_is_open(self):
-        self.clean_pr()
+        self.clean_pr(base="main")
         self.init_integration("owner")
         self.ok("open-ready", str(self.dir))
         self.assertEqual(self.ok("check", str(self.dir), "int"), f"NOT-READY 7 head={HEAD_A[:7]} blocked: waits on a\n")

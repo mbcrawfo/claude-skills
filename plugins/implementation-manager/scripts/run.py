@@ -4,7 +4,7 @@
 The run folder is always the first argument after the subcommand:
 
   init <dir> --repo O/R --base B --method merge|squash|rebase [--wip N] [--queue serial|parallel]
-       [--integration BRANCH --final-merge manager|owner --feature-review yes|no]
+       [--integration BRANCH --final-merge manager|owner --feature-review yes|no]   (not with rebase)
   unit <dir> <name> [--prereq U ...] [--after U ...|none] [--branch B] [--worktree P] [--specs] [--title T]
        [--integration]              the run's one integration unit (needs init --integration)
   set <dir> wip <N|none> | set <dir> queue <serial|parallel>
@@ -27,7 +27,8 @@ The run folder is always the first argument after the subcommand:
   status <dir>                      the tracker and everything waiting on the manager
   clear-bad <dir>                   forget the bad request lines status lists, once they are handled
   check <dir> <unit>                one readiness check of the unit's PR, printed as one line; in integration
-                                    mode READY becomes NOT-READY ... blocked: <reason> or FINAL-READY
+                                    mode READY becomes NOT-READY ... blocked: <reason> (also for a PR on the
+                                    wrong base) or FINAL-READY
   wait <dir> [--stall-hours N]      block until one event, print it as one line, exit 0 (also on error)
 
 Exit codes: 0 on success, 1 for a refused command (one line on stderr), 2 for a usage error.
@@ -93,6 +94,14 @@ def _owner_merges(state: dict, unit: str) -> bool:
     return bool(block) and block["final_merge"] == "owner" and unit == runstate.integration_unit(state)
 
 
+def _wrong_base(state: dict, name: str) -> str | None:
+    """Why the unit's open PR, as last polled, targets the wrong branch in the integration mode, or None."""
+    marks = state["marks"].get(name, {})
+    if state["units"][name]["prs"].get(str(marks.get("pr"))) != "OPEN":
+        return None
+    return runstate.wrong_base(state, name, marks.get("base"))
+
+
 def _label(state: dict, name: str) -> str:
     """The unit's name with its display title, for lines a person reads; commands keep the bare name."""
     title = state["units"][name]["title"]
@@ -126,11 +135,15 @@ def _needs(run_dir: Path, state: dict) -> list[str]:
             ready
             and runstate.mergeable(state, name)  # not held, and every --after unit merged or stopped
             and not runstate.integration_block(state, name)
+            and not _wrong_base(state, name)
             and not owner_final
         ):
             pr, _, sha = ready.partition(" ")
             if record["prs"].get(pr) == "OPEN" and marks.get("head") == sha:
                 needs.append(f"{_label(state, name)} PR #{pr} ready since {_clock(marks['ready_at'])}")
+        wrong = _wrong_base(state, name)
+        if wrong:
+            needs.append(f"{_label(state, name)} PR #{marks['pr']} {wrong}: tell its child to retarget it")
         if "go_head" in marks:
             sha = _last_go(run_dir, name)
             needs.append(f"push approved for {name} {sha[:7] if sha else '-'}, not seen yet")
@@ -182,6 +195,7 @@ def _integration_lines(state: dict) -> list[str]:
         if (
             _owner_merges(state, name)
             and not runstate.integration_block(state, name)
+            and not _wrong_base(state, name)
             and marks.get("ready_head") == f"{pr} {marks.get('head')}"
         ):
             lines.append(f"- final PR #{pr} ready: the owner merges it")
@@ -411,7 +425,9 @@ def _run(args: argparse.Namespace) -> str | None:
             raise RunError(f"unknown unit {args.unit!r}")
         if not record["branch"]:
             raise RunError(f"unit {args.unit!r} has no branch yet; record it with: unit <dir> {args.unit} --branch B")
-        line = check_once(state["repo"], record["branch"], gh=run_gh, sleep=time.sleep)
+        # In the integration mode a PR on the wrong base is never READY.
+        base = runstate.pr_base(state, args.unit)
+        line = check_once(state["repo"], record["branch"], gh=run_gh, sleep=time.sleep, base=base)
         return _integration_verdict(state, args.unit, line)
     with locked(run_dir) as state:
         if command == "unit":

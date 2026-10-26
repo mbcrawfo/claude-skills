@@ -7,7 +7,7 @@ import unittest
 
 from fakes import HEAD_A, HEAD_B, NO_PR, PR7, FakeClock, FakeGh, check_run, make_pr, status_context
 import helpers  # noqa: F401  (puts the scripts dir on sys.path)
-from prstate import GhError, branch_head, check_once, poll_pr, summarize
+from prstate import QUERY, GhError, branch_head, check_once, poll_pr, summarize
 
 
 class ReasonTests(unittest.TestCase):
@@ -63,6 +63,13 @@ class ReasonTests(unittest.TestCase):
     def test_summary_carries_head_and_state(self):
         summary = summarize(make_pr(state="MERGED", head=HEAD_B))
         self.assertEqual((summary.state, summary.head), ("MERGED", HEAD_B))
+
+    def test_summary_carries_the_base_and_it_is_no_reason(self):
+        self.assertIn("baseRefName", QUERY)
+        summary = summarize(make_pr(base="integration/x"))
+        self.assertEqual(summary.base, "integration/x")
+        self.assertEqual(summary.reasons(), "")
+        self.assertNotEqual(summary, summarize(make_pr()))
 
     def test_equal_summaries_compare_equal(self):
         self.assertEqual(summarize(make_pr()), summarize(make_pr()))
@@ -136,6 +143,20 @@ class BranchHeadTests(unittest.TestCase):
 
 
 class CheckOnceTests(unittest.TestCase):
+    def test_check_once_blocks_a_ready_pr_on_another_base(self):
+        gh = FakeGh([PR7], [make_pr(), make_pr()])
+        line = check_once("owner/repo", "feat/a", gh=gh, sleep=FakeClock().sleep, base="integration/x")
+        self.assertEqual(line, f"NOT-READY 7 head={HEAD_A[:7]} blocked: targets main, not integration/x")
+
+    def test_check_once_is_ready_on_the_expected_base(self):
+        gh = FakeGh([PR7], [make_pr(base="integration/x"), make_pr(base="integration/x")])
+        line = check_once("owner/repo", "feat/a", gh=gh, sleep=FakeClock().sleep, base="integration/x")
+        self.assertEqual(line, f"READY 7 {HEAD_A}")
+
+    def test_check_once_ignores_the_base_unless_asked(self):
+        gh = FakeGh([PR7], [make_pr(base="elsewhere"), make_pr(base="elsewhere")])
+        self.assertEqual(check_once("owner/repo", "feat/a", gh=gh, sleep=FakeClock().sleep), f"READY 7 {HEAD_A}")
+
     def test_check_once_ready_after_two_clean_polls(self):
         gh = FakeGh([PR7], [make_pr(), make_pr()])
         clock = FakeClock()

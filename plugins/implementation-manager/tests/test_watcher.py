@@ -28,7 +28,7 @@ from runstate import (
     stop_gate,
     yield_slot,
 )
-from watcher import next_event, poll_units, take_request, wait
+from watcher import next_event, poll_heads, poll_units, take_request, wait
 
 NOW = 1000.0
 SHA1 = "1" * 40
@@ -883,6 +883,11 @@ class NoIntegrationTests(PrTestCase):
         self.assertEqual(self.wait(gh), f"READY a 7 {HEAD_A}")
         self.assertEqual(gh.branch_calls(), [])
 
+    def test_a_default_run_ignores_the_pr_base_and_keeps_no_base_mark(self):
+        gh = self.gh_a(make_pr(base="elsewhere"))
+        self.assertEqual(self.wait(gh), f"READY a 7 {HEAD_A}")
+        self.assertNotIn("base", load(self.dir)["marks"]["a"])
+
 
 class IntegrationWatcherTests(unittest.TestCase):
     """Unit `int` is the integration unit on integration/x; the final PR is the one open on that branch."""
@@ -931,11 +936,27 @@ class IntegrationWatcherTests(unittest.TestCase):
         self.assert_quiet(gh)
 
     def test_synced_does_not_need_the_slot(self):
+        self.make_run(queue_mode="parallel")
         self.go_int()
-        with locked(self.dir) as state:
-            yield_slot(state, "int", "test", self.clock.now())
+        self.assertIsNone(load(self.dir)["slot"])
         gh = FakeGh({"integration/x": [NO_PR]}, branches={"integration/x": [SHA1]})
         self.assertEqual(self.wait(gh), f"SYNCED int {SHA1}")
+
+    def test_a_yield_spends_the_go_so_nothing_waits_for_its_push(self):
+        self.go_int()
+        with locked(self.dir) as state:
+            yield_slot(state, "int", "stuck", self.clock.now())
+        gh = FakeGh({"integration/x": [NO_PR]}, branches={"integration/x": [SHA1]})
+        self.assert_quiet(gh)
+        self.assertEqual(gh.branch_calls(), [])
+
+    def test_no_branch_head_call_for_a_done_integration_unit(self):
+        state = load(self.dir)
+        state["units"]["int"]["done"] = True
+        state["marks"]["int"] = {"go_sha": SHA1}
+        gh = FakeGh([])
+        self.assertEqual(poll_heads(state, gh=gh), {})
+        self.assertEqual(gh.calls, [])
 
     def test_synced_again_for_the_next_go(self):
         self.go_int()
@@ -1024,6 +1045,7 @@ class IntegrationWatcherTests(unittest.TestCase):
                 with locked(self.dir) as state:
                     record_merged(state, "a", 8, more=False)
                 gh.polls[8] = [make_pr(state="MERGED", head=HEAD_B)]
+                gh.pr_list["feat/a"] = [NO_PR]  # a merged PR is no longer open on its branch
                 line = self.wait(gh)
                 self.assertEqual(line.split()[:3], ["FINAL-READY" if final_merge == "owner" else "READY", "int", "7"])
 
@@ -1031,12 +1053,56 @@ class IntegrationWatcherTests(unittest.TestCase):
         self.make_run(queue_mode="parallel", units=("a",))
         self.go_int()
         gh = FakeGh(
-            {"integration/x": [NO_PR], "feat/a": [PR8]}, {8: [make_pr(head=HEAD_B)]}, branches={"integration/x": [SHA2]}
+            {"integration/x": [NO_PR], "feat/a": [PR8]},
+            {8: [make_pr(head=HEAD_B, base="integration/x")]},
+            branches={"integration/x": [SHA2]},
         )
         self.assert_quiet(gh, sleeps=100)
         with locked(self.dir) as state:
             record_synced(state, "int", SHA1)
         self.assertEqual(self.wait(gh), f"READY a 8 {HEAD_B}")
+
+    def test_a_unit_ready_before_a_sync_is_ready_again_once_it_lands(self):
+        self.make_run(queue_mode="parallel", units=("a",))
+        gh = FakeGh(
+            {"integration/x": [NO_PR], "feat/a": [PR8]},
+            {8: [make_pr(head=HEAD_B, base="integration/x")]},
+            branches={"integration/x": [SHA1]},
+        )
+        self.assertEqual(self.wait(gh), f"READY a 8 {HEAD_B}")
+        self.go_int()
+        self.assertEqual(self.wait(gh), f"SYNCED int {SHA1}")
+        with locked(self.dir) as state:
+            record_synced(state, "int", SHA1)
+        self.assertEqual(self.wait(gh), f"READY a 8 {HEAD_B}")  # not a REMIND half an hour on
+
+    def test_no_ready_for_a_unit_pr_on_the_wrong_base(self):
+        self.make_run(queue_mode="parallel", units=("a",))
+        gh = FakeGh({"integration/x": [NO_PR], "feat/a": [PR8]}, {8: [make_pr(head=HEAD_B)]})
+        self.assert_quiet(gh, sleeps=100)
+        self.assertEqual(load(self.dir)["marks"]["a"]["base"], "main")
+        gh.polls[8] = [make_pr(head=HEAD_B, base="integration/x")]
+        self.assertEqual(self.wait(gh), f"READY a 8 {HEAD_B}")
+
+    def test_no_final_ready_for_a_final_pr_on_the_wrong_base(self):
+        self.make_run(final_merge="owner")
+        gh = FakeGh({"integration/x": [PR7]}, {7: [make_pr(head=SHA1, base="integration/x")]})
+        self.assert_quiet(gh, sleeps=100)
+        gh.polls[7] = [make_pr(head=SHA1)]
+        self.assertEqual(self.wait(gh), f"FINAL-READY int 7 {SHA1}")
+
+    def test_an_orphan_holds_the_final_pr_until_it_merges(self):
+        self.make_run(units=("a",))
+        with locked(self.dir) as state:
+            record_merged(state, "a", 8, more=False)
+        # The orphan shows up on the poll that confirms the final PR: it is reported first, and then holds it.
+        gh = FakeGh({"integration/x": [PR7], "feat/a": [NO_PR, PR9]}, {7: [make_pr(head=SHA1)]})
+        self.assertEqual(self.wait(gh), "ORPHAN a 9")
+        self.assert_quiet(gh, sleeps=100)
+        with locked(self.dir) as state:
+            record_merged(state, "a", 9, more=False)
+        gh.pr_list["feat/a"] = [NO_PR]
+        self.assertEqual(self.wait(gh), f"READY int 7 {SHA1}")
 
 
 class GhFailureTests(PrTestCase):

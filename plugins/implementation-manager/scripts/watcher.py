@@ -21,6 +21,7 @@ from runstate import (
     locked,
     queue_head,
     reportable,
+    wrong_base,
 )
 
 # The branch is printable non-space characters: no whitespace or control characters.
@@ -153,7 +154,7 @@ def poll_units(state: dict, *, gh: Callable[[list[str]], str]) -> dict[str, Summ
 
     The unit's PR is its recorded `OPEN` PR not yet reported ended; failing that, the branch's open PR, which
     is recorded as `OPEN` unless the manager recorded it `MERGED`. The PR number and the head seen go to
-    `marks[unit]["pr"]` and `["head"]`.
+    `marks[unit]["pr"]` and `["head"]`, and in the integration mode its base branch to `["base"]`.
     Raises GhError on the first failing gh call.
     """
     polled: dict[str, Summary | None] = {}
@@ -173,6 +174,8 @@ def poll_units(state: dict, *, gh: Callable[[list[str]], str]) -> dict[str, Summ
         summary = poll_pr(state["repo"], pr, gh)
         marks["pr"] = pr
         marks["head"] = summary.head
+        if state.get("integration"):
+            marks["base"] = summary.base
         polled[unit] = summary
     return polled
 
@@ -246,7 +249,7 @@ def _unit_events(
         marks.pop("go_head")  # the push after the last go has landed
     # After a go, the old head is not READY: the child is about to push.
     pushing = "go_head" in marks
-    may_report = not waiting and not pushing and reportable(state, unit)
+    may_report = not waiting and not pushing and reportable(state, unit) and not wrong_base(state, unit, summary.base)
 
     if reasons or waiting:
         # A request makes the unit's head stale, so a candidate seen meanwhile does not count afterwards.
@@ -318,12 +321,19 @@ def pr_event(
     asked after READY, REMIND, MERGED/CLOSED, SYNCED and ORPHAN and before BEHIND, STUCK and STALLED.
     `synced` maps the integration unit to the branch head seen this poll; when that is the unit's outstanding
     `go_sha` it is reported as `SYNCED <unit> <sha>`, once per sha, with or without an open PR.
+    While an ORPHAN waits to be reported, the final PR is not reported READY or REMIND: once reported, the
+    orphan is late work the final PR waits on.
     """
     found: dict[int, list[tuple[str, Callable[[], None]]]] = {}
+    final: list[tuple[int, tuple[str, Callable[[], None]]]] = []  # the final PR's READY or REMIND
+    final_unit = integration_unit(state)
     for unit in _units_in_order(state):
         if unit in polled:
             for kind, line, mark in _unit_events(state, unit, polled[unit], now, timings):
-                found.setdefault(kind, []).append((line, mark))
+                if kind in (READY, REMIND) and unit == final_unit:
+                    final.append((kind, (line, mark)))
+                else:
+                    found.setdefault(kind, []).append((line, mark))
         head = (synced or {}).get(unit)
         marks = state["marks"].get(unit, {})
         if head is not None and marks.get("go_sha") == head and marks.get("synced_sha") != head:
@@ -334,6 +344,9 @@ def pr_event(
             pr = orphans[unit]
             if pr not in reported:
                 found.setdefault(ORPHAN, []).append((f"ORPHAN {unit} {pr}", lambda r=reported, p=pr: r.append(p)))
+    if ORPHAN not in found:
+        for kind, entry in final:
+            found.setdefault(kind, []).append(entry)
     for kind in (READY, REMIND, ENDED, SYNCED, ORPHAN, None, BEHIND, STUCK, STALLED):
         if kind is None:
             line = before_behind() if before_behind else None
@@ -353,13 +366,17 @@ def _unit_identity(record: dict) -> tuple:
 def poll_heads(state: dict, *, gh: Callable[[list[str]], str]) -> dict[str, str]:
     """The integration branch's head, keyed by the integration unit, when that unit has an outstanding `go_sha`.
 
-    One call per poll; empty (and no call) in a run without the mode or with no go outstanding.
+    One call per poll; empty (and no call) in a run without the mode, with no go outstanding, or once the unit is
+    done: its branch may be deleted after the final PR merges.
     Raises GhError on a failing gh call.
     """
     unit = integration_unit(state)
-    if unit is None or "go_sha" not in state["marks"].get(unit, {}) or not state["units"][unit]["branch"]:
+    if unit is None or "go_sha" not in state["marks"].get(unit, {}):
         return {}
-    return {unit: branch_head(state["repo"], state["units"][unit]["branch"], gh)}
+    record = state["units"][unit]
+    if not record["branch"] or record["done"]:
+        return {}
+    return {unit: branch_head(state["repo"], record["branch"], gh)}
 
 
 def _poll_snapshot(run_dir: Path, gh: Callable[[list[str]], str]) -> tuple[dict, dict, dict, dict, dict]:
@@ -390,7 +407,7 @@ def _apply_poll(
         record["prs"] = snapshot["units"][unit]["prs"]
         polled_marks = snapshot["marks"][unit]
         marks = state["marks"].setdefault(unit, {})
-        for key in ("pr", "head"):
+        for key in ("pr", "head", "base"):
             if key in polled_marks:
                 marks[key] = polled_marks[key]
         kept[unit] = summary

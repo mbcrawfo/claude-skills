@@ -63,7 +63,7 @@ The manager merges a PR when all of these hold:
 - The unit is not held, and every `--after` unit has merged or stopped (`status` shows neither `hold <unit>` nor `<unit> ... merges after`).
 - The unit is not stopped. The watcher never reports `READY` or `REMIND` for a stopped unit.
 - No approved push is outstanding for the unit (`status` does not list `push approved for <unit>`), so a stale head is never merged while the child pushes a newer one.
-- In integration-branch mode: no integration sync is in flight (unit PRs), no late unit is still out (the final PR), and the final PR is not one the owner merges.
+- In integration-branch mode: no integration sync is in flight (unit PRs), no late unit or ORPHAN PR is still out (the final PR), the PR targets the integration branch (unit PRs) or the base (the final PR), and the final PR is not one the owner merges.
 
 The child need not be idle: it cannot push without a `go`, an outstanding `go` holds the merge, and the merge uses `gh pr merge --match-head-commit <sha>`.
 
@@ -72,11 +72,12 @@ The child need not be idle: it cannot push without a `go`, an outstanding `go` h
 By default each unit's PR merges into the base branch as soon as it is ready, so the base holds a half-built feature while the run lasts. Ask for integration-branch mode when starting a run to keep the base clean: the units merge into `integration/<slug>` instead, and one final PR lands the whole run in the base. Without it, a run works exactly as described above.
 
 - **Two choices, no defaults.** At setup the manager asks who merges the final PR (`manager`, once it meets the merge bar, or `owner`) and whether to run a whole-feature review before it, unless you said. It assumes neither. Either can change with `set final-merge` or `set feature-review` until the final gate opens.
-- **Setup.** The base must be the repository's default branch, and the workflows' `pull_request` triggers must not exclude the integration branch; otherwise the manager stops and tells you. The manager creates `integration/<slug>` on GitHub from the base's head and fetches it, and every child session starts from it. An open planning PR is retargeted to it.
-- **The integration child.** One extra child session owns the integration branch. Whenever the base moves, it records the unit PRs merged since its last sync with `branch-review:record`, merges the base, and asks to push like any child. A clean merge is covered by that record; a conflicted one gets a small merge-check review of the resolutions only. Its pushes go straight to the integration branch, with no PR; the watcher reports `SYNCED` when one lands, and while one is unanswered or approved but not yet pushed, no unit PR merges (`status` lists `integration sync in flight`). Its requests are served before every other queued request. If a unit merged under its approved merge, it resets to the remote branch and redoes the merge rather than force-pushing.
+- **Setup.** The base must be the repository's default branch, and the workflows' `pull_request` triggers must not exclude the integration branch; otherwise the manager stops and tells you. The merge method must be merge or squash: the final PR carries the integration child's base-merge commits, which a rebase merge flattens or refuses, so `init` refuses `--method rebase` with `--integration`. The manager creates `integration/<slug>` on GitHub from the base's head and fetches it, and every child session starts from it. An open planning PR is retargeted to it.
+- **The integration child.** One extra child session owns the integration branch. Whenever the base moves, it records the unit PRs merged since its last sync with `branch-review:record`, merges the base, and asks to push like any child. A clean merge is covered by that record; a conflicted one gets a small merge-check review of the resolutions only. Its pushes go straight to the integration branch, with no PR; the watcher reports `SYNCED` when one lands, and while one is unanswered or approved but not yet pushed, no unit PR merges (`status` lists `integration sync in flight`). Its requests are served before every other queued request. If a unit merged under its approved merge, it resets to the remote branch and redoes the merge rather than force-pushing. A `yield` of its slot spends its `go`, so unit merges stop waiting on a push that may never come.
 - **`branch-review:record`.** A hidden branch-review skill that saves a round marking a commit already on `origin/<branch>` as recorded, without review. It is trusted because each unit PR passed the merge bar on its own branch, and it refuses anything not already pushed. Recorded rounds are listed as recorded in the review summary, never as reviews.
 - **The final PR.** Once every other unit is done or stopped (at least one done), `open-ready` opens the final gate (`<unit> final review` or `<unit> final no-review` in `gates.log`). The integration child syncs once more, runs the whole-feature review if you asked for it, and opens the final PR into the base. With `owner`, the watcher and `check` report it `FINAL-READY`, never `READY`, and the manager tells you instead of merging. After it merges, the manager deletes the integration branch.
-- **Late work.** Units, cards and ORPHAN PRs added during the run, and owner-approved fixes, all target the integration branch, before or after the final gate. The final PR waits until they land (`status` lists `final PR #<pr> waits on <units>`); the integration child brings each late merge under review (feature review on) or records it (off).
+- **Late work.** Units, cards and ORPHAN PRs added during the run, and owner-approved fixes, all target the integration branch, before or after the final gate. The final PR waits until they land (`status` lists `final PR #<pr> waits on <units>`), an ORPHAN until the manager records it merged or closed; the integration child brings each late merge under review (feature review on) or records it (off).
+- **Wrong base.** A unit PR that does not target the integration branch, or a final PR that does not target the base, is never reported ready; `status` lists it (`<unit> PR #<pr> targets <ref>, not <expected>`) and the manager tells its child to retarget it.
 - **If every unit stops,** `status` says so and the manager asks you what to do with the integration branch.
 
 ## Run folder
@@ -123,14 +124,14 @@ Integration-branch mode adds:
 
 | Command | Does |
 |---|---|
-| `init <dir> … --integration BRANCH --final-merge manager\|owner --feature-review yes\|no` | Turns the mode on. All three options or none. |
+| `init <dir> … --integration BRANCH --final-merge manager\|owner --feature-review yes\|no` | Turns the mode on. All three options or none. Refused with `--method rebase`: use merge or squash. |
 | `unit <dir> <name> --integration` | Makes the unit the run's one integration unit. Its branch is the integration branch; it has no `--prereq` or `--after`, and no unit may name it in either. Its gate opens at once, outside the WIP limit. |
 | `set <dir> final-merge manager\|owner`, `set <dir> feature-review yes\|no` | Changes a choice; refused once the final gate opens. |
-| `synced <dir> <unit> <sha>` | The integration unit's approved push landed on the integration branch: clears its `go` and frees the slot if it holds it. |
+| `synced <dir> <unit> <sha>` | The integration unit's approved push landed on the integration branch: clears its `go`, frees the slot if it holds it, and forgets the `READY` reported for other units' PRs meanwhile, so they are reported `READY` again. `yield`, `merged` and `closed` on the integration unit also clear its `go`. |
 | `open-ready <dir>` | After the gate names, prints the final gate's line, `<unit> final review` or `<unit> final no-review`, once it opens. |
-| `check <dir> <unit>` | Prints `NOT-READY <pr> head=<sha7> blocked: <reason>` while an integration sync is in flight (unit PRs) or late units are still out (the final PR), and `FINAL-READY <pr> <sha>` for an owner-merged final PR. |
+| `check <dir> <unit>` | Prints `NOT-READY <pr> head=<sha7> blocked: <reason>` while an integration sync is in flight (unit PRs), late units or ORPHAN PRs are still out (the final PR), or the PR targets the wrong base (`targets <ref>, not <expected>`), and `FINAL-READY <pr> <sha>` for an owner-merged final PR. |
 
-`status` adds `integration: <branch> into <base> · final merge: … · feature review: …`, and when they apply `integration sync in flight`, `final PR #<pr> waits on <units>` and `final PR #<pr> ready: the owner merges it`. Its "needs the manager" list adds `final gate for <unit> may open: run open-ready` and `every unit stopped: ask the owner what to do with <branch>`.
+`status` adds `integration: <branch> into <base> · final merge: … · feature review: …`, and when they apply `integration sync in flight`, `final PR #<pr> waits on <units>` and `final PR #<pr> ready: the owner merges it`. Its "needs the manager" list adds `<unit> PR #<pr> targets <ref>, not <expected>: tell its child to retarget it`, `final gate for <unit> may open: run open-ready` and `every unit stopped: ask the owner what to do with <branch>`.
 
 It exits 0 on success, 1 when a command is refused (one line on stderr, nothing changed) and 2 on a usage error.
 
@@ -158,6 +159,7 @@ Timings: `requests.log` is checked every 5 s and PRs are polled every 60 s. Each
 ## Known issues
 
 - The hold label in `status` can lag what the unit is waiting for. When the owner answers a relayed question while a question in a designed unit's own session is still open, the hold keeps its old reason; a second question under an `own session:` hold does not change the label either. Holds still behave correctly: nothing merges until the child asks again with no blocking question open. Check the unit's open questions in `notes.md` for what it is waiting on.
+- In integration-branch mode, a unit whose prerequisite was stopped never opens, so the final gate never opens either, and `status` does not say why (it lists the unit as `<unit> on <prereq>` under `gated`). Stop that unit too, or drop the prerequisite. See [TD-0003](../../docs/tech-debt/TD-0003-integration-final-gate-stopped-prereq.md).
 
 ## Tests
 

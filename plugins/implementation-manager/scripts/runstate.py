@@ -64,7 +64,8 @@ def init_run(
     """Create the run folder with an empty state and logs. `now` is accepted for call symmetry and unused.
 
     `integration` ({"branch", "final_merge", "feature_review"}) turns on integration mode; it is stored with the
-    final gate closed. A run without it has no `integration` key, as before.
+    final gate closed, and refused with the `rebase` method. A fresh run without it has no `integration` key and
+    the same shape as before; `load` backfills the defaults of fields added since, which `locked` writes back.
     """
     if method not in METHODS:
         raise RunError(f"method must be one of {', '.join(METHODS)}, got {method!r}")
@@ -82,6 +83,11 @@ def init_run(
             raise RunError(f"final-merge must be one of {', '.join(FINAL_MERGES)}, got {integration['final_merge']!r}")
         if not isinstance(integration["feature_review"], bool):
             raise RunError(f"feature_review must be true or false, got {integration['feature_review']!r}")
+        if method == "rebase":
+            raise RunError(
+                "integration mode cannot use the rebase method: the final PR carries base-merge commits that a"
+                " rebase merge flattens or refuses; use merge or squash"
+            )
     if (run_dir / STATE_FILE).exists():
         raise RunError(f"a run already exists in {run_dir}")
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -185,6 +191,28 @@ def unit_base(state: dict) -> str:
     """The branch units are cut from and merge into: the integration branch in the mode, else the base."""
     block = _block(state)
     return block["branch"] if block else state["base"]
+
+
+def pr_base(state: dict, unit: str) -> str | None:
+    """The branch the unit's PR must target, or None in a default run, which does not judge it.
+
+    In the integration mode a unit PR targets the integration branch, and the integration unit's (final) PR the
+    run's base.
+    """
+    if not _block(state):
+        return None
+    return state["base"] if _is_integration(_unit(state, unit)) else unit_base(state)
+
+
+def wrong_base(state: dict, unit: str, base: str | None) -> str | None:
+    """Why the unit's PR, whose base branch is `base`, may not merge, or None; always None in a default run.
+
+    An unknown `base` is not judged.
+    """
+    expected = pr_base(state, unit)
+    if expected is None or base is None or base == expected:
+        return None
+    return f"targets {base}, not {expected}"
 
 
 def integration_unit(state: dict) -> str | None:
@@ -431,13 +459,21 @@ def open_gate(run_dir: Path, state: dict, unit: str, now: float) -> None:
     record["gate_at"] = now
 
 
+def _open_orphan(state: dict, name: str) -> bool:
+    """The watcher reported an ORPHAN PR on the unit's branch that is not yet recorded merged or closed."""
+    prs = state["units"][name]["prs"]
+    orphans = state["marks"].get(name, {}).get("orphans", [])
+    return any(prs.get(str(pr)) not in ("MERGED", "CLOSED") for pr in orphans)
+
+
 def late_units(state: dict) -> list[str]:
-    """Units other than the integration unit that are neither done nor stopped, in order."""
+    """Units other than the integration unit that are neither done nor stopped, in order, and done units with a
+    reported ORPHAN PR not yet recorded merged or closed."""
     units = state["units"]
     return [
         name
         for name, unit in sorted(units.items(), key=lambda item: item[1]["order"])
-        if not _is_integration(unit) and not unit["done"] and unit["gate"] != "stopped"
+        if not _is_integration(unit) and unit["gate"] != "stopped" and (not unit["done"] or _open_orphan(state, name))
     ]
 
 
@@ -655,12 +691,22 @@ def yield_slot(state: dict, unit: str, reason: str, now: float) -> None:
     """The slot holder gives the slot up. `reason` (for the manager's transcript) and `now` are unused.
 
     A `go` it has not pushed yet stays outstanding: the child may still push it, so the watcher keeps holding
-    READY for the old head until a new head appears or the unit asks again.
+    READY for the old head until a new head appears or the unit asks again. The integration unit's go stops
+    blocking unit merges, though: nothing else would clear it. Its child re-checks that the remote branch is an
+    ancestor and never force-pushes, so a late push of that go is rejected rather than landing under a unit merge.
     """
-    _unit(state, unit)
+    record = _unit(state, unit)
     if not _holds_slot(state, unit):
         raise RunError(f"unit {unit!r} does not hold the push slot")
     state["slot"] = None
+    if _is_integration(record):
+        _spend_sync(state, unit)
+
+
+def _spend_sync(state: dict, unit: str) -> None:
+    """The integration unit's go no longer blocks unit merges, and a new go of the same sha is reported again."""
+    for key in ("go_sha", "synced_sha"):
+        state["marks"].get(unit, {}).pop(key, None)
 
 
 def hold(run_dir: Path, state: dict, unit: str, reason: str, now: float) -> None:
@@ -712,6 +758,8 @@ def record_merged(state: dict, unit: str, pr: int, *, more: bool) -> None:
     record["hold"] = None
     if _holds_slot(state, unit):
         state["slot"] = None
+    if _is_integration(record):
+        _spend_sync(state, unit)
     record["done"] = not more
 
 
@@ -723,6 +771,8 @@ def record_closed(state: dict, unit: str, pr: int) -> None:
     record["hold"] = None
     if _holds_slot(state, unit):
         state["slot"] = None
+    if _is_integration(record):
+        _spend_sync(state, unit)
 
 
 def sync_in_flight(state: dict) -> bool:
@@ -756,7 +806,9 @@ def integration_block(state: dict, unit: str) -> str | None:
 def record_synced(state: dict, unit: str, sha: str) -> None:
     """Note that the integration unit pushed its approved `go` straight to the integration branch.
 
-    The go is spent: it stops blocking unit merges, and the unit gives up the slot if it holds it.
+    The go is spent: it stops blocking unit merges, and the unit gives up the slot if it holds it. A READY or
+    REMIND reported for another unit's PR while the sync was in flight is forgotten, so the same head is reported
+    READY again rather than waiting for a REMIND.
     """
     record = _unit(state, unit)
     if not _is_integration(record):
@@ -768,6 +820,10 @@ def record_synced(state: dict, unit: str, sha: str) -> None:
     marks.pop("go_head", None)
     if _holds_slot(state, unit):
         state["slot"] = None
+    for other in state["units"]:
+        if other != unit:
+            for key in ("ready_head", "ready_at", "remind_head"):
+                state["marks"].get(other, {}).pop(key, None)
 
 
 def reportable(state: dict, unit: str) -> bool:
