@@ -46,6 +46,17 @@ def _read_plugin_version() -> str:
 
 
 PLUGIN_VERSION = _read_plugin_version()
+V09 = (0, 9, 0)
+
+
+def _version_at_least(version: str | None, floor: tuple[int, int, int]) -> bool:
+    """Whether `version` (`X.Y.Z`) is `floor` or later; false when it does not parse."""
+    if not isinstance(version, str):
+        return False
+    parts = version.split(".")
+    if len(parts) != 3 or not all(p.isdigit() for p in parts):
+        return False
+    return tuple(int(p) for p in parts) >= floor
 
 
 class StateError(Exception):
@@ -488,6 +499,7 @@ def cmd_locate(args: argparse.Namespace) -> dict:
         "rounds": rounds,
         "open_findings": open_findings,
         "conflicts": conflicts,
+        "plugin_version": PLUGIN_VERSION,
     }
 
 
@@ -1674,15 +1686,26 @@ def cmd_cleanup(args: argparse.Namespace) -> dict:
 
 
 def _build_parser() -> argparse.ArgumentParser:
+    # The global options are accepted before or after the subcommand. Both
+    # declarations suppress their default, or the subcommand's would replace a
+    # value given before it; `_apply_defaults` fills them in after parsing.
+    def add_globals(target: argparse.ArgumentParser) -> None:
+        target.add_argument(
+            "--state-dir",
+            default=argparse.SUPPRESS,
+            help=f"root directory for review state (default: {DEFAULT_STATE_DIR})",
+        )
+        target.add_argument(
+            "--repo",
+            default=argparse.SUPPRESS,
+            help="repository path (default: current directory)",
+        )
+
     common = _Parser(add_help=False)
-    common.add_argument(
-        "--state-dir",
-        default=DEFAULT_STATE_DIR,
-        help="root directory for review state (default: %(default)s)",
-    )
-    common.add_argument("--repo", default=".", help="repository path (default: current directory)")
+    add_globals(common)
 
     parser = _Parser(prog="review_state.py", description="branch-review state helper")
+    add_globals(parser)
     sub = parser.add_subparsers(dest="command", metavar="<command>")
     sub.required = True
 
@@ -1825,10 +1848,19 @@ def _check_state_dir(value: str) -> None:
         raise StateError(f"--state-dir must not be the filesystem root or the home directory, got {value!r}")
 
 
+def _apply_defaults(args: argparse.Namespace) -> argparse.Namespace:
+    """Fill in the global options that neither position gave."""
+    if not hasattr(args, "state_dir"):
+        args.state_dir = DEFAULT_STATE_DIR
+    if not hasattr(args, "repo"):
+        args.repo = "."
+    return args
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     try:
-        args = parser.parse_args(argv)
+        args = _apply_defaults(parser.parse_args(argv))
         _check_state_dir(args.state_dir)
         result = args.func(args)
     except subprocess.CalledProcessError as exc:
