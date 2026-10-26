@@ -28,7 +28,9 @@ class ArgumentOrderTest(LedgerHarness, unittest.TestCase):
 
     def test_after_wins_over_before(self):
         before, after = self.tmp / "before", self.tmp / "after"
-        out = self.main_json(["--state-dir", str(before), "locate", "--state-dir", str(after), "--repo", str(self.repo)])
+        out = self.main_json(
+            ["--state-dir", str(before), "locate", "--state-dir", str(after), "--repo", str(self.repo)]
+        )
         self.assertTrue(Path(out["dir"]).is_relative_to(after), out["dir"])
 
     def test_default_state_dir_when_absent(self):
