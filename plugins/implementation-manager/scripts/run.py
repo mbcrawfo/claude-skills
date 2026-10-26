@@ -117,6 +117,15 @@ def _needs(run_dir: Path, state: dict) -> list[str]:
             needs.append(f"push approved for {name} {sha[:7] if sha else '-'}, not seen yet")
         elif _behind_holder(state, name):
             needs.append(f"slot holder {name} PR #{marks['pr']} behind base")
+        if (
+            marks.get(runstate.FREED_MARK)
+            and record["gate"] != "stopped"
+            and runstate.mergeable(state, name)
+            and "go_head" not in marks
+            and not any(entry["unit"] == name for entry in state["pending"] + state["queue"])
+        ):
+            # It lost the slot when it gained --after, and nothing else makes its child ask again.
+            needs.append(f"{name} can merge now its --after units merged: ask it to sync and push")
     if state["queue_mode"] == "serial" and state["slot"] is None:
         head = runstate.queue_head(state)  # the head the watcher reports as NEXT
         if head:

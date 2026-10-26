@@ -120,6 +120,7 @@ Every turn: handle what woke you, then make sure exactly one `run.py wait` is ru
 - `<unit> PR #<pr> ready since …`: run `run.py check <unit>`; on `READY <pr> <sha>`, handle it as `READY`.
 - `push approved for <unit> <sha7>, not seen yet`: `list_events` on the child (limit 5). Idle, with its latest note `[push-request]` for that sha: its answer poll died. If the unit holds the slot (or the queue is parallel), send it one message to read `<run>/pushes.log`; if it gave the slot up, send it one message to ask again. Otherwise nothing; it is syncing, validating or fixing, or waiting on the owner.
 - `slot holder <unit> PR #<pr> behind base`: handle it as `BEHIND`, unless `list_events` on the child (limit 5) shows it already syncing.
+- `<unit> can merge now its --after units merged: ask it to sync and push`: the unit lost the slot when it gained `--after`, and nothing else makes its child ask again. Send it one message: sync with `<base>` and ask to push. Skip it if `list_events` on the child (limit 5) shows it already syncing or asking.
 - `slot free with a queue, next <unit> <sha>`: handle it as `NEXT`.
 - `requests.log has lines no wait has read yet`: start a `wait`; it reports those you have not answered yet.
 - `bad request line: …`: if a child wrote it, send that child one message with the exact request line format. Tell the user in one line otherwise. Once every listed line is handled, run `run.py clear-bad`.
@@ -184,7 +185,7 @@ Not met because the check says not covered: send the child one message: its PR h
 1. If the PR's title says `(part k of N)` with k < N: `run.py merged <unit> <pr> --more`, send the child one message that part k merged and it may start part k+1, and skip to step 4.
 2. `run.py merged <unit> <pr>`.
 3. Save the PR description with `mkdir -p <run>/prs && gh pr view <pr> -R <repo> --json body --jq .body > <run>/prs/<unit>-<pr>.md`, and read from that file only what `notes.md` needs (and the child's latest note, if one arrived). Read the app's shared notes folder for files the merged unit wrote (`<unit>-notes.md`). The app adds its path to each child's prompt: look for it among your own additional working directories, or else in one child's first prompt (`list_events`, paging back with `before_uuid` to the child's first message). Append a section for the unit to `notes.md`: its PRs, and what later units must know that the specs don't say (owner decisions, changed names or ids, new mechanisms, limits found), from either source. `notes.md` stays the one record you keep. Then `run.py open-ready`.
-4. Reply with the tracker. Send no other message to the child.
+4. Run `run.py status`. Act first on any `<unit> can merge now its --after units merged` line it lists (the "needs the manager" list above). Then reply with the tracker. Send no other message to the merged unit's child.
 
 ## The `specs` unit
 

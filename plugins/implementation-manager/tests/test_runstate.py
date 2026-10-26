@@ -1103,6 +1103,35 @@ class SlotHolderAfterTests(RunStateTestCase):
         go(self.dir, state, "a", SHA2, NOW + 2)
         self.assertEqual(state["slot"]["unit"], "a")
 
+    def test_freeing_the_holder_marks_it_to_ask_again(self):
+        state = self.setup_holder()
+        add(state, "b", after=["a"])
+        self.assertTrue(state["marks"]["b"]["freed_for_after"])
+
+    def test_answers_and_endings_clear_the_freed_mark(self):
+        def freed():
+            state = self.setup_holder()
+            add(state, "b", after=["a"])
+            return state
+
+        def go_after_merge(state):
+            record_merged(state, "a", 1, more=False)
+            go(self.dir, state, "b", SHA1, NOW + 1)
+
+        for name, action in (
+            ("go", go_after_merge),
+            ("queue", lambda state: enqueue(self.dir, state, "b", SHA1, NOW + 1)),
+            ("redo", lambda state: redo(self.dir, state, "b", SHA1, "changes-since-review")),
+            ("merged", lambda state: record_merged(state, "b", 7, more=False)),
+            ("closed", lambda state: record_closed(state, "b", 7)),
+            ("stop", lambda state: stop_gate(self.dir, state, "b", "dropped")),
+        ):
+            with self.subTest(name):
+                self.dir = self.dir.parent / f"run-{name}"  # a fresh run per case
+                state = freed()
+                action(state)
+                self.assertNotIn("freed_for_after", state["marks"]["b"])
+
     def test_queue_by_a_mergeable_slot_holder_is_still_refused(self):
         state = self.setup_holder()
         with self.assertRaises(RunError) as caught:

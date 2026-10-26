@@ -515,6 +515,23 @@ class StatusTests(CliTestCase):
         # It already asked to push again (after syncing): the request is what needs the manager.
         self.assertNotIn("behind base", "\n".join(status_with(behind, pending=True)))
 
+    def test_status_asks_a_freed_holder_to_push_once_its_after_units_merge(self):
+        self.init()
+        self.ok("unit", str(self.dir), "a")
+        self.ok("unit", str(self.dir), "b", "--branch", "feat/b")
+        self.ok("go", str(self.dir), "b", SHA1)
+        state = self.state()
+        state["units"]["b"]["prs"] = {"7": "OPEN"}
+        state["marks"]["b"] = {"pr": 7, "head": SHA1}  # pushed under its go: nothing outstanding
+        (self.dir / "run.json").write_text(json.dumps(state))
+        self.ok("unit", str(self.dir), "b", "--after", "a")
+        line = "  - b can merge now its --after units merged: ask it to sync and push"
+        self.assertNotIn(line, self.ok("status", str(self.dir)).splitlines())  # a has not merged
+        self.ok("merged", str(self.dir), "a", "1")
+        self.assertIn(line, self.ok("status", str(self.dir)).splitlines())
+        self.ok("queue", str(self.dir), "b", SHA2)  # it asked again; the request is what the manager answers
+        self.assertNotIn(line, self.ok("status", str(self.dir)).splitlines())
+
     def test_status_ready_pr_with_a_newer_head_is_not_listed(self):
         self.init()
         self.ok("unit", str(self.dir), "a", "--branch", "feat/a")

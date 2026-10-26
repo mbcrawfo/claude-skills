@@ -16,6 +16,9 @@ REQUESTS = "requests.log"
 PUSHES = "pushes.log"
 GATES = "gates.log"
 
+# A unit's mark: it lost the slot when it gained --after, and has not asked to push since.
+FREED_MARK = "freed_for_after"
+
 # The watcher's mark for the last NEXT it reported; not a unit name, since unit names start with a letter or digit.
 NEXT_MARK = "_next"
 
@@ -217,6 +220,8 @@ def add_unit(
             unit[key] = list(value) if key in ("prereqs", "after") else value
     if _holds_slot(state, name) and not mergeable(state, name):
         state["slot"] = None  # a `go` not pushed yet stays outstanding, as for `hold`
+        # Nothing will make its child ask again: status says when it may, once its --after units merge.
+        state["marks"].setdefault(name, {})[FREED_MARK] = True
 
 
 def set_option(state: dict, key: str, value: str) -> None:
@@ -300,6 +305,7 @@ def stop_gate(run_dir: Path, state: dict, unit: str, reason: str) -> None:
     if _holds_slot(state, unit):
         state["slot"] = None
     _drop_entries(state, unit, "pending", "queue")
+    _forget_freed(state, unit)
     state["marks"].get(unit, {}).pop("go_head", None)  # a stopped unit is not pushing
 
 
@@ -322,6 +328,11 @@ def has_open_pr(state: dict, unit: str) -> bool:
 def _check_sha(sha: str) -> None:
     if not re.fullmatch(SHA_RE, sha):
         raise RunError(f"sha must be a full 40-character lowercase hex commit id, got {sha!r}")
+
+
+def _forget_freed(state: dict, unit: str) -> None:
+    """The unit asked again, merged, closed or stopped: status no longer needs to prompt it."""
+    state["marks"].get(unit, {}).pop(FREED_MARK, None)
 
 
 def _drop_entries(state: dict, unit: str, *keys: str) -> None:
@@ -388,6 +399,7 @@ def go(run_dir: Path, state: dict, unit: str, sha: str, now: float) -> None:
     _append(run_dir, PUSHES, f"{unit} go {sha}\n")
     _note_answered(run_dir, state, unit, sha)
     _drop_entries(state, unit, "pending", "queue")
+    _forget_freed(state, unit)
     marks = state["marks"].setdefault(unit, {})
     if marks.get("head") == sha:
         # The approved commit is already the PR's head: there is nothing new to wait for.
@@ -413,6 +425,7 @@ def redo(run_dir: Path, state: dict, unit: str, sha: str, reasons: str) -> None:
     _append(run_dir, PUSHES, f"{unit} redo {sha} {reasons}\n")
     _note_answered(run_dir, state, unit, sha)
     _drop_entries(state, unit, "pending", "queue")
+    _forget_freed(state, unit)
     state["marks"].get(unit, {}).pop("go_head", None)
     if _holds_slot(state, unit):
         state["slot"] = None
@@ -436,6 +449,7 @@ def enqueue(run_dir: Path, state: dict, unit: str, sha: str, now: float) -> None
     # The same sha queued again (a NEXT whose go was refused) keeps its place.
     at = next((entry["at"] for entry in state["queue"] if entry["unit"] == unit and entry["sha"] == sha), now)
     _drop_entries(state, unit, "pending", "queue")
+    _forget_freed(state, unit)
     _note_answered(run_dir, state, unit, sha)
     state["queue"].append({"unit": unit, "sha": sha, "at": at, "front": has_open_pr(state, unit)})
 
@@ -502,6 +516,7 @@ def release(state: dict, unit: str) -> None:
 def record_merged(state: dict, unit: str, pr: int, *, more: bool) -> None:
     """Note a merged PR: free the slot if held, lift any hold, and mark the unit done unless more PRs are coming."""
     record = _unit(state, unit)
+    _forget_freed(state, unit)
     record["prs"][str(pr)] = "MERGED"
     record["hold"] = None
     if _holds_slot(state, unit):
@@ -512,6 +527,7 @@ def record_merged(state: dict, unit: str, pr: int, *, more: bool) -> None:
 def record_closed(state: dict, unit: str, pr: int) -> None:
     """Note a PR closed without merging, lift any hold, and free the slot if the unit holds it."""
     record = _unit(state, unit)
+    _forget_freed(state, unit)
     record["prs"][str(pr)] = "CLOSED"
     record["hold"] = None
     if _holds_slot(state, unit):
