@@ -72,7 +72,7 @@ def init_run(
         raise RunError(f"queue must be one of {', '.join(QUEUE_MODES)}, got {queue_mode!r}")
     _check_wip(wip)
     if integration is not None:
-        missing = [key for key in ("branch", "final_merge") if key not in integration]
+        missing = [key for key in ("branch", "final_merge", "feature_review") if key not in integration]
         if missing:
             raise RunError(f"integration is missing {', '.join(missing)}")
         branch = integration["branch"]
@@ -80,6 +80,8 @@ def init_run(
             raise RunError(f"integration branch must be non-empty with no whitespace, got {branch!r}")
         if integration["final_merge"] not in FINAL_MERGES:
             raise RunError(f"final-merge must be one of {', '.join(FINAL_MERGES)}, got {integration['final_merge']!r}")
+        if not isinstance(integration["feature_review"], bool):
+            raise RunError(f"feature_review must be true or false, got {integration['feature_review']!r}")
     if (run_dir / STATE_FILE).exists():
         raise RunError(f"a run already exists in {run_dir}")
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -102,7 +104,7 @@ def init_run(
         state["integration"] = {
             "branch": integration["branch"],
             "final_merge": integration["final_merge"],
-            "feature_review": bool(integration.get("feature_review", True)),
+            "feature_review": integration["feature_review"],
             "final_gate": False,
         }
     for name in (LOCK_FILE, REQUESTS, PUSHES, GATES):

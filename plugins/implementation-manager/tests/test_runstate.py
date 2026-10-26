@@ -1427,6 +1427,8 @@ class IntegrationUnitTests(IntegrationTestCase):
             {"branch": "integration/x", "feature_review": True},
             {"branch": 5, "final_merge": "manager", "feature_review": True},
             {"branch": None, "final_merge": "manager", "feature_review": True},
+            {"branch": "integration/x", "final_merge": "manager"},
+            {"branch": "integration/x", "final_merge": "manager", "feature_review": "no"},
         ):
             with self.subTest(block):
                 with self.assertRaises(RunError):
