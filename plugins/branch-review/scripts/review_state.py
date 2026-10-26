@@ -1121,6 +1121,7 @@ def cmd_record_findings(args: argparse.Namespace) -> dict:
         except shutil.SameFileError:
             pass  # --file is already rounds/<N>.md
     save_state(directory, state)
+    _write_summary(directory, state)
     return {
         "round": number,
         "added": added,
@@ -1201,6 +1202,7 @@ def cmd_set_status(args: argparse.Namespace) -> dict:
         finding["resolution"]["intent_quote"] = quote
     finding["round_closed"] = number if args.status in ("invalid", "escalated") else None
     save_state(directory, state)
+    _write_summary(directory, state)
     return {
         "id": finding["id"],
         "status": finding["status"],
@@ -1215,6 +1217,7 @@ def cmd_discuss(args: argparse.Namespace) -> dict:
     number = state["rounds"][-1]["number"]
     finding["discussion"].append({"from": args.source, "text": text, "round": number})
     save_state(directory, state)
+    _write_summary(directory, state)
     return {"id": finding["id"], "discussion": len(finding["discussion"])}
 
 
@@ -1237,6 +1240,7 @@ def cmd_resolve(args: argparse.Namespace) -> dict:
     finding["decision"] = {"decision": args.decision, "note": note, "by": "developer", "round": number}
     finding["round_closed"] = None if args.decision == "fix" else number
     save_state(directory, state)
+    _write_summary(directory, state)
     return {
         "id": finding["id"],
         "status": finding["status"],
@@ -1252,6 +1256,7 @@ def cmd_confirm_behavior(args: argparse.Namespace) -> dict:
     if not any(item.get("text") == text for item in items):
         items.append({"text": text, "round": state["rounds"][-1]["number"]})
     save_state(directory, state)
+    _write_summary(directory, state)
     return {"behavior_to_confirm": len(items)}
 
 
@@ -1516,8 +1521,11 @@ def _verified_details(finding: dict) -> list[str]:
     return [f"Commit: {res.get('commit') or '(none)'}"]
 
 
-def _intent_check_lines(state: dict) -> list[str]:
-    """The intent check: unmet claims from the last deep round on, and all unmentioned behavior."""
+def _intent_check_lines(state: dict, *, skip_empty: bool = False) -> list[str]:
+    """The intent check: unmet claims and unmentioned behavior from the last deep round on.
+
+    With `skip_empty`, a list with no items is left out instead of saying "None.".
+    """
     rounds = state["rounds"]
     start = max((i for i, r in enumerate(rounds) if r.get("mode") == "deep"), default=0)
 
@@ -1532,9 +1540,11 @@ def _intent_check_lines(state: dict) -> list[str]:
     lines: list[str] = []
     for label, chosen, key in (
         ("Unmet claims:", rounds[start:], "unmet_claims"),
-        ("Behavior the intent does not mention:", rounds, "unmentioned_behavior"),
+        ("Behavior the intent does not mention:", rounds[start:], "unmentioned_behavior"),
     ):
         items = collect(chosen, key)
+        if skip_empty and not items:
+            continue
         lines.extend([*([""] if lines else []), label])
         lines.extend(f"- {_one_line(text)}" for text in items)
         if not items:
@@ -1564,7 +1574,8 @@ def render_summary(state: dict) -> str:
     plural = "" if len(rounds) == 1 else "s"
     header = (
         f"# Review of `{state.get('branch')}` ({state.get('repo_key')}): {len(rounds)} round{plural}, "
-        f"last {_round_mode(last)} with {last.get('model')}, merge risk {risk_text}"
+        f"last {_round_mode(last)} with {last.get('model')}, merge risk {risk_text}; "
+        f"written by branch-review {PLUGIN_VERSION}"
     )
 
     counts = {s: 0 for s in STATUSES}
@@ -1578,30 +1589,126 @@ def render_summary(state: dict) -> str:
         ("Open and unverified", OPEN_STATUSES, _open_details),
         ("Escalated", "escalated", _resolution_note),
         ("Deferred", "deferred", _resolution_note),
+        ("Accepted", "accepted", _resolution_note),
         ("Invalid", "invalid", _invalid_details),
         ("Outside the change", "outside", _resolution_note),
         ("Fixed and verified", "verified", _verified_details),
     )
     for title, status, details in sections:
         out.extend(["", "## " + title, ""])
-        wanted = status if isinstance(status, tuple) else (status,)
-        chosen = [f for f in findings if f.get("status") in wanted]
+        chosen = _with_status(findings, status)
         if not chosen:
             out.append("None.")
         for f in chosen:
             out.extend(_entry(f, details(f)))
         if title == "Open and unverified":
             out.extend(["", "## Intent check", "", *_intent_check_lines(state)])
+            out.extend(["", "## Not checked", "", *(_not_checked_lines(state) or ["None."])])
+        if title == "Escalated":
+            out.extend(["", "## Behavior changes to confirm", "", *(_behavior_lines(state) or ["None."])])
     return "\n".join(out) + "\n"
+
+
+def _with_status(findings: list, status: str | tuple) -> list:
+    wanted = status if isinstance(status, tuple) else (status,)
+    return [f for f in findings if f.get("status") in wanted]
+
+
+def _latest_deep(rounds: list) -> dict | None:
+    return next((r for r in reversed(rounds) if r.get("mode") == "deep"), None)
+
+
+def _not_checked_lines(state: dict) -> list[str]:
+    """The latest deep round's `not_checked`, one bullet each."""
+    rnd = _latest_deep(state["rounds"]) or {}
+    return [f"- {_one_line(n.get('what'))}: {_one_line(n.get('reason'))}" for n in rnd.get("not_checked") or []]
+
+
+def _behavior_lines(state: dict) -> list[str]:
+    return [f"- {_one_line(b.get('text'))}" for b in state.get("behavior_to_confirm") or []]
+
+
+def _notes_line(state: dict) -> str:
+    """The generated first line of the Review notes block, from recorded rounds only."""
+    rounds = state["rounds"]
+    plural = "" if len(rounds) == 1 else "s"
+    by_mode = []
+    for mode in ("deep", "followup", "merge-check"):
+        n = sum(1 for r in rounds if r.get("mode") == mode)
+        if n:
+            by_mode.append(f"{n} {mode}")
+    opinion = "yes" if any(r.get("focus") == SECOND_OPINION_FOCUS for r in rounds) else "no"
+    deep = _latest_deep(rounds)
+    risk = (deep or {}).get("merge_risk")
+    risk_text = "n/a"
+    if isinstance(risk, dict):
+        risk_text = f"{risk.get('level')} (round {deep.get('number')}, the latest deep round)"
+    return f"{len(rounds)} round{plural} ({', '.join(by_mode)}); second opinion: {opinion}; merge risk {risk_text}."
+
+
+def render_review_notes(state: dict) -> str:
+    """The block to paste into a PR description, generated so nothing is retyped."""
+    findings = state.get("findings", [])
+
+    def entries(status: str, details) -> list[str]:
+        lines: list[str] = []
+        for f in _with_status(findings, status):
+            lines.extend(_entry(f, details(f)))
+        return lines
+
+    sections = (
+        ("Escalated", entries("escalated", _resolution_note)),
+        ("Behavior changes to confirm", _behavior_lines(state)),
+        ("Deferred", entries("deferred", _resolution_note)),
+        ("Accepted", entries("accepted", _resolution_note)),
+        ("Invalid", entries("invalid", _invalid_details)),
+        ("Outside the change", entries("outside", _resolution_note)),
+        ("Intent check", _intent_check_lines(state, skip_empty=True)),
+        ("Not checked", _not_checked_lines(state)),
+    )
+    out = ["## Review notes", "", _notes_line(state)]
+    empty = []
+    for title, lines in sections:
+        if not lines:
+            empty.append(title)
+            continue
+        out.extend(["", "### " + title, "", *lines])
+    fixed = [
+        f"- {f.get('id')} ({f.get('severity')}) {_one_line(f.get('title'))}" for f in _with_status(findings, "verified")
+    ]
+    if fixed:
+        out.extend(["", "### Found and fixed", "", *fixed])
+    if empty:
+        out.extend(["", "Nothing to report under: " + ", ".join(empty) + "."])
+    return "\n".join(out) + "\n"
+
+
+def _write_summary(directory: Path, state: dict) -> None:
+    """Rewrite summary.md and review-notes.md, when the latest round is recorded.
+
+    Called after every state change, so neither file goes stale. A failure to
+    write leaves the old files and never fails the command.
+    """
+    rounds = state.get("rounds") or []
+    if not rounds or "added" not in rounds[-1]:
+        return
+    try:
+        (directory / "summary.md").write_text(render_summary(state), encoding="utf-8")
+        (directory / "review-notes.md").write_text(render_review_notes(state), encoding="utf-8")
+    except OSError:
+        pass
 
 
 def cmd_summary(args: argparse.Namespace) -> dict:
     directory = state_path(Path(args.state_dir).expanduser(), Path(args.repo))
     state = _reported_state(directory)
     text = render_summary(state)
+    notes = render_review_notes(state)
     path = directory / "summary.md"
+    notes_path = directory / "review-notes.md"
     path.write_text(text, encoding="utf-8")
-    return {"path": str(path), "text": text}
+    notes_path.write_text(notes, encoding="utf-8")
+    return {"path": str(path), "text": text, "review_notes": notes, "review_notes_path": str(notes_path)}
 
 
 def _parse_ts(value: object) -> datetime | None:
