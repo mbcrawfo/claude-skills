@@ -431,15 +431,17 @@ git commit -m "feat(implementation-manager): integration-mode commands and statu
   - **Setup.** Add an "Integration-branch mode" subsection, used only when the owner asks for it:
     - **Choices.** Ask in the reply text for who merges the final PR and whether to run a whole-feature review, unless the owner said. Never assume; setup waits for the answer.
     - **CI check.** Check the workflow `pull_request` triggers for the integration branch, and stop and tell the owner if they exclude it.
-    - **Create the branch.** `gh api repos/<repo>/git/refs -f ref=refs/heads/integration/<slug> -f sha=<base head>`.
+    - **Create the branch.** The manager does this itself, before starting any session. Run `gh api repos/<repo>/git/refs -f ref=refs/heads/integration/<slug> -f sha=<base head>`, then `git fetch origin integration/<slug>:integration/<slug>` so a local branch exists for `source_branch`.
     - **Init.** `run.py init` with the three options, then `run.py unit integration --integration --title "integration"`.
     - **Planning PR.** Retarget an open `specs` PR with `gh pr edit <pr> -R <repo> --base integration/<slug>`.
     - **Skills.** Confirm `branch-review:record` is available, next to `check` and `review`.
-  - **Unit prompt in integration mode.** Wherever `<base>` appears in the unit prompt, use the integration branch, including the `/branch-review:review --base origin/<integration branch>` command. Part 3's and part 8's sync becomes:
-    - Before the unit's PR is open: `git fetch origin integration/<slug> && git merge origin/integration/<slug>`. If it fails on sandbox-protected paths, end `[blocked]` with "blocks merge: no" and the path.
-    - After the PR is open: `sync_with_base_branch`, whose default base is then the PR's base.
+  - **Starting children in integration mode.** Start the integration child first, then every unit child, all with `source_branch: integration/<slug>` beside the existing `start_session` arguments.
+  - **Unit prompt in integration mode.**
+    - Wherever `<base>` appears in the unit prompt, use the integration branch, including the `/branch-review:review --base origin/<integration branch>` command.
+    - Part 3's and part 8's `sync_with_base_branch` stays as it is, with no `base` argument: its default is the branch the worktree was cut from, then the PR's base, and both are the integration branch.
+    - Add one line to part 8: if the tool refuses because the sync touches sandbox-protected files, end `[blocked]` with "blocks merge: no" and the path.
   - **A new "The integration child" section** with its prompt. It reuses parts 8–10 word for word, with `<name>` set to the integration unit, plus:
-    - **Goal and branch.** Switch to `integration/<slug>` at start; its push requests name that branch.
+    - **Goal and branch.** Its worktree is cut from `integration/<slug>`; it runs `git switch integration/<slug>` at start, and its push requests name that branch.
     - **Gate loop.** Matches `^<name> (open|stop|final)`.
     - **Watch loop.** One background poll that ends when `<base>`'s remote head (`git ls-remote origin refs/heads/<base>`) differs from the last one merged, or when a `final` or `stop` line appears. After the final PR opens, it also ends when the integration branch's remote head moves.
     - **On a `<base>` change:**

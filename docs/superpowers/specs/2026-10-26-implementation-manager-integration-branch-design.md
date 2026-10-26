@@ -143,24 +143,28 @@ Bump implementation-manager to 0.5.0. Setup confirms `branch-review:record` is a
 
 1. **Choices.** If the owner hasn't said who merges the final PR, or whether to run a whole-feature review, ask in the reply text before anything else. Nothing is assumed. Setup continues on the owner's answer.
 2. **CI check.** Read the repo's workflow triggers. If `pull_request` is filtered to branches that exclude the integration branch, tell the owner and stop: unit PRs would never get checks, so they would never be ready.
-3. **Create the integration branch.** Create `integration/<slug>` from the current head of `<base>` on GitHub (`gh api repos/<repo>/git/refs`). Then `run.py init` with `--integration`. If the manager's planning PR (the `specs` unit) is already open against `<base>`, retarget it with `gh pr edit --base integration/<slug>`.
-4. **Start the integration child** in the same first turn as the units, with the integration prompt below, and record its worktree. Its unit branch in `run.json` is the integration branch.
+3. **Create the integration branch.** The manager creates it, not the integration child: every session starts in this first turn, the workers must be cut from the branch, and the app names a session's own branch itself, so a child's branch can't double as the integration branch. A branch is only a ref, so the no-code rule holds.
+   - Create `integration/<slug>` from the current head of `<base>` on GitHub (`gh api repos/<repo>/git/refs`).
+   - Fetch it as a local branch (`git fetch origin integration/<slug>:integration/<slug>`), since `start_session`'s `source_branch` takes a local branch.
+   - Then `run.py init` with `--integration`.
+   - If the manager's planning PR (the `specs` unit) is already open against `<base>`, retarget it with `gh pr edit --base integration/<slug>`.
+4. **Start the integration child first,** then every unit child, all in the same first turn and all with `source_branch: integration/<slug>`. Record each worktree. The integration unit's branch in `run.json` is the integration branch.
 5. **Unit prompts.** Use the integration branch wherever they say `<base>`.
-   - Sync means `git fetch origin && git merge origin/<integration branch>`, not `sync_with_base_branch`, which syncs with the app's base branch (`main`).
+   - Sync stays `sync_with_base_branch` with no `base` argument. Its default base is the branch the worktree was cut from (the integration branch), and once the PR is open, the PR's base (also the integration branch).
    - Their `/branch-review:review --base origin/<integration branch>`.
-   - **Builder to verify:** whether `sync_with_base_branch` can target another branch, and whether a plain `git merge` in a child worktree hits sandbox-protected files. If so, use the tool with that branch, or note the limit.
+   - The tool merges sandbox-protected files (`.claude/skills`, `.claude/hooks`, `.mcp.json` and the like) only from the repository's default branch. A sync from the integration branch that touches them is refused. The child then ends `[blocked]` with "blocks merge: no" and the path, and the manager tells the owner.
 
 **The integration child's prompt** (a new prompt alongside the unit prompt; it follows parts 8–10 of the unit prompt with the changes below):
 
 - **Goal.** Own `integration/<slug>`: keep it current with `<base>` throughout the run, then deliver the final PR into `<base>`. Write no feature code except conflict resolutions and fixes from the whole-feature review.
-- **Start.** In its worktree, switch to the integration branch (`git fetch origin && git switch integration/<slug>`). The app-made branch is left unused; this is the one child allowed a different branch, and its push requests name the integration branch.
+- **Start.** Its worktree is cut from `integration/<slug>`. It switches to that branch itself (`git switch integration/<slug>`); no worktree has it checked out, since the manager only created the ref. The app-made branch is left unused; this is the one child allowed a different branch, and its push requests name the integration branch.
 - **Watch loop.** One background poll that ends on either of two events:
   - `<base>`'s remote head differs from what the integration branch last merged (`git ls-remote origin refs/heads/<base>`, every 60 s);
   - a `<name> final` or `<name> stop` line in `gates.log`.
 - **On a `<base>` change:**
   1. `git fetch origin` and fast-forward to `origin/integration/<slug>`.
   2. Invoke `branch-review:record` on that commit, with the reason listing the unit PRs merged since the last record (`git log --merges --first-parent` or the PR numbers in commit subjects).
-  3. `git merge origin/<base>`.
+  3. Merge `<base>` with `sync_with_base_branch` and `base: <base>`. The tool allows the default branch as a base, and merges protected files from it.
      - Clean: commit if needed and ask to push. It's covered.
      - Conflicted: resolve, commit, run `/branch-review:review --base origin/<base>` to convergence. It runs as a merge-check from the recorded round. Then ask to push.
   4. Start the watch loop again.
@@ -222,7 +226,7 @@ Bump implementation-manager to 0.5.0. Setup confirms `branch-review:record` is a
 
 ## My calls (owner may revise)
 
-- Branch name `integration/<slug>`, created on GitHub from `<base>`'s head at setup.
+- Branch name `integration/<slug>`, created by the manager on GitHub from `<base>`'s head at setup and fetched locally. Every child, the integration child first, is cut from it with `source_branch`. (Agreed with the owner after approval, replacing the plain `git merge` workaround for unit syncs.)
 - Both choices asked at setup, before `init`; changeable with `set` until the final gate.
 - The planning PR (`specs`) targets the integration branch.
 - The final PR uses the run's merge method.
@@ -241,6 +245,5 @@ Bump implementation-manager to 0.5.0. Setup confirms `branch-review:record` is a
 - Whether `record` also checks the live remote.
 - How the child learns the current `feature_review` value at the final gate.
 - How the child extracts merged PR numbers for the record reason.
-- The sync mechanism for unit children (see the verify note in section 3).
 - Whether to add an eval case.
 - Exact wording of new prompt parts, status lines and README sections.
