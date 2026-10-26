@@ -384,6 +384,20 @@ class StatusTests(CliTestCase):
         self.ok("merged", str(self.dir), "a", "1")
         self.assertIn(f"  - slot free with a queue, next b {SHA2}", self.ok("status", str(self.dir)).splitlines())
 
+    def test_status_keeps_bare_names_in_gate_and_behind_lines(self):
+        self.init()
+        self.ok("unit", str(self.dir), "a", "--title", "8.7", "--branch", "feat/a")
+        self.ok("unit", str(self.dir), "b", "--title", "8.8")
+        self.ok("open", str(self.dir), "a")
+        self.ok("go", str(self.dir), "a", SHA1)
+        state = self.state()
+        state["units"]["a"]["prs"] = {"7": "OPEN"}
+        state["marks"]["a"] = {"pr": 7, "head": HEAD_A, "behind_head": HEAD_A}
+        (self.dir / "run.json").write_text(json.dumps(state))
+        lines = self.ok("status", str(self.dir)).splitlines()
+        self.assertIn("  - slot holder a PR #7 behind base", lines)
+        self.assertIn("  - gate b may open", lines)
+
     def test_unit_title_with_a_newline_is_refused(self):
         self.init()
         result = self.run_cli("unit", str(self.dir), "a", "--title", "one\ntwo")
