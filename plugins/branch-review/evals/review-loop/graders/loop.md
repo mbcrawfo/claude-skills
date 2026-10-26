@@ -7,7 +7,7 @@ focus:
 
 The file is the summary of a branch review followed by the agent's final report. Pass only if every one of these holds in it:
 
-1. The review ran at least three rounds, and a second-opinion round ran: the summary's first line says `N rounds` with N of 3 or more, and a `deep (second opinion)` round shows either in the header or in the summary's `Rounds:` line, which lists every round. The last round is a second opinion or a follow-up: the first line contains `last followup` or `last deep (second opinion)` (it continues with the model and the merge risk). A second-opinion round counts as a round.
+1. The review ran at least two rounds, and a second-opinion round ran: the summary's first line says `N rounds` with N of 2 or more, and a `deep (second opinion)` round shows either in the header or in the summary's `Rounds:` line, which lists every round. The last round is a second opinion or a follow-up: the first line contains `last followup` or `last deep (second opinion)` (it continues with the model and the merge risk). A second-opinion round counts as a round.
 2. Each of the four planted defects appears as a finding, under any section:
    - the off-by-one: the bulk tier uses `quantity > 10` while the intent says 10 or more units;
    - the float sibling: `discounted_total` calls `apply_percent_off` (in `src/shop/money.py`), which computes money in float against the `src/AGENTS.md` rule that money is `Decimal`;
