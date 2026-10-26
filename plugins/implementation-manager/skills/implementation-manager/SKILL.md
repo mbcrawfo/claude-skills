@@ -68,7 +68,7 @@ Integration-branch mode only (see "Integration-branch mode" under Setup):
 
 ### Integration-branch mode
 
-Only when the owner asks for it. The units merge into `integration/<slug>` instead of `<base>`, and one final PR from it lands the whole run in `<base>`. `<base>` stays the base of the final PR; wherever this skill has a unit, a card, the `specs` unit or a message to a unit's child use `<base>` for the units' work, use `integration/<slug>` instead. These steps add to the ones above:
+Only when the owner asks for it. The units merge into `integration/<slug>` instead of `<base>`, and one final PR from it lands the whole run in `<base>`. `<base>` stays the base of the final PR; wherever this skill has a unit, a card, the `specs` unit or a message to a unit's child use `<base>` for the units' work, use `integration/<slug>` instead. Choose `<slug>` (the slug of the work that names the run folder in step 3) in step 2, before the checks below. These steps add to the ones above:
 
 - **Choices,** before step 3. Unless the owner said, ask in the reply text who merges the final PR (`manager` once it meets the merge bar, or `owner`) and whether to run a whole-feature review before it. Never assume either; setup waits for the answer.
 - **Default branch,** in step 2. `<base>` must be the repository's default branch (`gh repo view <repo> --json defaultBranchRef --jq .defaultBranchRef.name`): `sync_with_base_branch` merges only that branch into the integration branch. If it is not, tell the owner and stop.
@@ -132,8 +132,9 @@ Parts 8 to 11 follow, word for word. Replace `<run>` (the absolute run folder), 
 ### Unit prompts in integration-branch mode
 
 - Replace `<base>` with `integration/<slug>` everywhere in the prompt, parts 8 to 11 included, so the review command is `/branch-review:review --base origin/integration/<slug>`.
+- Part 3 begins: "`git fetch origin integration/<slug>`. If HEAD is not `origin/integration/<slug>`, run `git reset --hard origin/integration/<slug>` before any work; the worktree is new, so nothing is lost." Then it goes on as written. The local `integration/<slug>` the worktree was cut from can hold the integration child's unpushed merge.
 - Part 3's and part 8's `sync_with_base_branch` stay as they are, with no `base` argument. Its default is the branch the worktree was cut from, then the PR's base, and both are `integration/<slug>`.
-- Add this line to part 8, after its `On go <sha>` steps:
+- Add this line to part 3, after its sync, and to part 8, after its `On go <sha>` steps:
 
 ```
 - If `sync_with_base_branch` refuses because the sync touches sandbox-protected files, push nothing and end your turn with `[blocked]`, "blocks merge: no", and the paths it names.
@@ -153,12 +154,13 @@ Integration branch.
 - This part wins where parts 8 to 10 differ: act on `go <sha>` as "On go <sha>" below says, not as part 8 does, and review when this part says to.
 - Start: your worktree was cut from `integration/<slug>`, on a branch the app named; leave that branch unused. Run `git switch integration/<slug>`. From now on this session's own branch is `integration/<slug>`: every push request names it, and that is the branch `wrong-branch` means. Read the repository's agent instructions and `<run>/notes.md`. Then Record, and start the watch loop.
 - Record: `git fetch origin`, then `git merge --ff-only origin/integration/<slug>`. Take the PR numbers (`#<n>`) from `git log --first-parent --format=%s <last recorded>..HEAD`, `<last recorded>` the commit you last recorded (the first time, `git merge-base origin/<base> HEAD`). Write one line to `<run>/integration-reason.txt`: `merged <PR numbers> into integration/<slug>; each reviewed on its own branch`, or `integration/<slug> as created from <base>` when there are none. Invoke `branch-review:record --repo <this worktree> --commit <HEAD sha> --reason-file <run>/integration-reason.txt`. If it refuses, end your turn with `[blocked]` and its stderr line.
+- Once the final line says `review`, never Record. Wherever a step says Record, run `git fetch origin` and `git merge --ff-only origin/integration/<slug>` instead, then run `/branch-review:review` to convergence on that head, as a follow-up from the whole-feature review; a fix it needs is committed and asked to push. Until that whole-feature review ("On the final line", step 2) has converged, skip the review too: it covers that head. Then go on with the step as written.
 - Watch loop: one Bash `run_in_background` poll, then end your turn with `[watching]`. `<merged>` is the output of `git merge-base origin/<base> HEAD` after a fetch. Until the final PR is open: `f="<run>/gates.log"; until l=$(grep -E '^<name> (final|stop)' "$f" 2>/dev/null | tail -1) && [ -n "$l" ]; do h=$(git ls-remote origin refs/heads/<base> | cut -f1); [ -n "$h" ] && [ "$h" != "<merged>" ] && { l="base $h"; break; }; sleep 60; done; echo "$l"`. Once the final PR is open, with `<pushed>` the output of `git rev-parse origin/integration/<slug>` after a fetch: `f="<run>/gates.log"; until l=$(grep -E '^<name> stop' "$f" 2>/dev/null | tail -1) && [ -n "$l" ]; do h=$(git ls-remote origin refs/heads/<base> | cut -f1); [ -n "$h" ] && [ "$h" != "<merged>" ] && { l="base $h"; break; }; i=$(git ls-remote origin refs/heads/integration/<slug> | cut -f1); [ -n "$i" ] && [ "$i" != "<pushed>" ] && { l="integration $i"; break; }; sleep 60; done; echo "$l"`.
 - When the poll prints: once the final PR is open, first run `gh pr view <pr> -R <owner/repo> --json state --jq .state`; on `MERGED`, start no poll and end your turn with `[waiting] final PR merged`. Then: `base <sha>`: "On a <base> change". `integration <sha>`: "A late unit merge". `<name> final …`: "On the final line". `<name> stop …`: push and commit nothing more, and end your turn with `[waiting]` quoting the line.
 - On a <base> change:
   1. Record.
   2. Merge `<base>` with ccd_host `sync_with_base_branch` and `base: <base>`; the tool allows the repository's default branch as a base.
-  3. Up to date: start the watch loop again. A clean merge: ask to push. Conflicts: resolve them, `git add`, `git commit --no-edit`, run `/branch-review:review --base origin/<base>` to convergence (it runs as a merge-check from the recorded round), then ask to push.
+  3. Up to date: start the watch loop again. A clean merge: ask to push. Conflicts: resolve them, `git add`, `git commit --no-edit`, run `/branch-review:review --base origin/<base>` to convergence (it runs as a merge-check from the last round), then ask to push.
 - On `go <sha>`:
   1. If HEAD is no longer that sha, do not push; ask again.
   2. `git fetch origin integration/<slug>`. If `git merge-base --is-ancestor origin/integration/<slug> HEAD` fails, a unit merged after your merge: do not push. Note HEAD's sha as `<noted sha>`, run `git reset --hard origin/integration/<slug>` (it drops only your own unpushed merge), then Record, merge `<base>` again as above, and ask again. Where the same files conflict, reuse your earlier resolutions from `git show <noted sha>:<path>` where they still fit.
@@ -169,10 +171,11 @@ Integration branch.
   1. One last sync: "On a <base> change" steps 1 and 2; on conflicts, resolve, commit and review as its step 3 says.
   2. `review`: run `/branch-review:review --full --base origin/<base>` with the run's intent (the goal of `<spec path>`) to convergence. Fix findings on `integration/<slug>`, and escalate as part 8 says.
   3. Ask to push, even if nothing changed: the final PR opens on that `go`.
-- A late unit merge (the final PR is open and `integration/<slug>` moved): `git fetch origin`, `git merge --ff-only origin/integration/<slug>`. Final line `review`: run `/branch-review:review` to convergence; it is a follow-up from the whole-feature review, and a fix it needs is committed and asked to push. Final line `no-review`: Record. Nothing to push otherwise, since the commit is already on the remote. Start the watch loop again.
+- A late unit merge (the final PR is open and `integration/<slug>` moved): Record. Nothing to push otherwise, since the commit is already on the remote. Start the watch loop again.
 - Status token: as in part 9, plus `[watching]` while your watch loop runs with nothing else to do.
 ```
 
+### A unit the owner designs with the child
 
 For a unit added mid-run that the owner will design in the child's session, leave out part 2 when `run.py open-ready` opened its gate, keep every other part, and add this to part 6:
 
@@ -194,7 +197,7 @@ Every turn: handle what woke you, then make sure exactly one `run.py wait` is ru
 - `bad request line: …`: if a child wrote it, send that child one message with the exact request line format. Tell the user in one line otherwise. Once every listed line is handled, run `run.py clear-bad`.
 - `gate <unit> may open`: run `run.py open-ready`.
 - `final gate for <unit> may open: run open-ready` (integration mode): run `run.py open-ready`.
-- `every unit stopped: ask the owner what to do with <branch>` (integration mode): ask the owner, in the reply text and under "Waiting on you", whether to close the integration branch or add units. Close: `run.py stop integration every unit stopped`, send the integration child one message that it is stopped, close the final PR if one is open, and delete the branch (Finishing's command).
+- `every unit stopped: ask the owner what to do with <branch>` (integration mode): ask the owner, in the reply text and under "Waiting on you", whether to close the integration branch or add units. Close: `run.py stop integration every unit stopped` (the integration child's watch loop reads the stop line), close the final PR if one is open, and delete the branch (Finishing's command).
 
 In integration mode, `run.py check` can also print `NOT-READY <pr> head=<sha7> blocked: <reason>` (nothing to do; the watcher reports the PR again once the block clears) or `FINAL-READY <pr> <sha>` (handle it as `FINAL-READY`).
 
