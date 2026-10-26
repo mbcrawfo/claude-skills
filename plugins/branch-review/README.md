@@ -78,9 +78,13 @@ Claude Code writes the plugin data path into a skill's text when it loads it, bu
 
 With no scope it prints a table of what exists. `--branch` and `--repo` target the current branch or repository, `--all` everything. `--older-than DAYS` narrows that scope to state updated more than DAYS days ago; state whose age cannot be read is kept. It shows what it would remove and asks for confirmation unless you pass `--yes`. `--older-than` and `--yes` need a scope, and only one scope may be given.
 
-## Check a commit
+## For other plugins
 
-`/branch-review:check` answers whether a clean review covers a commit. It exists for other agents, such as a manager in another plugin that must know a commit was reviewed before a push, PR or merge, and cannot find this plugin's script or data directory itself. It prints the JSON verdict and one line, `covered` or `not covered: <reasons>`, and changes no refs, index or files:
+Two skills exist for agents in other plugins, such as an implementation manager that cannot find this plugin's script or data directory itself.
+
+### Check a commit
+
+`/branch-review:check` answers whether a clean review, or a recorded round, covers a commit. A `recorded` round anchors coverage like a reviewed round, so `covered` means the commit was reviewed or recorded on `origin/<branch>`; the summary's "Recorded without review" section names which. It exists for other agents, such as a manager in another plugin that must know a commit was reviewed or recorded before a push, PR or merge, and cannot find this plugin's script or data directory itself. It prints the JSON verdict and one line, `covered` or `not covered: <reasons>`, and changes no refs, index or files:
 
 ```
 /branch-review:check --repo PATH [--commit SHA] [--state-dir PATH]
@@ -97,6 +101,22 @@ With no scope it prints a table of what exists. `--branch` and `--repo` target t
 - A second opinion is due and has not run yet. Branches whose rounds all predate v0.8 are held back only when `--second-opinion` asked for one.
 
 The JSON also carries `second_opinion_held` (a second opinion waits for escalated findings) and `behavior_to_confirm` (a count of behavior changes for the developer to confirm); neither changes the verdict. The reasons, in the same order, are `no-rounds`, `open-findings`, `unverified-fixes`, `escalated`, `partial-scope`, `snapshot-missing`, `history-rewritten`, `base-conflict`, `changes-since-review` and `second-opinion-pending`. The command exits 0 whether or not the commit is covered, and exits 1 with one line on stderr on an error such as an unknown commit.
+
+### Record commits already on the remote branch
+
+`branch-review:record` records a commit without reviewing it, for the implementation-manager integration-branch protocol, where child pull requests are merged into a shared remote branch after their own reviews. It accepts only a commit that is already on `origin/<branch>` (equal to it or an ancestor), so it cannot be used to bless local work; the agent fetches the branch first. It takes the commit and a file with the reason:
+
+```
+branch-review:record --repo PATH --commit SHA --reason-file PATH [--base REF]
+```
+
+`--base` sets the base ref the branch's review state uses from then on, as `/branch-review:review --base` does. It prints the JSON `{"recorded", "round", "commit", "branch", "files", "dir"}`; `recorded: false` means the commit is already the head of the latest round. It refuses a detached HEAD, a missing `origin/<branch>` ref, a commit not on that ref and an empty reason (exit 1, one line on stderr). A recorded round is listed as `recorded` in the summary and the review notes, and never counts as review: it does not count toward the six-round cap and neither satisfies nor triggers a second opinion. The skill is hidden from the `/` menu (`user-invocable: false`), and its description tells the model to use it only on the protocol's instruction, never at a user's request.
+
+## What's new in 0.10
+
+- New `record` command in the state script and hidden skill `branch-review:record`: record, without review, commits already on `origin/<branch>`. See "For other plugins".
+- Recorded rounds appear as `<n> recorded` (no model) in the summary's header and Rounds line, in `review-notes.md`, and in a "Recorded without review" section that is shown only when some exist, with each round's commit and reason.
+- Recorded rounds never count toward the six-round cap and never satisfy or trigger a second opinion.
 
 ## What's new in 0.9
 

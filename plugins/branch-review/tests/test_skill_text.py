@@ -13,7 +13,7 @@ RS = '"${CLAUDE_SKILL_DIR}/../../scripts/rs"'
 
 class RsPrefixTest(unittest.TestCase):
     def test_every_rs_command_sets_plugin_data(self):
-        for name in ("review", "check", "cleanup"):
+        for name in ("review", "check", "cleanup", "record"):
             with self.subTest(skill=name):
                 text = (SKILLS / name / "SKILL.md").read_text(encoding="utf-8")
                 lines = [line for line in text.splitlines() if RS in line]
@@ -23,6 +23,28 @@ class RsPrefixTest(unittest.TestCase):
                         line.strip().startswith(PREFIX + RS),
                         f"{name}: rs command lacks the prefix: {line}",
                     )
+
+
+class RecordSkillTest(unittest.TestCase):
+    text = (SKILLS / "record" / "SKILL.md").read_text(encoding="utf-8")
+    frontmatter = text.split("---")[1]
+
+    def test_hidden_from_users(self):
+        self.assertIn("user-invocable: false", self.frontmatter)
+        self.assertNotIn("disable-model-invocation", self.frontmatter)
+
+    def test_description_is_a_back_door(self):
+        description = next(line for line in self.frontmatter.splitlines() if line.startswith("description:"))
+        self.assertIn("implementation-manager", description)
+        self.assertIn("Never in response to a user's request", description)
+
+    def test_fetches_first(self):
+        self.assertIn("git fetch origin", self.text)
+
+    def test_passes_a_given_base_through(self):
+        hint = next(line for line in self.frontmatter.splitlines() if line.startswith("argument-hint:"))
+        self.assertIn("[--base REF]", hint)
+        self.assertIn('--base "<ref>"', self.text)
 
 
 class ReviewSkillTextTest(unittest.TestCase):

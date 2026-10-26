@@ -663,5 +663,384 @@ class GhTests(CliTestCase):
         self.assertEqual(self.ok("wait", str(self.dir), "--stall-hours", "1"), "MERGED a 7\n")
 
 
+class IntegrationCliTests(CliTestCase):
+    """A run with the integration mode: unit `int` is the integration unit on integration/x, `a` an ordinary unit."""
+
+    def setUp(self):
+        super().setUp()
+        site = self.tmp / "site"  # a check polls twice, 30 seconds apart: skip the wait in the child process
+        site.mkdir()
+        (site / "sitecustomize.py").write_text("import time\ntime.sleep = lambda seconds: None\n")
+        self.env["PYTHONPATH"] = str(site)
+
+    def init_integration(self, final_merge="owner", feature_review="no"):
+        self.init("--integration", "integration/x", "--final-merge", final_merge, "--feature-review", feature_review)
+        self.ok("unit", str(self.dir), "int", "--integration")
+        self.ok("unit", str(self.dir), "a", "--branch", "feat/a")
+
+    def status(self):
+        return self.ok("status", str(self.dir)).splitlines()
+
+    def refused(self, *args):
+        result = self.run_cli(*args)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertEqual(len(result.stderr.splitlines()), 1, result.stderr)
+        return result.stderr
+
+    def test_init_refusals(self):
+        d = str(self.dir)
+        base = ("init", d, "--repo", "o/r", "--base", "main", "--method", "squash")
+        for extra in (
+            ("--final-merge", "owner"),
+            ("--feature-review", "yes"),
+            ("--integration", "integration/x"),
+            ("--integration", "integration/x", "--final-merge", "owner"),
+            ("--integration", "integration/x", "--feature-review", "no"),
+        ):
+            with self.subTest(extra=extra):
+                self.refused(*base, *extra)
+                self.assertFalse(self.dir.exists())
+
+    def test_init_refuses_the_rebase_method(self):
+        d = str(self.dir)
+        args = ("init", d, "--repo", "o/r", "--base", "main", "--method", "rebase")
+        stderr = self.refused(
+            *args, "--integration", "integration/x", "--final-merge", "owner", "--feature-review", "no"
+        )
+        self.assertIn("use merge or squash", stderr)
+        self.assertFalse(self.dir.exists())
+        self.ok(*args)
+
+    def test_init_stores_the_choices_as_a_bool(self):
+        self.init_integration("manager", "yes")
+        block = self.state()["integration"]
+        self.assertEqual(
+            block, {"branch": "integration/x", "final_merge": "manager", "feature_review": True, "final_gate": False}
+        )
+        unit = self.state()["units"]["int"]
+        self.assertEqual((unit["integration"], unit["branch"]), (True, "integration/x"))
+
+    def test_status_has_the_integration_line(self):
+        self.init_integration()
+        lines = self.status()
+        gated = next(i for i, line in enumerate(lines) if line.startswith("- gated:"))
+        self.assertEqual(
+            lines[gated + 1], "- integration: integration/x into main · final merge: owner · feature review: no"
+        )
+
+    def test_a_default_run_has_no_integration_line(self):
+        self.init()
+        self.ok("unit", str(self.dir), "a")
+        self.ok("open-ready", str(self.dir))
+        self.assertFalse([line for line in self.status() if "integration" in line or "final" in line])
+
+    def test_set_final_merge_and_feature_review(self):
+        self.init_integration()
+        self.ok("set", str(self.dir), "final-merge", "manager")
+        self.ok("set", str(self.dir), "feature-review", "yes")
+        self.assertIn("final merge: manager · feature review: yes", "\n".join(self.status()))
+        self.refused("set", str(self.dir), "final-merge", "nobody")
+        self.refused("set", str(self.dir), "feature-review", "maybe")
+
+    def test_set_is_refused_without_the_mode_and_once_the_final_gate_is_open(self):
+        self.init()
+        self.assertIn("integration", self.refused("set", str(self.dir), "final-merge", "owner"))
+        d = self.tmp / "run2"
+        self.dir = d
+        self.init_integration()
+        self.ok("open-ready", str(d))
+        self.ok("merged", str(d), "a", "7")
+        self.assertEqual(self.ok("open-ready", str(d)), "int final no-review\n")
+        self.assertIn("final gate", self.refused("set", str(d), "final-merge", "manager"))
+        self.refused("set", str(d), "feature-review", "yes")
+
+    def test_set_final_merge_prints_no_queued_lines_in_parallel_mode(self):
+        self.init_integration()
+        self.ok("set", str(self.dir), "queue", "parallel")
+        state = self.state()
+        state["queue"] = [{"unit": "a", "sha": SHA1, "at": 1000.0, "front": False}]
+        (self.dir / "run.json").write_text(json.dumps(state))
+        self.assertEqual(self.ok("set", str(self.dir), "queue", "parallel"), f"queued a {SHA1}\n")
+        self.assertEqual(self.ok("set", str(self.dir), "final-merge", "owner"), "")
+        self.assertEqual(self.ok("set", str(self.dir), "feature-review", "yes"), "")
+
+    def test_unit_integration_needs_the_mode(self):
+        self.init()
+        self.assertIn("integration", self.refused("unit", str(self.dir), "int", "--integration"))
+
+    def test_open_ready_opens_the_final_gate_after_the_last_unit_merges(self):
+        self.init_integration()
+        self.assertEqual(self.ok("open-ready", str(self.dir)), "int\na\n")
+        self.assertEqual(self.ok("open-ready", str(self.dir)), "")
+        self.assertEqual(self.ok("merged", str(self.dir), "a", "7"), "")
+        self.assertIn("  - final gate for int may open: run open-ready", self.status())
+        self.assertEqual(self.ok("open-ready", str(self.dir)), "int final no-review\n")
+        self.assertEqual(self.read("gates.log").splitlines()[-1], "int final no-review")
+        self.assertNotIn("final gate for int may open", "\n".join(self.status()))
+        self.assertEqual(self.ok("open-ready", str(self.dir)), "")
+
+    def test_the_final_line_says_review_when_feature_review_is_yes(self):
+        self.init_integration(feature_review="yes")
+        self.ok("open-ready", str(self.dir))
+        self.ok("merged", str(self.dir), "a", "7")
+        self.assertEqual(self.ok("open-ready", str(self.dir)), "int final review\n")
+
+    def test_every_unit_stopped_asks_the_owner(self):
+        self.init_integration()
+        self.ok("open-ready", str(self.dir))
+        self.ok("stop", str(self.dir), "a", "dropped")
+        self.assertIn(
+            "  - every unit stopped: ask the owner what to do with integration/x",
+            self.status(),
+        )
+        self.assertEqual(self.ok("open-ready", str(self.dir)), "")
+
+    def test_a_stopped_integration_unit_ends_the_every_unit_stopped_ask(self):
+        self.init_integration()
+        self.ok("open-ready", str(self.dir))
+        self.ok("stop", str(self.dir), "a", "dropped")
+        self.ok("stop", str(self.dir), "int", "every unit stopped")
+        self.assertNotIn("every unit stopped: ask the owner", "\n".join(self.status()))
+
+    def test_a_landed_integration_push_points_to_synced(self):
+        self.init_integration()
+        self.ok("open-ready", str(self.dir))
+        self.ok("go", str(self.dir), "int", SHA1)
+        self.assertIn("  - push approved for int 1111111, not seen yet", self.status())
+        state = self.state()
+        state["marks"]["int"]["synced_sha"] = SHA1  # the watcher's mark when it printed SYNCED
+        (self.dir / "run.json").write_text(json.dumps(state))
+        lines = self.status()
+        self.assertIn(f"  - integration push landed: run synced int {SHA1}", lines)
+        self.assertFalse([line for line in lines if "not seen yet" in line], lines)
+        self.ok("synced", str(self.dir), "int", SHA1)
+        self.assertFalse([line for line in self.status() if "int" in line and "push" in line])
+
+    def test_a_landed_integration_push_points_to_synced_with_the_final_pr_open(self):
+        # R4-F1: the watcher popped go_head when the open final PR's head moved, so the landed line must not need it.
+        self.init_integration()
+        self.ok("open-ready", str(self.dir))
+        state = self.state()
+        state["units"]["int"]["prs"] = {"7": "OPEN"}
+        state["marks"]["int"] = {"pr": 7, "head": HEAD_A}
+        (self.dir / "run.json").write_text(json.dumps(state))
+        self.ok("go", str(self.dir), "int", SHA1)
+        state = self.state()
+        self.assertEqual(state["marks"]["int"]["go_head"], HEAD_A)
+        state["marks"]["int"].pop("go_head")
+        state["marks"]["int"].update(head=SHA1, synced_sha=SHA1)  # what the watcher does on the head change
+        (self.dir / "run.json").write_text(json.dumps(state))
+        lines = self.status()
+        self.assertIn(f"  - integration push landed: run synced int {SHA1}", lines)
+        self.assertFalse([line for line in lines if "not seen yet" in line], lines)
+        self.ok("synced", str(self.dir), "int", SHA1)
+        self.assertNotIn("- integration sync in flight", self.status())
+
+    def test_synced_clears_the_sync_in_flight_line(self):
+        self.init_integration()
+        self.ok("open-ready", str(self.dir))
+        self.ok("go", str(self.dir), "int", SHA1)
+        self.assertIn("- integration sync in flight", self.status())
+        self.ok("synced", str(self.dir), "int", SHA1)
+        self.assertNotIn("- integration sync in flight", self.status())
+        self.assertIn("no outstanding go", self.refused("synced", str(self.dir), "int", SHA2))
+
+    def test_synced_is_for_the_integration_unit(self):
+        self.init_integration()
+        self.refused("synced", str(self.dir), "a", SHA1)
+        self.refused("synced", str(self.dir), "nobody", SHA1)
+
+    def test_a_pending_request_is_a_sync_in_flight(self):
+        self.init_integration()
+        self.ok("open-ready", str(self.dir))
+        state = self.state()
+        state["pending"] = [{"unit": "int", "sha": SHA1, "branch": "integration/x", "at": 1000.0}]
+        (self.dir / "run.json").write_text(json.dumps(state))
+        self.assertIn("- integration sync in flight", self.status())
+
+    def open_pr(self, unit, pr, ready_sha=None, head=HEAD_A, base=None):
+        state = self.state()
+        state["units"][unit]["prs"][str(pr)] = "OPEN"
+        marks = {"pr": pr, "head": head}
+        if base:
+            marks["base"] = base
+        if ready_sha:
+            marks |= {"ready_head": f"{pr} {ready_sha}", "ready_at": 1000.0}
+        state["marks"][unit] = marks
+        (self.dir / "run.json").write_text(json.dumps(state))
+
+    def test_status_says_what_the_final_pr_waits_on(self):
+        self.init_integration()
+        self.ok("open-ready", str(self.dir))
+        self.open_pr("int", 9)
+        self.assertIn("- final PR #9 waits on a", self.status())
+        self.ok("merged", str(self.dir), "a", "7")
+        self.assertFalse([line for line in self.status() if "waits on" in line])
+
+    def test_status_says_the_owner_merges_a_ready_final_pr(self):
+        self.init_integration()
+        self.ok("open-ready", str(self.dir))
+        self.ok("merged", str(self.dir), "a", "7")
+        self.ok("open-ready", str(self.dir))
+        self.open_pr("int", 9, ready_sha=HEAD_A)
+        lines = self.status()
+        self.assertIn("- final PR #9 ready: the owner merges it", lines)
+        self.assertFalse([line for line in lines if "ready since" in line])
+        self.assertIn("- needs the manager: nothing", lines)
+
+    def test_a_stale_ready_mark_is_not_ready(self):
+        self.init_integration()
+        self.ok("open-ready", str(self.dir))
+        self.ok("merged", str(self.dir), "a", "7")
+        self.ok("open-ready", str(self.dir))
+        self.open_pr("int", 9, ready_sha=HEAD_A, head=SHA2)
+        self.assertFalse([line for line in self.status() if "owner merges" in line])
+
+    def test_a_ready_final_pr_stops_being_ready_when_a_unit_is_added(self):
+        self.init_integration()
+        self.ok("open-ready", str(self.dir))
+        self.ok("merged", str(self.dir), "a", "7")
+        self.ok("open-ready", str(self.dir))
+        self.open_pr("int", 9, ready_sha=HEAD_A)
+        self.assertIn("- final PR #9 ready: the owner merges it", self.status())
+        self.ok("unit", str(self.dir), "late")
+        lines = self.status()
+        self.assertIn("- final PR #9 waits on late", lines)
+        self.assertFalse([line for line in lines if "owner merges" in line])
+
+    def test_a_manager_merged_final_pr_is_reported_as_ready_since(self):
+        self.init_integration("manager")
+        self.ok("open-ready", str(self.dir))
+        self.ok("merged", str(self.dir), "a", "7")
+        self.ok("open-ready", str(self.dir))
+        self.open_pr("int", 9, ready_sha=HEAD_A)
+        lines = self.status()
+        self.assertTrue([line for line in lines if "PR #9 ready since" in line], lines)
+        self.assertFalse([line for line in lines if "owner merges" in line])
+
+    def test_no_ready_since_for_a_unit_blocked_by_the_integration_branch(self):
+        self.init_integration("manager")
+        self.ok("open-ready", str(self.dir))
+        self.open_pr("a", 8, ready_sha=HEAD_A)
+        self.assertTrue([line for line in self.status() if "PR #8 ready since" in line])
+        self.ok("go", str(self.dir), "int", SHA1)
+        self.assertFalse([line for line in self.status() if "PR #8 ready since" in line])
+        self.ok("synced", str(self.dir), "int", SHA1)
+        # The sync forgot the ready mark: the watcher reports the PR READY afresh, not REMIND half an hour on.
+        self.assertNotIn("ready_head", self.state()["marks"]["a"])
+        self.open_pr("a", 8, ready_sha=HEAD_A)
+        self.assertTrue([line for line in self.status() if "PR #8 ready since" in line])
+        self.open_pr("int", 9, ready_sha=HEAD_A)  # the integration unit waits on `a`
+        self.assertFalse([line for line in self.status() if "PR #9 ready since" in line])
+
+    def test_status_lists_a_unit_pr_on_the_wrong_base(self):
+        self.init_integration("manager")
+        self.ok("open-ready", str(self.dir))
+        self.open_pr("a", 8, ready_sha=HEAD_A, base="main")
+        lines = self.status()
+        self.assertIn("  - a PR #8 targets main, not integration/x: tell its child to retarget it", lines)
+        self.assertFalse([line for line in lines if "ready since" in line])
+        self.open_pr("a", 8, ready_sha=HEAD_A, base="integration/x")
+        lines = self.status()
+        self.assertFalse([line for line in lines if "targets" in line])
+        self.assertTrue([line for line in lines if "PR #8 ready since" in line])
+
+    def test_status_lists_a_final_pr_on_the_wrong_base(self):
+        self.init_integration()
+        self.ok("open-ready", str(self.dir))
+        self.ok("merged", str(self.dir), "a", "7")
+        self.ok("open-ready", str(self.dir))
+        self.open_pr("int", 9, ready_sha=HEAD_A, base="integration/x")
+        lines = self.status()
+        self.assertIn("  - int PR #9 targets integration/x, not main: tell its child to retarget it", lines)
+        self.assertFalse([line for line in lines if "owner merges" in line])
+
+    def test_an_orphan_holds_the_final_pr_until_it_is_recorded(self):
+        for command in ("merged", "closed"):
+            with self.subTest(command=command):
+                self.dir = self.tmp / f"run-{command}"
+                self.init_integration()
+                self.ok("open-ready", str(self.dir))
+                self.ok("merged", str(self.dir), "a", "7")
+                self.ok("open-ready", str(self.dir))
+                self.open_pr("int", 9, ready_sha=HEAD_A)
+                state = self.state()
+                state["marks"]["a"] = {"orphans": [11]}
+                (self.dir / "run.json").write_text(json.dumps(state))
+                lines = self.status()
+                self.assertIn("- final PR #9 waits on a", lines)
+                self.assertFalse([line for line in lines if "owner merges" in line])
+                self.ok(command, str(self.dir), "a", "11")
+                lines = self.status()
+                self.assertFalse([line for line in lines if "waits on" in line])
+                self.assertIn("- final PR #9 ready: the owner merges it", lines)
+
+    def clean_pr(self, base="integration/x"):
+        pr = make_pr(base=base)
+        self.fake_gh({"pr_list": [{"number": 7}], "graphql": {"data": {"repository": {"pullRequest": pr}}}})
+
+    def test_check_blocks_a_unit_pr_on_the_wrong_base(self):
+        self.clean_pr(base="main")
+        self.init_integration("owner")
+        self.ok("open-ready", str(self.dir))
+        self.assertEqual(
+            self.ok("check", str(self.dir), "a"),
+            f"NOT-READY 7 head={HEAD_A[:7]} blocked: targets main, not integration/x\n",
+        )
+
+    def test_check_blocks_a_final_pr_on_the_wrong_base(self):
+        self.clean_pr()
+        self.init_integration("manager")
+        self.ok("open-ready", str(self.dir))
+        self.ok("merged", str(self.dir), "a", "7")
+        self.assertEqual(
+            self.ok("check", str(self.dir), "int"),
+            f"NOT-READY 7 head={HEAD_A[:7]} blocked: targets integration/x, not main\n",
+        )
+
+    def test_check_in_a_default_run_ignores_the_pr_base(self):
+        self.clean_pr(base="elsewhere")
+        self.init()
+        self.ok("unit", str(self.dir), "a", "--branch", "feat/a")
+        self.assertEqual(self.ok("check", str(self.dir), "a"), f"READY 7 {HEAD_A}\n")
+
+    def test_check_reports_final_ready_for_an_owner_merged_final_pr(self):
+        self.clean_pr(base="main")
+        self.init_integration("owner")
+        self.ok("open-ready", str(self.dir))
+        self.ok("merged", str(self.dir), "a", "7")
+        self.assertEqual(self.ok("check", str(self.dir), "int"), f"FINAL-READY 7 {HEAD_A}\n")
+
+    def test_check_reports_ready_for_a_manager_merged_final_pr(self):
+        self.clean_pr(base="main")
+        self.init_integration("manager")
+        self.ok("open-ready", str(self.dir))
+        self.ok("merged", str(self.dir), "a", "7")
+        self.assertEqual(self.ok("check", str(self.dir), "int"), f"READY 7 {HEAD_A}\n")
+
+    def test_check_blocks_the_final_pr_while_a_unit_is_open(self):
+        self.clean_pr(base="main")
+        self.init_integration("owner")
+        self.ok("open-ready", str(self.dir))
+        self.assertEqual(self.ok("check", str(self.dir), "int"), f"NOT-READY 7 head={HEAD_A[:7]} blocked: waits on a\n")
+
+    def test_check_blocks_a_unit_while_a_sync_is_in_flight(self):
+        self.clean_pr()
+        self.init_integration("owner")
+        self.ok("open-ready", str(self.dir))
+        self.ok("go", str(self.dir), "int", SHA1)
+        self.assertEqual(
+            self.ok("check", str(self.dir), "a"),
+            f"NOT-READY 7 head={HEAD_A[:7]} blocked: integration sync in flight\n",
+        )
+        self.ok("synced", str(self.dir), "int", SHA1)
+        self.assertEqual(self.ok("check", str(self.dir), "a"), f"READY 7 {HEAD_A}\n")
+
+    def test_check_leaves_other_answers_alone(self):
+        self.fake_gh({"pr_list": [], "graphql": None})
+        self.init_integration("owner")
+        self.assertEqual(self.ok("check", str(self.dir), "int"), "NOT-READY - no open PR from integration/x\n")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -7,7 +7,7 @@ import unittest
 
 from fakes import HEAD_A, HEAD_B, NO_PR, PR7, FakeClock, FakeGh, check_run, make_pr, status_context
 import helpers  # noqa: F401  (puts the scripts dir on sys.path)
-from prstate import GhError, check_once, poll_pr, summarize
+from prstate import QUERY, GhError, branch_head, check_once, poll_pr, summarize
 
 
 class ReasonTests(unittest.TestCase):
@@ -64,6 +64,13 @@ class ReasonTests(unittest.TestCase):
         summary = summarize(make_pr(state="MERGED", head=HEAD_B))
         self.assertEqual((summary.state, summary.head), ("MERGED", HEAD_B))
 
+    def test_summary_carries_the_base_and_it_is_no_reason(self):
+        self.assertIn("baseRefName", QUERY)
+        summary = summarize(make_pr(base="integration/x"))
+        self.assertEqual(summary.base, "integration/x")
+        self.assertEqual(summary.reasons(), "")
+        self.assertNotEqual(summary, summarize(make_pr()))
+
     def test_equal_summaries_compare_equal(self):
         self.assertEqual(summarize(make_pr()), summarize(make_pr()))
         self.assertNotEqual(summarize(make_pr()), summarize(make_pr(head=HEAD_B)))
@@ -101,7 +108,55 @@ class PollPrTests(unittest.TestCase):
             self.poll(make_pr(head=None))
 
 
+class BranchHeadTests(unittest.TestCase):
+    def test_returns_the_sha_and_asks_the_branches_api(self):
+        gh = FakeGh([PR7], branches={"integration/x": [HEAD_A + "\n"]})
+        self.assertEqual(branch_head("owner/repo", "integration/x", gh), HEAD_A)
+        self.assertEqual(gh.calls, [["api", "repos/owner/repo/branches/integration/x", "--jq", ".commit.sha"]])
+
+    def test_the_branch_is_url_quoted_but_keeps_its_slashes(self):
+        calls = []
+
+        def gh(args):
+            calls.append(args)
+            return HEAD_A
+
+        branch_head("owner/repo", "feat/a b#1?", gh)
+        self.assertEqual(calls[0][1], "repos/owner/repo/branches/feat/a%20b%231%3F")
+
+    def test_an_unexpected_answer_names_the_branch(self):
+        gh = FakeGh([PR7], branches={"integration/x": ["Not Found"]})
+        with self.assertRaisesRegex(GhError, r"integration/x.*Not Found"):
+            branch_head("owner/repo", "integration/x", gh)
+
+    def test_a_failing_call_is_a_failure(self):
+        gh = FakeGh([PR7], branches={"integration/x": [GhError("Not Found")]})
+        with self.assertRaises(GhError):
+            branch_head("owner/repo", "integration/x", gh)
+
+    def test_an_answer_that_is_not_a_sha_is_a_failure(self):
+        for answer in ("Not Found", "", "abc123", HEAD_A + "0", HEAD_A.upper()):
+            with self.subTest(answer=answer):
+                gh = FakeGh([PR7], branches={"integration/x": [answer]})
+                with self.assertRaises(GhError):
+                    branch_head("owner/repo", "integration/x", gh)
+
+
 class CheckOnceTests(unittest.TestCase):
+    def test_check_once_blocks_a_ready_pr_on_another_base(self):
+        gh = FakeGh([PR7], [make_pr(), make_pr()])
+        line = check_once("owner/repo", "feat/a", gh=gh, sleep=FakeClock().sleep, base="integration/x")
+        self.assertEqual(line, f"NOT-READY 7 head={HEAD_A[:7]} blocked: targets main, not integration/x")
+
+    def test_check_once_is_ready_on_the_expected_base(self):
+        gh = FakeGh([PR7], [make_pr(base="integration/x"), make_pr(base="integration/x")])
+        line = check_once("owner/repo", "feat/a", gh=gh, sleep=FakeClock().sleep, base="integration/x")
+        self.assertEqual(line, f"READY 7 {HEAD_A}")
+
+    def test_check_once_ignores_the_base_unless_asked(self):
+        gh = FakeGh([PR7], [make_pr(base="elsewhere"), make_pr(base="elsewhere")])
+        self.assertEqual(check_once("owner/repo", "feat/a", gh=gh, sleep=FakeClock().sleep), f"READY 7 {HEAD_A}")
+
     def test_check_once_ready_after_two_clean_polls(self):
         gh = FakeGh([PR7], [make_pr(), make_pr()])
         clock = FakeClock()

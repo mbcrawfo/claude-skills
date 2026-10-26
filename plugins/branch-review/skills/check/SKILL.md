@@ -6,7 +6,7 @@ argument-hint: "--repo PATH [--commit SHA] [--state-dir PATH]"
 
 # Branch review check
 
-Answers one question: has a clean `/branch-review:review` seen everything in this commit? It reads the review state that `/branch-review:review` keeps and prints a verdict. It fixes nothing, records nothing and starts no review.
+Answers one question: has a clean `/branch-review:review` seen everything in this commit? A `recorded` round (see `/branch-review:record`) anchors coverage like a reviewed round, so `covered` means reviewed or recorded on `origin/<branch>`; the summary's "Recorded without review" section names which. It reads the review state that `/branch-review:review` keeps and prints a verdict. It fixes nothing, records nothing and starts no review.
 
 The state script runs through the `rs` wrapper, by its full path. Write the command out in full; never put it in a shell variable, since variables do not survive between Bash calls and zsh does not split them into words:
 

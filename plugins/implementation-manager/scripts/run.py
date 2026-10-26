@@ -4,23 +4,31 @@
 The run folder is always the first argument after the subcommand:
 
   init <dir> --repo O/R --base B --method merge|squash|rebase [--wip N] [--queue serial|parallel]
+       [--integration BRANCH --final-merge manager|owner --feature-review yes|no]   (not with rebase)
   unit <dir> <name> [--prereq U ...] [--after U ...|none] [--branch B] [--worktree P] [--specs] [--title T]
+       [--integration]              the run's one integration unit (needs init --integration)
   set <dir> wip <N|none> | set <dir> queue <serial|parallel>
                                     in parallel mode, print each request still queued: queued <unit> <sha>
+  set <dir> final-merge <manager|owner> | set <dir> feature-review <yes|no>
+                                    integration mode, until the final gate opens
   open <dir> <unit>                 open one gate
-  open-ready <dir>                  open every gate that may open; print one unit name per line
+  open-ready <dir>                  open every gate that may open; print one unit name per line, then the
+                                    final gate's gates.log line when it opens (integration mode)
   stop <dir> <unit> <reason...>     the unit never opens, gets go or queues again, and gives up the slot
   go <dir> <unit> <sha>             serial mode: take the push slot, or refuse while another unit holds it
   redo <dir> <unit> <sha> <reasons...>
   hold <dir> <unit> <reason...>     hold the unit's merge: no READY or REMIND, no go, not first in the queue
   release <dir> <unit>              lift the hold
   queue <dir> <unit> <sha>          line a covered request up behind the slot holder
+  synced <dir> <unit> <sha>         the integration unit pushed its approved go to the integration branch
   yield <dir> <unit> <reason...>    the slot holder gives the slot up
   merged <dir> <unit> <pr> [--more] record a merge; print the gates that may open now, one per line
   closed <dir> <unit> <pr>
   status <dir>                      the tracker and everything waiting on the manager
   clear-bad <dir>                   forget the bad request lines status lists, once they are handled
-  check <dir> <unit>                one readiness check of the unit's PR, printed as one line
+  check <dir> <unit>                one readiness check of the unit's PR, printed as one line; in integration
+                                    mode READY becomes NOT-READY ... blocked: <reason> (also for a PR on the
+                                    wrong base) or FINAL-READY
   wait <dir> [--stall-hours N]      block until one event, print it as one line, exit 0 (also on error)
 
 Exit codes: 0 on success, 1 for a refused command (one line on stderr), 2 for a usage error.
@@ -80,6 +88,20 @@ def _behind_holder(state: dict, unit: str) -> bool:
     )
 
 
+def _owner_merges(state: dict, unit: str) -> bool:
+    """The unit is the integration unit and the owner, not the manager, merges its final PR."""
+    block = state.get("integration")
+    return bool(block) and block["final_merge"] == "owner" and unit == runstate.integration_unit(state)
+
+
+def _wrong_base(state: dict, name: str) -> str | None:
+    """Why the unit's open PR, as last polled, targets the wrong branch in the integration mode, or None."""
+    marks = state["marks"].get(name, {})
+    if state["units"][name]["prs"].get(str(marks.get("pr"))) != "OPEN":
+        return None
+    return runstate.wrong_base(state, name, marks.get("base"))
+
+
 def _label(state: dict, name: str) -> str:
     """The unit's name with its display title, for lines a person reads; commands keep the bare name."""
     title = state["units"][name]["title"]
@@ -108,11 +130,26 @@ def _needs(run_dir: Path, state: dict) -> list[str]:
         if hold:
             needs.append(f"hold {_label(state, name)}: {hold['reason']} since {_clock(hold['at'])}")
         ready = marks.get("ready_head")
-        if ready and runstate.mergeable(state, name):  # not held, and every --after unit merged or stopped
+        owner_final = _owner_merges(state, name)
+        if (
+            ready
+            and runstate.mergeable(state, name)  # not held, and every --after unit merged or stopped
+            and not runstate.integration_block(state, name)
+            and not _wrong_base(state, name)
+            and not owner_final
+        ):
             pr, _, sha = ready.partition(" ")
             if record["prs"].get(pr) == "OPEN" and marks.get("head") == sha:
                 needs.append(f"{_label(state, name)} PR #{pr} ready since {_clock(marks['ready_at'])}")
-        if "go_head" in marks:
+        wrong = _wrong_base(state, name)
+        if wrong:
+            needs.append(f"{_label(state, name)} PR #{marks['pr']} {wrong}: tell its child to retarget it")
+        go_sha = marks.get("go_sha")
+        if go_sha and marks.get("synced_sha") == go_sha:
+            # The watcher saw the push land (it marks synced_sha, and with an open PR pops go_head)
+            # but `synced` never ran: no SYNCED repeats.
+            needs.append(f"integration push landed: run synced {name} {go_sha}")
+        elif "go_head" in marks:
             sha = _last_go(run_dir, name)
             needs.append(f"push approved for {name} {sha[:7] if sha else '-'}, not seen yet")
         elif _behind_holder(state, name):
@@ -132,7 +169,42 @@ def _needs(run_dir: Path, state: dict) -> list[str]:
             needs.append(f"slot free with a queue, next {head['unit']} {head['sha']}")
     needs += [f"bad request line: {line}" for line in state["bad_requests"]]
     needs += [f"gate {name} may open" for name in runstate.openable(state)]
+    if runstate.final_due(state):
+        needs.append(f"final gate for {runstate.integration_unit(state)} may open: run open-ready")
+    if runstate.all_stopped(state):
+        needs.append(f"every unit stopped: ask the owner what to do with {state['integration']['branch']}")
     return needs
+
+
+def _integration_lines(state: dict) -> list[str]:
+    """The status lines of the integration mode; none in a default run."""
+    block = state.get("integration")
+    if not block:
+        return []
+    lines = [
+        f"- integration: {block['branch']} into {state['base']}"
+        f" · final merge: {block['final_merge']} · feature review: {'yes' if block['feature_review'] else 'no'}"
+    ]
+    if runstate.sync_in_flight(state):
+        lines.append("- integration sync in flight")
+    name = runstate.integration_unit(state)
+    record = state["units"].get(name) if name else None
+    open_prs = [pr for pr, status in record["prs"].items() if status == "OPEN"] if record else []
+    if open_prs:
+        pr = max(open_prs, key=int)
+        late = runstate.late_units(state)
+        if late:
+            lines.append(f"- final PR #{pr} waits on {', '.join(late)}")
+        marks = state["marks"].get(name, {})
+        # A ready mark from before a unit was added is stale: the owner would merge while unit work is still out.
+        if (
+            _owner_merges(state, name)
+            and not runstate.integration_block(state, name)
+            and not _wrong_base(state, name)
+            and marks.get("ready_head") == f"{pr} {marks.get('head')}"
+        ):
+            lines.append(f"- final PR #{pr} ready: the owner merges it")
+    return lines
 
 
 def _status(run_dir: Path, state: dict) -> str:
@@ -177,6 +249,7 @@ def _status(run_dir: Path, state: dict) -> str:
                 gated.append(f"{label} may open" if name in openable else f"{label} on WIP")
     lines.append(f"- open: {', '.join(open_units) or 'none'}")
     lines.append(f"- gated: {', '.join(gated) or 'none'}")
+    lines += _integration_lines(state)
     needs = _needs(run_dir, state)
     if needs:
         lines.append("- needs the manager:")
@@ -218,6 +291,9 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--method", required=True, choices=runstate.METHODS)
     p.add_argument("--wip", type=_wip)
     p.add_argument("--queue", choices=runstate.QUEUE_MODES, default="serial")
+    p.add_argument("--integration", metavar="BRANCH", help="integration mode: units merge into this branch")
+    p.add_argument("--final-merge", choices=runstate.FINAL_MERGES, help="who merges the final PR (integration mode)")
+    p.add_argument("--feature-review", choices=("yes", "no"), help="review the whole feature (integration mode)")
 
     p = command("unit", "add a unit, or update the fields given")
     p.add_argument("name")
@@ -227,9 +303,10 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--worktree")
     p.add_argument("--specs", action="store_true", default=None, help="the manager's own planning PR")
     p.add_argument("--title", help="one-line display label shown beside the name in status")
+    p.add_argument("--integration", action="store_true", default=None, help="the run's one integration unit")
 
-    p = command("set", "change the WIP limit or the queue mode")
-    p.add_argument("key", choices=("wip", "queue"))
+    p = command("set", "change the WIP limit, the queue mode, or an integration choice")
+    p.add_argument("key", choices=("wip", "queue", "final-merge", "feature-review"))
     p.add_argument("value")
 
     p = command("open", "open one unit's gate")
@@ -243,6 +320,9 @@ def _parser() -> argparse.ArgumentParser:
         p = command(name, help)
         p.add_argument("unit")
         p.add_argument("sha")
+    p = command("synced", "record the integration unit's push to the integration branch")
+    p.add_argument("unit")
+    p.add_argument("sha")
     p = command("redo", "refuse a push, with the reasons")
     p.add_argument("unit")
     p.add_argument("sha")
@@ -298,6 +378,32 @@ def _describe(run_dir: Path, exc: Exception) -> str:
     return f"{run_dir / runstate.STATE_FILE} is not a run state ({type(exc).__name__}: {exc})"
 
 
+def _integration_choice(args: argparse.Namespace) -> dict | None:
+    """The init options of the integration mode as init_run takes them; all three or none."""
+    given = (args.integration, args.final_merge, args.feature_review)
+    if all(value is None for value in given):
+        return None
+    if any(value is None for value in given):
+        raise RunError("--integration, --final-merge and --feature-review go together: give all three or none")
+    return {
+        "branch": args.integration,
+        "final_merge": args.final_merge,
+        "feature_review": args.feature_review == "yes",
+    }
+
+
+def _integration_verdict(state: dict, unit: str, line: str) -> str:
+    """Turn a READY line into NOT-READY when the integration branch blocks the unit, or FINAL-READY for the owner."""
+    verb, _, rest = line.partition(" ")
+    if verb != "READY":
+        return line
+    reason = runstate.integration_block(state, unit)
+    if reason:
+        pr, _, sha = rest.partition(" ")
+        return f"NOT-READY {pr} head={sha[:7]} blocked: {reason}"
+    return f"FINAL-READY {rest}" if _owner_merges(state, unit) else line
+
+
 def _run(args: argparse.Namespace) -> str | None:
     """Run one command other than wait; return what it prints, if anything."""
     run_dir: Path = args.dir
@@ -305,7 +411,14 @@ def _run(args: argparse.Namespace) -> str | None:
     command = args.command
     if command == "init":
         runstate.init_run(
-            run_dir, repo=args.repo, base=args.base, method=args.method, wip=args.wip, queue_mode=args.queue, now=now
+            run_dir,
+            repo=args.repo,
+            base=args.base,
+            method=args.method,
+            wip=args.wip,
+            queue_mode=args.queue,
+            now=now,
+            integration=_integration_choice(args),
         )
         return None
     if command == "status":
@@ -317,7 +430,10 @@ def _run(args: argparse.Namespace) -> str | None:
             raise RunError(f"unknown unit {args.unit!r}")
         if not record["branch"]:
             raise RunError(f"unit {args.unit!r} has no branch yet; record it with: unit <dir> {args.unit} --branch B")
-        return check_once(state["repo"], record["branch"], gh=run_gh, sleep=time.sleep)
+        # In the integration mode a PR on the wrong base is never READY.
+        base = runstate.pr_base(state, args.unit)
+        line = check_once(state["repo"], record["branch"], gh=run_gh, sleep=time.sleep, base=base)
+        return _integration_verdict(state, args.unit, line)
     with locked(run_dir) as state:
         if command == "unit":
             if args.after and "none" in args.after and len(args.after) > 1:
@@ -332,10 +448,11 @@ def _run(args: argparse.Namespace) -> str | None:
                 worktree=args.worktree,
                 specs=args.specs,
                 title=args.title,
+                integration=args.integration,
             )
         elif command == "set":
             runstate.set_option(state, args.key, args.value)
-            if state["queue_mode"] == "parallel":
+            if args.key in ("wip", "queue") and state["queue_mode"] == "parallel":
                 # Parallel mode has no queue turns: each request still queued needs its own go.
                 queued = [f"queued {entry['unit']} {entry['sha']}" for entry in runstate.queue_order(state)]
                 return "\n".join(queued) or None
@@ -345,6 +462,8 @@ def _run(args: argparse.Namespace) -> str | None:
             names = runstate.openable(state)
             for name in names:
                 runstate.open_gate(run_dir, state, name, now)
+            if runstate.final_due(state):
+                names.append(runstate.open_final(run_dir, state))
             return "\n".join(names) or None
         elif command == "stop":
             runstate.stop_gate(run_dir, state, args.unit, " ".join(args.reason))
@@ -358,6 +477,8 @@ def _run(args: argparse.Namespace) -> str | None:
             runstate.release(state, args.unit)
         elif command == "queue":
             runstate.enqueue(run_dir, state, args.unit, args.sha, now)
+        elif command == "synced":
+            runstate.record_synced(state, args.unit, args.sha)
         elif command == "yield":
             runstate.yield_slot(state, args.unit, " ".join(args.reason), now)
         elif command == "merged":

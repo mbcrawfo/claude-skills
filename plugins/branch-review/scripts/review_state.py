@@ -600,6 +600,21 @@ def generated_files(repo: Path, snapshot: str, files: list[str], globs: list[str
     return found
 
 
+def _new_state(rkey: str, branch: str, base_ref: str) -> dict:
+    """The state of a branch with no rounds yet."""
+    now = _now()
+    return {
+        "repo_key": rkey,
+        "branch": branch,
+        "base_ref": base_ref,
+        "intent": None,
+        "created": now,
+        "updated": now,
+        "rounds": [],
+        "findings": [],
+    }
+
+
 def cmd_begin_round(args: argparse.Namespace) -> dict:
     repo = Path(args.repo)
     rkey, branch, directory = _locate_keys(Path(args.state_dir).expanduser(), repo)
@@ -608,17 +623,7 @@ def cmd_begin_round(args: argparse.Namespace) -> dict:
     base_ref = args.base_ref or _stored_base(state) or default_base(repo)
 
     if state is None:
-        now = _now()
-        state = {
-            "repo_key": rkey,
-            "branch": branch,
-            "base_ref": base_ref,
-            "intent": None,
-            "created": now,
-            "updated": now,
-            "rounds": [],
-            "findings": [],
-        }
+        state = _new_state(rkey, branch, base_ref)
     state.setdefault("second_opinion", {"requested": None, "skipped": False})
     # A round that was begun but never recorded reviewed nothing: drop it.
     rounds = _recorded(state.get("rounds", []))
@@ -784,6 +789,95 @@ def cmd_begin_round(args: argparse.Namespace) -> dict:
     if mode == "merge-check":
         result["upstream_overlap"] = upstream_overlap
     return result
+
+
+def cmd_record(args: argparse.Namespace) -> dict:
+    """Save a `recorded` round for a commit that is already on the remote branch.
+
+    No reviewer runs. The round anchors later coverage and merge-check rounds,
+    and leaves the findings ledger as it is.
+    """
+    repo = Path(args.repo)
+    rkey, branch, directory = _locate_keys(Path(args.state_dir).expanduser(), repo)
+    if branch == "HEAD":  # branch_key names a detached HEAD "HEAD"; a branch called detached-ui is a branch
+        raise StateError("record needs a branch, not a detached HEAD")
+    commit = _git_try(repo, "rev-parse", "--verify", "--quiet", args.commit + "^{commit}")
+    if not commit:
+        raise StateError(f"commit not found: {args.commit}")
+    remote = f"origin/{branch}"
+    remote_sha = _git_try(repo, "rev-parse", "--verify", "--quiet", f"refs/remotes/{remote}^{{commit}}")
+    if not remote_sha:
+        raise StateError(f"no {remote} ref; fetch the branch first")
+    if not _is_ancestor(repo, commit, remote_sha):
+        raise StateError(f"commit {commit[:12]} is not on {remote}; record only what is already pushed")
+    reason = _read_text_file(args.reason_file).strip()
+    if not reason:
+        raise StateError(f"{args.reason_file} holds no reason")
+
+    state = load_state(directory)
+    base_ref = args.base or _stored_base(state) or default_base(repo)
+    if _git_try(repo, "rev-parse", "--verify", "--quiet", base_ref + "^{commit}") is None:
+        raise StateError(f"base ref not found: {base_ref}")
+    merge_base = _merge_base(repo, base_ref, commit)
+    if merge_base is None:
+        raise StateError(f"no merge base between {commit[:12]} and {base_ref}")
+    if state is None:
+        state = _new_state(rkey, branch, base_ref)
+    state.setdefault("second_opinion", {"requested": None, "skipped": False})
+    state.setdefault("findings", [])
+    # A round that was begun but never recorded reviewed nothing: drop it.
+    rounds = _recorded(state.get("rounds", []))
+    state["rounds"] = rounds
+
+    diff_from = merge_base
+    if rounds:
+        anchor = _anchor(rounds)
+        if anchor["head"] == commit:
+            return {
+                "recorded": False,
+                "round": None,
+                "commit": commit,
+                "branch": branch,
+                "files": 0,
+                "dir": str(directory),
+            }
+        diff_from = anchor["snapshot"]
+    changed = [f for f, _ in _numstat(repo, diff_from, commit)]
+
+    state["base_ref"] = base_ref
+    rnd = {
+        "number": len(rounds) + 1,
+        "mode": "recorded",
+        "model": None,
+        "started": _now(),
+        "snapshot": commit,
+        "head": commit,
+        "base_ref": base_ref,
+        "merge_base": merge_base,
+        "diff_from": diff_from,
+        "diff_to": commit,
+        "changed_files": changed,
+        "paths": [],
+        "summary": None,
+        "merge_risk": None,
+        "focus": None,
+        "mode_reason": "recorded",
+        "plugin_version": PLUGIN_VERSION,
+        "intent": state.get("intent"),
+        "reason": reason,
+        "added": [],
+    }
+    rounds.append(rnd)
+    save_state(directory, state)
+    _write_summary(directory, state)
+    return {
+        "recorded": True,
+        "round": rnd["number"],
+        "commit": commit,
+        "branch": branch,
+        "files": len(changed),
+        "dir": str(directory),
+    }
 
 
 # --- findings ledger -------------------------------------------------------
@@ -1383,7 +1477,8 @@ def cmd_status(args: argparse.Namespace) -> dict:
         cont, reason = False, "converged"
     # The cap only stops a loop that would otherwise go on.
     floor = _cap_floor(rounds, args.since_round)
-    run_rounds = sum(1 for r in rounds if r.get("number", 0) > floor)
+    # A recorded round reviewed nothing, so it does not use up the cap.
+    run_rounds = sum(1 for r in rounds if r.get("number", 0) > floor and r.get("mode") != "recorded")
     if cont and run_rounds >= MAX_ROUNDS:
         if reason == "unverified-fixes" and run_rounds == MAX_ROUNDS:
             reason = "final-verification"
@@ -1573,6 +1668,25 @@ def _round_mode(rnd: dict) -> str:
     return mode
 
 
+def _with_model(rnd: dict) -> str:
+    """` with <model>` for a reviewed round, nothing for a recorded one."""
+    return "" if rnd.get("model") is None else f" with {rnd.get('model')}"
+
+
+def _model_in_parens(rnd: dict) -> str:
+    """` (<model>)` for a reviewed round, nothing for a recorded one."""
+    return "" if rnd.get("model") is None else f" ({rnd.get('model')})"
+
+
+def _recorded_lines(state: dict) -> list[str]:
+    """One bullet per recorded round: the commit and why it was recorded."""
+    return [
+        f"- round {r.get('number')} at {str(r.get('head'))[:7]}: {_one_line(r.get('reason'))}"
+        for r in state["rounds"]
+        if r.get("mode") == "recorded"
+    ]
+
+
 def render_summary(state: dict) -> str:
     rounds = state["rounds"]
     findings = state.get("findings", [])
@@ -1587,15 +1701,19 @@ def render_summary(state: dict) -> str:
     plural = "" if len(rounds) == 1 else "s"
     header = (
         f"# Review of `{state.get('branch')}` ({state.get('repo_key')}): {len(rounds)} round{plural}, "
-        f"last {_round_mode(last)} with {last.get('model')}, merge risk {risk_text}; "
+        f"last {_round_mode(last)}{_with_model(last)}, merge risk {risk_text}; "
         f"written by branch-review {PLUGIN_VERSION}"
     )
 
     counts = {s: 0 for s in STATUSES}
     for f in findings:
         counts[f.get("status")] = counts.get(f.get("status"), 0) + 1
-    listed = ", ".join(f"{r.get('number')} {_round_mode(r)} ({r.get('model')})" for r in rounds)
-    out = [header, "", f"Rounds: {listed}", "", "## Counts", "", "| Status | Count |", "| --- | --- |"]
+    listed = ", ".join(f"{r.get('number')} {_round_mode(r)}{_model_in_parens(r)}" for r in rounds)
+    out = [header, "", f"Rounds: {listed}"]
+    recorded = _recorded_lines(state)
+    if recorded:
+        out.extend(["", "## Recorded without review", "", *recorded])
+    out.extend(["", "## Counts", "", "| Status | Count |", "| --- | --- |"])
     out.extend(f"| {s} | {n} |" for s, n in counts.items())
 
     sections = (
@@ -1646,9 +1764,13 @@ def _notes_line(state: dict) -> str:
     rounds = state["rounds"]
     plural = "" if len(rounds) == 1 else "s"
     by_mode = []
-    for mode in ("deep", "followup", "merge-check"):
+    for mode in ("deep", "followup", "merge-check", "recorded"):
         chosen = [r for r in rounds if r.get("mode") == mode]
-        if chosen:
+        if not chosen:
+            continue
+        if mode == "recorded":
+            by_mode.append(f"{len(chosen)} recorded")
+        else:
             models = list(dict.fromkeys(str(r.get("model")) for r in chosen))
             by_mode.append(f"{len(chosen)} {mode} with {' and '.join(models)}")
     opinion = "yes" if any(r.get("focus") == SECOND_OPINION_FOCUS for r in rounds) else "no"
@@ -1670,6 +1792,7 @@ def render_review_notes(state: dict) -> str:
             lines.extend(_entry(f, details(f)))
         return lines
 
+    recorded = _recorded_lines(state)
     sections = (
         ("Escalated", entries("escalated", _resolution_note)),
         ("Behavior changes to confirm", _behavior_lines(state)),
@@ -1677,6 +1800,7 @@ def render_review_notes(state: dict) -> str:
         ("Accepted", entries("accepted", _resolution_note)),
         ("Invalid", entries("invalid", _invalid_details)),
         ("Outside the change", entries("outside", _resolution_note)),
+        *([("Recorded without review", recorded)] if recorded else []),
         ("Intent check", _intent_check_lines(state, skip_empty=True)),
         ("Not checked", _not_checked_lines(state)),
     )
@@ -2105,6 +2229,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="glob patterns restricting the reviewed files; a directory or trailing / means everything under it",
     )
     begin.set_defaults(func=cmd_begin_round)
+
+    record = sub.add_parser(
+        "record",
+        parents=[common],
+        help="save a round for a commit already on the remote branch, without a reviewer",
+    )
+    record.add_argument("--commit", default="HEAD", help="commit to record (default: HEAD)")
+    record.add_argument("--reason-file", required=True, metavar="PATH", help="file saying why the commit is recorded")
+    record.add_argument("--base", help="base ref (default: the stored base ref, else the detected default)")
+    record.set_defaults(func=cmd_record)
 
     rec = sub.add_parser("record-findings", parents=[common], help="record a reviewer report into the ledger")
     rec.add_argument("--file", required=True, help="reviewer report (markdown) or bare JSON")
