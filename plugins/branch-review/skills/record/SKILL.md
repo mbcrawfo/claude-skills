@@ -2,7 +2,7 @@
 name: record
 description: Only when the implementation-manager integration-branch protocol tells you to record commits already merged on the remote branch. Never in response to a user's request, and never to get a branch past review.
 user-invocable: false
-argument-hint: "--repo PATH --commit SHA --reason-file PATH"
+argument-hint: "--repo PATH --commit SHA --reason-file PATH [--base REF]"
 ---
 
 # Branch review record
@@ -27,6 +27,7 @@ CLAUDE_PLUGIN_DATA="${CLAUDE_PLUGIN_DATA}" "${CLAUDE_SKILL_DIR}/../../scripts/rs
 - `<repo>` is the `--repo` value, the path of the repository checkout.
 - `<sha>` is the `--commit` value, the commit to record.
 - `<path>` is the `--reason-file` value: a file holding why the commit is recorded without review, for example the pull requests that merged it. The reason must not be empty.
+- When a `--base` value was given, add `--base "<ref>"` to the end of the command, `<ref>` that value. It sets the base ref the branch's review state uses from then on. Without one, leave it off: the state keeps its stored base, or detects the default branch.
 
 ## Run it
 

@@ -107,10 +107,10 @@ The JSON also carries `second_opinion_held` (a second opinion waits for escalate
 `branch-review:record` records a commit without reviewing it, for the implementation-manager integration-branch protocol, where child pull requests are merged into a shared remote branch after their own reviews. It accepts only a commit that is already on `origin/<branch>` (equal to it or an ancestor), so it cannot be used to bless local work; the agent fetches the branch first. It takes the commit and a file with the reason:
 
 ```
-branch-review:record --repo PATH --commit SHA --reason-file PATH
+branch-review:record --repo PATH --commit SHA --reason-file PATH [--base REF]
 ```
 
-It prints the JSON `{"recorded", "round", "commit", "branch", "files", "dir"}`; `recorded: false` means the commit is already the head of the latest round. It refuses a detached HEAD, a missing `origin/<branch>` ref, a commit not on that ref and an empty reason (exit 1, one line on stderr). A recorded round is listed as `recorded` in the summary and the review notes, and never counts as review: it does not count toward the six-round cap and neither satisfies nor triggers a second opinion. The skill is hidden from the `/` menu (`user-invocable: false`), and its description tells the model to use it only on the protocol's instruction, never at a user's request.
+`--base` sets the base ref the branch's review state uses from then on, as `/branch-review:review --base` does. It prints the JSON `{"recorded", "round", "commit", "branch", "files", "dir"}`; `recorded: false` means the commit is already the head of the latest round. It refuses a detached HEAD, a missing `origin/<branch>` ref, a commit not on that ref and an empty reason (exit 1, one line on stderr). A recorded round is listed as `recorded` in the summary and the review notes, and never counts as review: it does not count toward the six-round cap and neither satisfies nor triggers a second opinion. The skill is hidden from the `/` menu (`user-invocable: false`), and its description tells the model to use it only on the protocol's instruction, never at a user's request.
 
 ## What's new in 0.10
 

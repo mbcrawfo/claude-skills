@@ -41,6 +41,11 @@ class RecordSkillTest(unittest.TestCase):
     def test_fetches_first(self):
         self.assertIn("git fetch origin", self.text)
 
+    def test_passes_a_given_base_through(self):
+        hint = next(line for line in self.frontmatter.splitlines() if line.startswith("argument-hint:"))
+        self.assertIn("[--base REF]", hint)
+        self.assertIn('--base "<ref>"', self.text)
+
 
 class ReviewSkillTextTest(unittest.TestCase):
     text = (SKILLS / "review" / "SKILL.md").read_text(encoding="utf-8")
