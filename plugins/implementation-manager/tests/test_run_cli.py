@@ -335,6 +335,53 @@ class StatusTests(CliTestCase):
         self.ok("open", str(self.dir), "b")
         self.assertIn("- open: b working, merges after a", self.ok("status", str(self.dir)).splitlines())
 
+    def test_status_shows_titles(self):
+        self.init()
+        self.ok("unit", str(self.dir), "column-overrides", "--title", "8.7")
+        self.ok("unit", str(self.dir), "plain")
+        self.ok("unit", str(self.dir), "late", "--title", "8.9", "--prereq", "column-overrides")
+        self.ok("unit", str(self.dir), "tail", "--title", "9.0", "--after", "plain", "column-overrides")
+        self.ok("unit", str(self.dir), "held", "--title", "9.1", "--branch", "feat/held")
+        self.ok("open", str(self.dir), "column-overrides")
+        self.ok("open", str(self.dir), "tail")
+        self.ok("open", str(self.dir), "held")
+        self.ok("merged", str(self.dir), "column-overrides", "138")
+        self.ok("hold", str(self.dir), "held", "later")
+        state = self.state()
+        state["units"]["tail"]["prs"] = {"7": "OPEN"}
+        state["marks"]["tail"] = {"pr": 7, "head": HEAD_A, "ready_head": f"7 {HEAD_A}", "ready_at": 1000.0}
+        (self.dir / "run.json").write_text(json.dumps(state))
+        lines = self.ok("status", str(self.dir)).splitlines()
+        self.assertIn("- merged: column-overrides (8.7) #138", lines)
+        self.assertIn("- open: tail (9.0) PR #7, merges after plain, held (9.1) working", lines)
+        self.assertIn("- gated: plain may open, late (8.9) may open", lines)
+        self.assertRegex(" ".join(lines), r"hold held \(9\.1\): later since \d\d:\d\d")
+        self.assertRegex("\n".join(lines), r"(?m)^  - tail \(9\.0\) PR #7 ready since \d\d:\d\d$")
+
+    def test_status_keeps_bare_names_where_a_sha_follows(self):
+        self.init()
+        self.ok("unit", str(self.dir), "a", "--title", "8.7")
+        self.ok("unit", str(self.dir), "b", "--title", "8.8")
+        self.ok("open", str(self.dir), "a")
+        self.ok("open", str(self.dir), "b")
+        self.ok("go", str(self.dir), "a", SHA1)
+        self.ok("queue", str(self.dir), "b", SHA2)
+        self.append_request(f"b push {SHA2} feat/b\n")
+        self.ok("wait", str(self.dir))
+        lines = self.ok("status", str(self.dir)).splitlines()
+        self.assertRegex(lines[1], r"^- slot: a 1111111 since \d\d:\d\d$")
+        self.assertEqual(lines[2], "- queue: b 2222222")
+        self.assertIn("  - push approved for a 1111111, not seen yet", lines)
+        self.assertRegex("\n".join(lines), rf"(?m)^  - request b {SHA2} feat/b unanswered since")
+        self.ok("merged", str(self.dir), "a", "1")
+        self.assertIn(f"  - slot free with a queue, next b {SHA2}", self.ok("status", str(self.dir)).splitlines())
+
+    def test_unit_title_with_a_newline_is_refused(self):
+        self.init()
+        result = self.run_cli("unit", str(self.dir), "a", "--title", "one\ntwo")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(len(result.stderr.splitlines()), 1)
+
     def test_status_next_skips_queue_entries_that_are_not_mergeable(self):
         self.init()
         self.ok("unit", str(self.dir), "a")

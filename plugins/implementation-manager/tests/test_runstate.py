@@ -37,8 +37,10 @@ SHA1 = "1" * 40
 SHA2 = "2" * 40
 
 
-def add(state, name, prereqs=(), specs=False, after=()):
-    add_unit(state, name, prereqs=list(prereqs), branch=None, worktree=None, specs=specs, after=list(after))
+def add(state, name, prereqs=(), specs=False, after=(), title=None):
+    add_unit(
+        state, name, prereqs=list(prereqs), branch=None, worktree=None, specs=specs, after=list(after), title=title
+    )
 
 
 class RunStateTestCase(unittest.TestCase):
@@ -885,6 +887,27 @@ class AfterTests(RunStateTestCase):
         add(state, "a")
         unit = state["units"]["a"]
         self.assertEqual((unit["after"], unit["hold"], unit["title"]), ([], None, None))
+
+    def test_add_unit_title_set_and_kept(self):
+        state = self.init()
+        add(state, "a", title="8.7")
+        self.assertEqual(state["units"]["a"]["title"], "8.7")
+        add(state, "a", specs=True)
+        self.assertEqual(state["units"]["a"]["title"], "8.7")
+        add(state, "a", title="8.8")
+        self.assertEqual(state["units"]["a"]["title"], "8.8")
+
+    def test_add_unit_multi_line_title_refused(self):
+        state = self.init()
+        for bad in ("one\ntwo", "one\rtwo"):
+            with self.assertRaises(RunError) as caught:
+                add(state, "a", title=bad)
+            self.assertNotIn("\n", str(caught.exception))
+        self.assertNotIn("a", state["units"])
+        add(state, "b", title="fine")
+        with self.assertRaises(RunError):
+            add(state, "b", title="x\ny")
+        self.assertEqual(state["units"]["b"]["title"], "fine")
 
     def test_load_fills_new_fields_on_an_old_run(self):
         state = self.init()

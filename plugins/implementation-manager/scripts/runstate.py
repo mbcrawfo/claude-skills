@@ -176,10 +176,12 @@ def add_unit(
     """Add a unit, or update the fields given on an existing one; None keeps the old value.
 
     `after` lists the units that must merge before this one does; [] clears it. A unit may not wait on itself
-    through its prerequisites and `after` units together.
+    through its prerequisites and `after` units together. `title` is a one-line display label for status.
     """
     if not re.fullmatch(UNIT_RE, name):
         raise RunError(f"bad unit name {name!r}: use letters, digits, '_' and '-', starting with a letter or digit")
+    if title is not None and ("\n" in title or "\r" in title):
+        raise RunError(f"bad title {title!r}: use a single line")
     unit = state["units"].get(name)
     _check_order_edges(
         state,
