@@ -1,6 +1,6 @@
 # Implementation manager: lessons from SqlSource phase 8
 
-Date: 2026-10-25. Status: draft for approval.
+Date: 2026-10-25. Status: approved; implemented in 0.4.0.
 
 ## Intent
 
@@ -140,7 +140,7 @@ Michael chose 1.
   Part 6 of each sibling's prompt points at that section.
 - **Holds.**
   - When it relays a question marked "blocks merge: yes", the manager runs `hold <unit> <reason>` (which yields the slot).
-  - On Michael's answer it forwards the answer, then runs `release`.
+  - On Michael's answer it forwards the answer. Once no blocking question is left open, it runs `release`, then `hold <unit> answer sent: <topic>`; the unit's next push request releases it.
   - A question marked "blocks merge: no" is relayed without a hold, and a READY that meets the merge bar is merged.
   - The manager never holds a PR in any other way.
 - **After a merge.** The merge command no longer prints the PR body. The manager writes it to `<run>/prs/<unit>-<pr>.md` and reads only what `notes.md` needs. It also reads the app's shared notes folder for files the merged unit wrote, and copies into `notes.md` whatever later units must know. `notes.md` stays the one record the manager keeps; the shared folder is how children pass notes to each other.
@@ -152,7 +152,7 @@ Michael chose 1.
   - **Gate (my call).** The prompt drops its gate part only when the unit can open now: `run.py open-ready` lists it, meaning its prerequisites are merged and WIP allows it. The manager runs `open-ready` first. Otherwise the prompt keeps the gate as usual. `run.py open` never bypasses a prerequisite.
   - **Questions.** When Michael will design the unit with the child, the prompt adds the `[designing]` token. Until the child first asks to push, its questions go to Michael in its own session.
   - **After its first push request (my call),** a question that blocks the merge also goes to the manager as a one-line notice ("blocks merge: yes", and where the question is). The manager places the hold, so a design question asked directly can't let a READY PR merge underneath it.
-  - Part 10 narrows to ordering conflicts with other units.
+  - Part 6 says where the child's questions go instead of part 8's Questions bullet and part 10, and that the manager otherwise gets only ordering conflicts with other units. Part 10 itself is unchanged.
   - The prompt keeps parts 7–11 otherwise.
 
 ### Child prompt
@@ -208,3 +208,16 @@ The builder may also settle these without asking:
 - How much of the PR body the manager reads after a merge: whole sections or a `--jq` filter.
 - The exact wording of each child prompt line, kept consistent with the existing parts.
 - Whether the eval change is a new case or graders added to `push-queue`.
+
+## Changes during implementation
+
+Rulings made while building and reviewing 0.4.0, which override the design above where they differ:
+
+- **Hold lifecycle.** On forwarding the last open answer, the manager runs `release`, then `hold <unit> answer sent: <topic>`. The unit's next push request releases it once `notes.md` lists no open blocking question: one rule in step 5 of "Answering a push request", whatever the hold's reason.
+- **Designed units.** A designed unit's own-session question that blocks the merge is held as `own session: <topic>`.
+- **The designing variant's text goes in part 6.** Part 10 is not narrowed.
+- **Blocking.** An unmarked question counts as blocking, but an unmarked `[blocked]` note is yielded (`yield <unit> blocked`), not held.
+- **`hold` and `release`.** `hold` also answers queued requests with `redo <sha> held` and makes `queue` refuse the unit; `release` restarts the stall clock and reports a ready head `READY` afresh.
+- **`answer sent:` holds can be `STALLED`.** That hold waits on the child, so the watcher reports it; every other hold stays quiet.
+- **`--after` on the slot holder.** Adding `--after` to the slot holder, on a unit not yet merged, frees the slot, and `queue` on such a holder gives up the slot and queues it.
+- **The `--after` eval grader** is deferred to [D-0002](../../deferred/D-0002-implementation-manager-after-eval-grader.md).
