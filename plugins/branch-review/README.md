@@ -14,7 +14,7 @@ A local, agent-run replacement for CodeRabbit PR reviews that checks a branch be
 Run `/branch-review:review` from the branch once the whole change is complete:
 
 ```
-/branch-review:review [--full] [--model NAME] [--base REF] [--intent TEXT | --intent-file PATH] [--paths GLOB...] [--generated GLOB...] [--second-opinion | --no-second-opinion] [--resolve ID NOTE]
+/branch-review:review [--full] [--model NAME] [--base REF] [--intent TEXT | --intent-file PATH] [--paths GLOB...] [--generated GLOB...] [--second-opinion | --no-second-opinion] [--notes-file PATH] [--related-branch REF...] [--resolve ID NOTE]
 ```
 
 - `--full`: force a deep review of the whole change set, even if earlier rounds exist.
@@ -25,7 +25,9 @@ Run `/branch-review:review` from the branch once the whole change is complete:
 - `--generated GLOB...`: extra globs for generated files, on top of those `.gitattributes` marks `linguist-generated` or `-diff`. Generated files are still reviewed, but they do not count toward the size warning or the large-delta rule. The globs are stored with the review and reused by later runs; `--generated .` clears them.
 - `--second-opinion`: run a second-opinion deep round once the review converges, whatever the risk signals say.
 - `--no-second-opinion`: skip the automatic second opinion for this branch. It is stored with the review, so `/branch-review:check` does not wait for one, until a later run passes `--second-opinion`.
-- `--resolve ID NOTE`: record your decision on an escalated finding. A note that asks for a fix reopens the finding; one that says to leave it defers it.
+- `--notes-file PATH`: notes earlier per-task reviewers left for the whole-branch review. Deep rounds treat them as leads to check. Stored with the review; an empty file clears them.
+- `--related-branch REF...`: branches built alongside this one that mirror the change, such as the same feature for another engine. The reviewer compares the mirrored files. Stored with the review; `--related-branch .` clears them.
+- `--resolve ID NOTE`: record your decision on an escalated finding. A note that asks for a fix reopens the finding; one that says to fix it later defers it; one that says to keep it as it is accepts it.
 - `--state-dir PATH`: keep state in this absolute directory instead of the plugin data directory. Meant for test harnesses; give `/branch-review:cleanup` the same value.
 
 The loop:
@@ -38,11 +40,13 @@ The loop:
   A round whose reviewer never reported is not recorded and never anchors a follow-up, and a round with no changes is never saved. Every run, including one after a merge or a redo, starts from set-up and ends with the summary.
 - **Round.** The branch's working tree is snapshotted, and a fresh `branch-review:reviewer` agent reviews the change set against your intent, or verifies the earlier findings and the new delta in a follow-up. A follow-up whose delta reaches 40 non-generated files or 2,000 changed lines becomes a deep round over the whole change set, with Opus unless `--model` says otherwise. The reviewer writes its report to a file outside the repo, which is recorded as it wrote it.
 - **Record and triage.** The reviewer's findings are recorded. For each open one, the orchestrating agent checks the claim against the code and records what it checked, then fixes it with a regression test shown to fail without the fix, disputes it with evidence, or escalates it. A finding whose fix is a choice for the developer is always escalated, unless the intent settles it. Findings outside the change get the status `outside` and stay out of the fix loop, unless the fix is trivial and in changed files or the developer asks for it; when the repo's `AGENTS.md` forbids deferring findings, they are escalated instead.
-- **Second opinion.** When the review first converges, the state script decides whether a second deep round is due, which it is when a deep round rated the merge risk `moderate` or `high` or the review found a critical or major issue. A fresh reviewer, Opus unless `--model` says otherwise, then reviews the whole change set once more, putting first the steps a first pass most often skips. Each branch gets at most one automatic second opinion; `--second-opinion` asks for one and `--no-second-opinion` skips it.
+- **Second opinion.** Once no finding is open, the state script decides whether a second deep round is due, which it is when a deep round rated the merge risk `moderate` or `high` or the review found a critical or major issue. A fresh reviewer, Opus unless `--model` says otherwise, then reviews the whole change set once more, putting first the steps a first pass most often skips. It runs in place of the follow-up that claimed fixes would otherwise get, and verifies them. It waits while a finding is escalated, since the developer's answer may add code, and runs once the decisions are recorded. Each branch gets at most one automatic second opinion; `--second-opinion` asks for one and `--no-second-opinion` skips it.
 - **Repeat.** Each round gets a new reviewer. The loop continues while findings are open, fixes are unverified or a second opinion is due, and stops when the state script reports convergence. It stops after six rounds, counted from the start of the run or the last forced deep review, whichever is later. At the cap, one more follow-up may run to verify claimed fixes, and a due second opinion still runs.
-- **Report.** A summary's header names the round count, the last round and the merge risk, and the next line lists every round with its mode and model (`Rounds: 1 deep (opus), 2 deep (second opinion) (opus), 3 followup (sonnet)`). Then it lists counts, the findings still open or unverified, an intent check (claims the code does not keep, and behavior the intent does not mention), then the escalated, deferred, invalid, outside-the-change and verified findings. Copy the Escalated, Deferred, Invalid, Outside the change and Intent check sections into the PR description under a "Review notes" heading.
+- **Report.** A summary's header names the round count, the last round and the merge risk, and the next line lists every round with its mode and model (`Rounds: 1 deep (opus), 2 deep (second opinion) (opus), 3 followup (sonnet)`). Then it lists counts, the findings still open or unverified, an intent check (claims the code does not keep, and behavior the intent does not mention, from the latest deep round on), what the latest deep round could not check, then the escalated findings, behavior changes for the developer to confirm, and the deferred, accepted, invalid, outside-the-change and verified findings. The state script rewrites it after every change to the review state. Beside it, `review-notes.md` holds a generated "Review notes" block: a line of round counts, models and risk, the non-empty sections, and the fixed findings by title. Paste that block into the PR description as it is.
 
 Notes, discussion entries and decisions reach the state script through files (`--note-file`, `--text-file`) rather than quoted shell arguments, since reviewer text can contain quotes, `$` and backticks.
+
+An agent may also record the developer's decision directly with the state script's `resolve` command; it takes effect at the next review run, which must still run before a push.
 
 Run the review from the agent that owns the whole change. An implementer working one slice of a larger plan should hand the review to its orchestrator.
 
@@ -91,7 +95,16 @@ With no scope it prints a table of what exists. `--branch` and `--repo` target t
 - The commit's tree differs from what was reviewed. A clean merge of the base branch since the review does not count as a difference.
 - A second opinion is due and has not run yet. Branches whose rounds all predate v0.8 are held back only when `--second-opinion` asked for one.
 
-The reasons, in the same order, are `no-rounds`, `open-findings`, `unverified-fixes`, `escalated`, `partial-scope`, `snapshot-missing`, `history-rewritten`, `base-conflict`, `changes-since-review` and `second-opinion-pending`. The command exits 0 whether or not the commit is covered, and exits 1 with one line on stderr on an error such as an unknown commit.
+The JSON also carries `second_opinion_held` (a second opinion waits for escalated findings) and `behavior_to_confirm` (a count of behavior changes for the developer to confirm); neither changes the verdict. The reasons, in the same order, are `no-rounds`, `open-findings`, `unverified-fixes`, `escalated`, `partial-scope`, `snapshot-missing`, `history-rewritten`, `base-conflict`, `changes-since-review` and `second-opinion-pending`. The command exits 0 whether or not the commit is covered, and exits 1 with one line on stderr on an error such as an unknown commit.
+
+## What's new in 0.9
+
+- Deep reports must account for every checklist category and required step (`coverage`), and list what they could not check (`not_checked`), which the next deep round picks up.
+- The reviewer probes driver and database claims on the pinned systems, runs tests that measure process-wide state repeatedly, builds generated output as a consumer would, checks the plan's assumptions and greps for promises the change fulfils.
+- A finding with fix options cannot be marked fixed without the developer's decision or a quote from the intent.
+- The second opinion runs once nothing is open, and waits for decisions; the loop can stop with `awaiting-decisions`.
+- New status `accepted` for a developer's "won't fix", and `confirm-behavior` for behavior changes the developer should confirm.
+- `begin-round` takes its own snapshot; `--state-dir` and `--repo` work before the subcommand; the summary is never stale, and `review-notes.md` is ready to paste.
 
 ## Review guidance in AGENTS.md
 

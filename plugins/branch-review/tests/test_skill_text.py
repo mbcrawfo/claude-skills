@@ -25,5 +25,21 @@ class RsPrefixTest(unittest.TestCase):
                     )
 
 
+class ReviewSkillTextTest(unittest.TestCase):
+    text = (SKILLS / "review" / "SKILL.md").read_text(encoding="utf-8")
+
+    def test_review_skill_has_no_snapshot_step(self):
+        lines = [line for line in self.text.splitlines() if "rs snapshot" in line or RS + " snapshot" in line]
+        self.assertEqual(lines, [])
+
+    def test_review_skill_pastes_review_notes(self):
+        self.assertIn("review_notes", self.text)
+
+    def test_argument_hint_lists_new_arguments(self):
+        hint = next(line for line in self.text.splitlines() if line.startswith("argument-hint:"))
+        self.assertIn("--notes-file", hint)
+        self.assertIn("--related-branch", hint)
+
+
 if __name__ == "__main__":
     unittest.main()
