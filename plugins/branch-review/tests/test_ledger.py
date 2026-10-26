@@ -111,7 +111,7 @@ class LedgerTest(LedgerHarness, unittest.TestCase):
         self.outside_seeded()
         self.assertEqual(self.set_status("R1-F1", "escalated", "--note", "n")["status"], "escalated")
         result = self.cli("status")
-        self.assertEqual(result["reason"], "converged")
+        self.assertEqual(result["reason"], "awaiting-decisions")
         self.assertFalse(result["continue"])
 
     def test_summary_lists_outside_section(self):
@@ -416,16 +416,16 @@ class LedgerTest(LedgerHarness, unittest.TestCase):
         self.assertTrue(result["continue"])
         self.assertEqual(result["reason"], "unverified-fixes")
 
-    def test_status_new_findings_all_invalid_or_escalated_converges(self):
+    def test_status_new_findings_all_invalid_or_escalated_stops(self):
         self.begin()
         self.record(output())
         self.set_status("R1-F1", "invalid", "--note", "n")
         self.set_status("R1-F2", "escalated", "--note", "q")
         result = self.cli("status")
         self.assertFalse(result["continue"])
-        self.assertEqual(result["reason"], "converged")
+        self.assertEqual(result["reason"], "awaiting-decisions")
 
-    def test_status_converged(self):
+    def test_status_stops_awaiting_decisions(self):
         self.seeded(findings=[finding(), finding(title="Second problem."), finding(title="Not a problem.")])
         self.set_status("R1-F1", "fixed", "--commit", "c1")
         self.set_status("R1-F2", "escalated", "--note", "q")
@@ -439,7 +439,7 @@ class LedgerTest(LedgerHarness, unittest.TestCase):
         )
         result = self.cli("status")
         self.assertFalse(result["continue"])
-        self.assertEqual(result["reason"], "converged")
+        self.assertEqual(result["reason"], "awaiting-decisions")
         self.assertEqual(result["counts"]["verified"], 1)
         self.assertEqual(result["counts"]["escalated"], 1)
         self.assertEqual(result["counts"]["invalid"], 1)

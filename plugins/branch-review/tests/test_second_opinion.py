@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 import unittest
 
-from helpers import LedgerHarness, finding, output
+from helpers import LedgerHarness, finding, git, output
 import review_state
 
 MODERATE = {"level": "moderate", "reason": "touches shared state"}
@@ -53,11 +53,146 @@ class SecondOpinionTest(LedgerHarness, unittest.TestCase):
         self.assertEqual(result["second_opinion_reasons"], [])
         self.assertIsNone(result["next_mode"])
 
-    def test_major_finding_is_due_even_when_escalated(self):
+    def test_held_while_escalated(self):
         self.begin()
         self.record(output(findings=[finding(severity="major")]))
         self.set_status("R1-F1", "escalated", "--note", "needs a decision")
-        self.assert_second_opinion(self.status_of(), ["major-finding"])
+        result = self.status_of()
+        self.assertFalse(result["continue"])
+        self.assertEqual(result["reason"], "awaiting-decisions")
+        self.assertTrue(result["second_opinion_held"])
+        self.assertIsNone(result["next_mode"])
+
+    def test_awaiting_decisions_without_trigger(self):
+        self.begin()
+        self.record(output(findings=[finding()]))
+        self.set_status("R1-F1", "escalated", "--note", "needs a decision")
+        result = self.status_of()
+        self.assertFalse(result["continue"])
+        self.assertEqual(result["reason"], "awaiting-decisions")
+        self.assertFalse(result["second_opinion_held"])
+
+    def test_due_with_only_fixed_findings(self):
+        self.begin()
+        self.record(output(findings=[finding(severity="major")]))
+        self.set_status("R1-F1", "fixed", "--commit", "c1")
+        result = self.status_of()
+        self.assert_second_opinion(result, ["major-finding"])
+        self.assertEqual(result["counts"]["fixed"], 1)
+        self.assertFalse(result["second_opinion_held"])
+
+    def test_due_after_resolve_defer(self):
+        for decision in ("defer", "accept"):
+            with self.subTest(decision=decision):
+                self.setUp()
+                self.begin()
+                self.record(output(findings=[finding(severity="major")]))
+                self.set_status("R1-F1", "escalated", "--note", "needs a decision")
+                self.assertEqual(self.status_of()["reason"], "awaiting-decisions")
+                self.cli("resolve", "--id", "R1-F1", "--decision", decision, "--note", "owner")
+                self.assert_second_opinion(self.status_of(), ["major-finding"])
+
+    def test_covered_reports_held_and_behavior_count(self):
+        self.begin()
+        self.record(output(findings=[finding(severity="major")]))
+        self.set_status("R1-F1", "escalated", "--note", "needs a decision")
+        self.cli("confirm-behavior", "--text-file", self.write("b.md", "an old error is now accepted"))
+        covered = self.cli("covered")
+        self.assertTrue(covered["second_opinion_held"])
+        self.assertEqual(covered["behavior_to_confirm"], 1)
+        self.assertIn("escalated", covered["reasons"])
+        self.assertNotIn("second-opinion-pending", covered["reasons"])
+        self.cli("resolve", "--id", "R1-F1", "--decision", "accept", "--note", "owner")
+        covered = self.cli("covered")
+        self.assertIn("second-opinion-pending", covered["reasons"])
+        self.assertFalse(covered["second_opinion_held"])
+
+    def test_focus_requires_a_deep_round(self):
+        self.begin()
+        self.record(output(findings=[finding(severity="major")]))
+        self.set_status("R1-F1", "fixed", "--commit", "c1")
+        (self.repo / "more.txt").write_text("x\n")
+        self.assert_error(
+            "begin-round", "--mode", "followup", "--model", "m", "--base-ref", "main", "--focus", "second-opinion"
+        )
+        self.assertEqual(len(self.state()["rounds"]), 1)
+
+    def test_locate_follows_up_when_no_second_opinion_is_due(self):
+        self.begin()
+        self.record(output(findings=[finding()]))
+        self.set_status("R1-F1", "fixed", "--commit", "c1")
+        found = self.cli("locate", "--base", "main")
+        self.assertEqual((found["mode"], found["reason"], found["focus"]), ("followup", "continuing", None))
+
+    def test_locate_sees_a_second_opinion_request(self):
+        self.begin()
+        self.record(output(findings=[finding()]))
+        self.set_status("R1-F1", "fixed", "--commit", "c1")
+        self.begin("followup")
+        self.record(output(findings=[], verdicts=VERIFY_R1_F1))
+        self.assertEqual(self.status_of()["reason"], "converged")
+        (self.repo / "later.txt").write_text("x\n")
+        plain = self.cli("locate", "--base", "main")
+        self.assertEqual((plain["mode"], plain["reason"], plain["focus"]), ("followup", "continuing", None))
+        found = self.cli("locate", "--base", "main", "--second-opinion")
+        self.assertEqual((found["mode"], found["reason"], found["focus"]), ("deep", "second-opinion", "second-opinion"))
+
+    def test_locate_repeat_request_after_a_second_opinion(self):
+        self.begin()
+        self.record(output(findings=[]))
+        self.deep("--focus", "second-opinion")
+        self.assertEqual(self.status_of()["reason"], "converged")
+        (self.repo / "later.txt").write_text("x\n")
+        plain = self.cli("locate", "--base", "main")
+        self.assertEqual((plain["mode"], plain["reason"], plain["focus"]), ("followup", "continuing", None))
+        found = self.cli("locate", "--base", "main", "--second-opinion")
+        self.assertEqual((found["mode"], found["reason"], found["focus"]), ("deep", "second-opinion", "second-opinion"))
+
+    def test_locate_request_is_still_held_while_escalated(self):
+        self.begin()
+        self.record(output(findings=[finding()]))
+        self.set_status("R1-F1", "escalated", "--note", "decide")
+        found = self.cli("locate", "--base", "main", "--second-opinion")
+        self.assertEqual((found["mode"], found["reason"], found["focus"]), ("followup", "continuing", None))
+
+    def test_locate_sees_a_skip(self):
+        self.begin()
+        self.record(output(findings=[finding(severity="major")]))
+        self.set_status("R1-F1", "fixed", "--commit", "c1")
+        self.assertEqual(self.cli("locate", "--base", "main")["reason"], "second-opinion")
+        found = self.cli("locate", "--base", "main", "--no-second-opinion")
+        self.assertEqual((found["mode"], found["reason"], found["focus"]), ("followup", "continuing", None))
+
+    def test_skip_still_suppresses_early(self):
+        self.begin("deep", "--no-second-opinion")
+        self.record(output(findings=[finding(severity="major")]))
+        self.set_status("R1-F1", "fixed", "--commit", "c1")
+        self.assertEqual(self.status_of()["reason"], "unverified-fixes")
+
+    def test_locate_returns_second_opinion(self):
+        self.begin()
+        self.record(output(findings=[finding(severity="major")]))
+        self.set_status("R1-F1", "fixed", "--commit", "c1")
+        found = self.cli("locate", "--base", "main")
+        self.assertEqual(found["mode"], "deep")
+        self.assertEqual(found["reason"], "second-opinion")
+        self.assertEqual(found["focus"], "second-opinion")
+        self.assertEqual([f["id"] for f in found["open_findings"]], ["R1-F1"])
+
+    def test_locate_follows_up_while_open(self):
+        self.begin()
+        self.record(output(findings=[finding(severity="major")]))
+        found = self.cli("locate", "--base", "main")
+        self.assertEqual((found["mode"], found["reason"], found["focus"]), ("followup", "continuing", None))
+
+    def test_locate_forced_deep_wins(self):
+        self.begin()
+        self.record(output(findings=[finding(severity="major")]))
+        self.set_status("R1-F1", "fixed", "--commit", "c1")
+        git(self.repo, "commit", "--amend", "--allow-empty", "-m", "rewritten")
+        found = self.cli("locate", "--base", "main")
+        self.assertEqual(found["reason"], "history-rewritten")
+        self.assertIsNone(found["focus"])
 
     def test_critical_finding_is_due_whatever_its_status(self):
         self.begin()
@@ -68,22 +203,21 @@ class SecondOpinionTest(LedgerHarness, unittest.TestCase):
     def test_both_reasons_are_listed_in_order(self):
         self.begin()
         self.record(output(findings=[finding(severity="major")], merge_risk=MODERATE))
-        self.set_status("R1-F1", "escalated", "--note", "q")
+        self.set_status("R1-F1", "invalid", "--note", "q")
         self.assert_second_opinion(self.status_of(), ["merge-risk", "major-finding"])
 
     def test_second_opinion_round_clears_due(self):
         self.begin()
         self.record(output(findings=[finding(severity="major")]))
-        self.set_status("R1-F1", "escalated", "--note", "needs a decision")
+        self.set_status("R1-F1", "invalid", "--note", "guarded upstream")
         self.assertEqual(self.status_of()["reason"], "second-opinion")
+        self.assertIn("second-opinion-pending", self.cli("covered")["reasons"])
         self.deep("--focus", "second-opinion")
         result = self.status_of()
         self.assertFalse(result["continue"])
         self.assertEqual(result["reason"], "converged")
         self.assertEqual(result["second_opinion_reasons"], [])
-        reasons = self.cli("covered")["reasons"]
-        self.assertIn("escalated", reasons)
-        self.assertNotIn("second-opinion-pending", reasons)
+        self.assertNotIn("second-opinion-pending", self.cli("covered")["reasons"])
 
     def test_only_one_automatic_second_opinion(self):
         self.deep(merge_risk=MODERATE)

@@ -62,7 +62,9 @@ cat >"$report" <<'JSON'
   "intent_check": {"unmet_claims": [], "unmentioned_behavior": []},
   "verdicts": [],
   "findings": [],
-  "outside_change": []
+  "outside_change": [],
+  "coverage": [{"item": "logic", "done": "not applicable: fixture"}, {"item": "sibling-path", "done": "not applicable: fixture"}, {"item": "security", "done": "not applicable: fixture"}, {"item": "tests", "done": "not applicable: fixture"}, {"item": "intent", "done": "not applicable: fixture"}, {"item": "conventions", "done": "not applicable: fixture"}, {"item": "docs", "done": "not applicable: fixture"}, {"item": "build-ci", "done": "not applicable: fixture"}, {"item": "break-tests", "done": "not applicable: fixture"}, {"item": "doc-grep", "done": "not applicable: fixture"}, {"item": "fulfilled-promises", "done": "not applicable: fixture"}, {"item": "real-system", "done": "not applicable: fixture"}, {"item": "related-records", "done": "not applicable: fixture"}, {"item": "broad-mappings", "done": "not applicable: fixture"}, {"item": "measurement-tests", "done": "not applicable: fixture"}, {"item": "consumer-build", "done": "not applicable: fixture"}],
+  "not_checked": []
 }
 ```
 JSON

@@ -22,7 +22,7 @@ CLAUDE_PLUGIN_DATA="${CLAUDE_PLUGIN_DATA}" "${CLAUDE_SKILL_DIR}/../../scripts/rs
 
 1. Run the command above.
 2. The command prints one JSON object. Print it verbatim.
-3. Then print one line: `covered` when `covered` is true, else `not covered: ` followed by the `reasons` joined by `, `.
+3. Then print one line: `covered` when `covered` is true, else `not covered: ` followed by the `reasons` joined by `, `. Append `; second opinion held` when `second_opinion_held` is true, and `; <n> behavior changes to confirm` when `behavior_to_confirm` is above 0.
 
 The command exits 0 whether or not the commit is covered, so read `covered` from the JSON, never from the exit code. On exit 1 it prints one line on stderr and no JSON (for example `commit not found: <sha>`): report that line and stop. Do not retry with other arguments.
 
@@ -41,4 +41,6 @@ The command exits 0 whether or not the commit is covered, so read `covered` from
 - `changes-since-review`: the commit's tree differs from what was reviewed, allowing for a clean base merge.
 - `second-opinion-pending`: a second deep review is due and has not run. The review's risk signals (a deep round rated `moderate` or `high` merge risk, or a critical or major finding) or the invoker's `--second-opinion` call for it, unless a review run passed `--no-second-opinion`. A branch whose rounds all predate v0.8 is pending only when `--second-opinion` asked for one.
 
-`counts` is the number of findings per status and `rounds` the number of recorded rounds. Do not fix any reason yourself; the caller decides what to do, which usually means running `/branch-review:review` again.
+`second_opinion_held` is true when a second opinion is due but waits for escalated findings: it runs after the developer answers them. `behavior_to_confirm` counts behavior changes the review recorded for the developer to confirm in the PR; they never block a push.
+
+`counts` is the number of findings per status and `rounds` the number of recorded rounds. Do not fix any reason yourself; the caller decides what to do, which usually means running `/branch-review:review` again. An agent may record the developer's decision on an escalated finding with the state script's `resolve` command directly; it takes effect at the next review run, which must still run before a push (a `fix` decision reopens the finding).
