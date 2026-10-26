@@ -44,16 +44,26 @@ class FakeGh:
 
     For several PRs, `pr_list` may be a dict from branch to answers and `polls` a dict from PR number to
     answers. In a dict, each queue's last answer repeats.
+
+    `branches` maps a branch name to a queue of answers for `gh api repos/<repo>/branches/<branch>` (the last
+    repeats); an unlisted branch fails the test.
     """
 
-    def __init__(self, pr_list, polls=()):
+    def __init__(self, pr_list, polls=(), branches=None):
         self.pr_list = {k: list(v) for k, v in pr_list.items()} if isinstance(pr_list, dict) else list(pr_list)
         self.polls = {k: list(v) for k, v in polls.items()} if isinstance(polls, dict) else list(polls)
+        self.branches = {k: list(v) for k, v in (branches or {}).items()}
         self.calls = []
 
     def __call__(self, args):
         self.calls.append(list(args))
-        if args[:2] == ["pr", "list"]:
+        if args[0] == "api" and args[1].startswith("repos/"):
+            branch = args[1].split("/branches/", 1)[1]
+            if branch not in self.branches:
+                raise AssertionError(f"unexpected branch-head call {args}")
+            queue = self.branches[branch]
+            item = queue.pop(0) if len(queue) > 1 else queue[0]
+        elif args[:2] == ["pr", "list"]:
             queue = self.pr_list
             if isinstance(queue, dict):
                 queue = queue[args[args.index("--head") + 1]]
@@ -73,6 +83,10 @@ class FakeGh:
 
     def count(self, kind):
         return sum(1 for call in self.calls if call[:2] == kind)
+
+    def branch_calls(self):
+        """The branch-head calls made so far."""
+        return [call for call in self.calls if call[0] == "api" and call[1].startswith("repos/")]
 
 
 PR7 = json.dumps([{"number": 7}])

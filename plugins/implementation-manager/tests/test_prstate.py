@@ -7,7 +7,7 @@ import unittest
 
 from fakes import HEAD_A, HEAD_B, NO_PR, PR7, FakeClock, FakeGh, check_run, make_pr, status_context
 import helpers  # noqa: F401  (puts the scripts dir on sys.path)
-from prstate import GhError, check_once, poll_pr, summarize
+from prstate import GhError, branch_head, check_once, poll_pr, summarize
 
 
 class ReasonTests(unittest.TestCase):
@@ -99,6 +99,25 @@ class PollPrTests(unittest.TestCase):
     def test_null_head_ref_oid_is_a_failure(self):
         with self.assertRaises(GhError):
             self.poll(make_pr(head=None))
+
+
+class BranchHeadTests(unittest.TestCase):
+    def test_returns_the_sha_and_asks_the_branches_api(self):
+        gh = FakeGh([PR7], branches={"integration/x": [HEAD_A + "\n"]})
+        self.assertEqual(branch_head("owner/repo", "integration/x", gh), HEAD_A)
+        self.assertEqual(gh.calls, [["api", "repos/owner/repo/branches/integration/x", "--jq", ".commit.sha"]])
+
+    def test_a_failing_call_is_a_failure(self):
+        gh = FakeGh([PR7], branches={"integration/x": [GhError("Not Found")]})
+        with self.assertRaises(GhError):
+            branch_head("owner/repo", "integration/x", gh)
+
+    def test_an_answer_that_is_not_a_sha_is_a_failure(self):
+        for answer in ("Not Found", "", "abc123", HEAD_A + "0", HEAD_A.upper()):
+            with self.subTest(answer=answer):
+                gh = FakeGh([PR7], branches={"integration/x": [answer]})
+                with self.assertRaises(GhError):
+                    branch_head("owner/repo", "integration/x", gh)
 
 
 class CheckOnceTests(unittest.TestCase):

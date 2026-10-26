@@ -10,8 +10,18 @@ from pathlib import Path
 import re
 from typing import Callable
 
-from prstate import GhError, Summary, find_open_pr, poll_pr
-from runstate import NEXT_MARK, REQUESTS, SHA_RE, UNIT_RE, load, locked, queue_head, reportable
+from prstate import GhError, Summary, branch_head, find_open_pr, poll_pr
+from runstate import (
+    NEXT_MARK,
+    REQUESTS,
+    SHA_RE,
+    UNIT_RE,
+    integration_unit,
+    load,
+    locked,
+    queue_head,
+    reportable,
+)
 
 # The branch is printable non-space characters: no whitespace or control characters.
 REQUEST_RE = rf"^({UNIT_RE}) push ({SHA_RE}) ([^\s\x00-\x1f\x7f]+)$"
@@ -22,7 +32,7 @@ BAD_REQUESTS_KEPT = 20
 GH_FAILURES_FOR_ERROR = 10
 
 # PR event kinds in priority order; NEXT is checked between ORPHAN and BEHIND.
-READY, REMIND, ENDED, ORPHAN, BEHIND, STUCK, STALLED = range(7)
+READY, REMIND, ENDED, SYNCED, ORPHAN, BEHIND, STUCK, STALLED = range(8)
 
 
 def _note_bad(state: dict, line: str) -> None:
@@ -197,6 +207,8 @@ def _unit_events(
     # BEHIND and STUCK are for the slot holder only, or for every open PR in parallel mode.
     responsible = holder or not serial
     pending = any(entry["unit"] == unit for entry in state["pending"])
+    # The owner merges the final PR: it is reported as FINAL-READY, once per head and never reminded.
+    owner_final = unit == integration_unit(state) and (state.get("integration") or {}).get("final_merge") == "owner"
     events: list[tuple[int, str, Callable[[], None]]] = []
 
     def no_push(pr: object) -> None:
@@ -248,8 +260,13 @@ def _unit_events(
         if marks.get("ready_head") != ready_key:
             if confirmed and may_report:
                 mark = _setter(marks, ready_head=ready_key, ready_at=now)
-                events.append((READY, f"READY {unit} {pr} {head}", mark))
-        elif may_report and now - marks["ready_at"] >= timings.remind_seconds and marks.get("remind_head") != ready_key:
+                events.append((READY, f"{'FINAL-READY' if owner_final else 'READY'} {unit} {pr} {head}", mark))
+        elif (
+            may_report
+            and not owner_final
+            and now - marks["ready_at"] >= timings.remind_seconds
+            and marks.get("remind_head") != ready_key
+        ):
             events.append((REMIND, f"REMIND {unit} {pr} {head}", _setter(marks, remind_head=ready_key)))
 
     if responsible and summary.merge == "BEHIND" and marks.get("behind_head") != head:
@@ -292,25 +309,32 @@ def pr_event(
     timings: Timings,
     before_behind: Callable[[], str | None] | None = None,
     orphans: dict[str, int] | None = None,
+    synced: dict[str, str] | None = None,
 ) -> str | None:
     """Apply one PR poll to the marks and return at most one event line, the first by kind and then unit order.
 
     Every polled unit's tracking marks are updated; only the reported event's mark is set. `orphans` (a done
     unit's open PR) are reported as `ORPHAN <unit> <pr>`, once per PR. `before_behind` (the queue's NEXT) is
-    asked after READY, REMIND, MERGED/CLOSED and ORPHAN and before BEHIND, STUCK and STALLED.
+    asked after READY, REMIND, MERGED/CLOSED, SYNCED and ORPHAN and before BEHIND, STUCK and STALLED.
+    `synced` maps the integration unit to the branch head seen this poll; when that is the unit's outstanding
+    `go_sha` it is reported as `SYNCED <unit> <sha>`, once per sha, with or without an open PR.
     """
     found: dict[int, list[tuple[str, Callable[[], None]]]] = {}
     for unit in _units_in_order(state):
         if unit in polled:
             for kind, line, mark in _unit_events(state, unit, polled[unit], now, timings):
                 found.setdefault(kind, []).append((line, mark))
+        head = (synced or {}).get(unit)
+        marks = state["marks"].get(unit, {})
+        if head is not None and marks.get("go_sha") == head and marks.get("synced_sha") != head:
+            found.setdefault(SYNCED, []).append((f"SYNCED {unit} {head}", _setter(marks, synced_sha=head)))
         if unit in (orphans or {}):
             marks = state["marks"].setdefault(unit, {})
             reported = marks.setdefault("orphans", [])
             pr = orphans[unit]
             if pr not in reported:
                 found.setdefault(ORPHAN, []).append((f"ORPHAN {unit} {pr}", lambda r=reported, p=pr: r.append(p)))
-    for kind in (READY, REMIND, ENDED, ORPHAN, None, BEHIND, STUCK, STALLED):
+    for kind in (READY, REMIND, ENDED, SYNCED, ORPHAN, None, BEHIND, STUCK, STALLED):
         if kind is None:
             line = before_behind() if before_behind else None
             if line:
@@ -326,27 +350,42 @@ def _unit_identity(record: dict) -> tuple:
     return record["branch"], dict(record["prs"]), record["done"]
 
 
-def _poll_snapshot(run_dir: Path, gh: Callable[[list[str]], str]) -> tuple[dict, dict, dict, dict]:
+def poll_heads(state: dict, *, gh: Callable[[list[str]], str]) -> dict[str, str]:
+    """The integration branch's head, keyed by the integration unit, when that unit has an outstanding `go_sha`.
+
+    One call per poll; empty (and no call) in a run without the mode or with no go outstanding.
+    Raises GhError on a failing gh call.
+    """
+    unit = integration_unit(state)
+    if unit is None or "go_sha" not in state["marks"].get(unit, {}) or not state["units"][unit]["branch"]:
+        return {}
+    return {unit: branch_head(state["repo"], state["units"][unit]["branch"], gh)}
+
+
+def _poll_snapshot(run_dir: Path, gh: Callable[[list[str]], str]) -> tuple[dict, dict, dict, dict, dict]:
     """Poll the PRs on an unlocked snapshot; return it with each unit's identity before the poll, the polled
-    units and the orphans."""
+    units, the orphans and the integration branch head."""
     snapshot = load(run_dir)
     before = {name: _unit_identity(record) for name, record in snapshot["units"].items()}
-    return snapshot, before, poll_units(snapshot, gh=gh), poll_orphans(snapshot, gh=gh)
+    polled = poll_units(snapshot, gh=gh)
+    return snapshot, before, polled, poll_orphans(snapshot, gh=gh), poll_heads(snapshot, gh=gh)
 
 
 def _apply_poll(
-    state: dict, snapshot: dict, before: dict, polled: dict, orphans: dict
-) -> tuple[dict[str, Summary | None], dict[str, int]]:
+    state: dict, snapshot: dict, before: dict, polled: dict, orphans: dict, heads: dict
+) -> tuple[dict[str, Summary | None], dict[str, int], dict[str, str]]:
     """Carry the poll's records into the fresh state, dropping units whose branch, PRs or done changed meanwhile."""
 
     def unchanged(unit: str) -> bool:
         record = state["units"].get(unit)
         return record is not None and _unit_identity(record) == before[unit]
 
+    # Decide before the loop below records the polled PRs, which would make the unit look changed.
+    fresh = {unit for unit in before if unchanged(unit)}
     kept = {}
     for unit, summary in polled.items():
         record = state["units"].get(unit)
-        if not unchanged(unit):
+        if unit not in fresh:
             continue
         record["prs"] = snapshot["units"][unit]["prs"]
         polled_marks = snapshot["marks"][unit]
@@ -355,7 +394,11 @@ def _apply_poll(
             if key in polled_marks:
                 marks[key] = polled_marks[key]
         kept[unit] = summary
-    return kept, {unit: pr for unit, pr in orphans.items() if unchanged(unit)}
+    return (
+        kept,
+        {unit: pr for unit, pr in orphans.items() if unit in fresh},
+        {unit: head for unit, head in heads.items() if unit in fresh},
+    )
 
 
 def _next_poll_at(state: dict, polled_at: float, poll_seconds: float, confirm_seconds: float) -> float:
@@ -422,7 +465,7 @@ def wait(
             if poll is None:
                 line = next_event(state)
             else:
-                kept, orphans = _apply_poll(state, *poll)
+                kept, orphans, heads = _apply_poll(state, *poll)
                 # A request that arrived during the gh round comes first, and its pending entry holds READY.
                 line = take_request(run_dir, state, now())
                 if not line:
@@ -433,6 +476,7 @@ def wait(
                         timings=timings,
                         before_behind=lambda: next_event(state),
                         orphans=orphans,
+                        synced=heads,
                     )
                 next_poll_at = _next_poll_at(state, polled_at, poll_seconds, confirm_seconds)
         if line:

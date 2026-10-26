@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 import json
+import re
 import subprocess
 
 QUERY = """query($o:String!,$n:String!,$p:Int!){repository(owner:$o,name:$n){pullRequest(number:$p){
@@ -111,6 +112,14 @@ def find_open_pr(repo: str, branch: str, gh: Callable[[list[str]], str]) -> int 
         return int(prs[0]["number"]) if prs else None
     except (ValueError, KeyError, IndexError, TypeError) as exc:
         raise GhError(f"unexpected output: {out.strip()[:200]}") from exc
+
+
+def branch_head(repo: str, branch: str, gh: Callable[[list[str]], str]) -> str:
+    """The commit sha at the tip of the branch on the remote. Raises GhError when gh fails or answers no sha."""
+    out = gh(["api", f"repos/{repo}/branches/{branch}", "--jq", ".commit.sha"]).strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", out):
+        raise GhError(f"unexpected output: {out[:200]}")
+    return out
 
 
 def poll_pr(repo: str, pr: int, gh: Callable[[list[str]], str]) -> Summary:
