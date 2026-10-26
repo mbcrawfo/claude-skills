@@ -2,12 +2,13 @@
 
 Problems that were identified and not resolved, and intentional choices known to be sub-optimal.  Each active item is fully documented in its own file, linked from the ID column.  When an item is resolved, its row is removed and its file deleted in the same PR as the fix.
 
-Next id: `TD-0001`
+Next id: `TD-0002`
 
 ## Active items
 
 | ID | Status | Added | Impact | Description |
 |----|----|----|----|----|
+| [TD-0001](TD-0001-implementation-manager-hold-labels.md) | Open | 2026-10-25 | Low | An implementation manager hold's label in `status` can name a question already answered, or miss a second one |
 
 ## Columns
 

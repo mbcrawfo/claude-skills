@@ -127,6 +127,10 @@ It exits 0 on success, 1 when a command is refused (one line on stderr, nothing 
 
 Timings: `requests.log` is checked every 5 s and PRs are polled every 60 s. Each event is reported once, across restarts of `wait`.
 
+## Known issues
+
+- The hold label in `status` can lag what the unit is waiting for. When the owner answers a relayed question while a question in a designed unit's own session is still open, the hold keeps its old reason; a second question under an `own session:` hold does not change the label either. Holds still behave correctly: nothing merges until the child asks again with no blocking question open. Check the unit's open questions in `notes.md` for what it is waiting on.
+
 ## Tests
 
 ```bash
