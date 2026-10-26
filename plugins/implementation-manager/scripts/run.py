@@ -108,7 +108,7 @@ def _needs(run_dir: Path, state: dict) -> list[str]:
         if hold:
             needs.append(f"hold {_label(state, name)}: {hold['reason']} since {_clock(hold['at'])}")
         ready = marks.get("ready_head")
-        if ready and not hold:
+        if ready and runstate.mergeable(state, name):  # not held, and every --after unit merged or stopped
             pr, _, sha = ready.partition(" ")
             if record["prs"].get(pr) == "OPEN" and marks.get("head") == sha:
                 needs.append(f"{_label(state, name)} PR #{pr} ready since {_clock(marks['ready_at'])}")

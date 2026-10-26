@@ -350,21 +350,24 @@ class StatusTests(CliTestCase):
         self.ok("unit", str(self.dir), "late", "--title", "8.9", "--prereq", "column-overrides")
         self.ok("unit", str(self.dir), "tail", "--title", "9.0", "--after", "plain", "column-overrides")
         self.ok("unit", str(self.dir), "held", "--title", "9.1", "--branch", "feat/held")
+        self.ok("unit", str(self.dir), "ready", "--title", "9.2")
         self.ok("open", str(self.dir), "column-overrides")
         self.ok("open", str(self.dir), "tail")
         self.ok("open", str(self.dir), "held")
+        self.ok("open", str(self.dir), "ready")
         self.ok("merged", str(self.dir), "column-overrides", "138")
         self.ok("hold", str(self.dir), "held", "later")
         state = self.state()
         state["units"]["tail"]["prs"] = {"7": "OPEN"}
-        state["marks"]["tail"] = {"pr": 7, "head": HEAD_A, "ready_head": f"7 {HEAD_A}", "ready_at": 1000.0}
+        state["units"]["ready"]["prs"] = {"8": "OPEN"}
+        state["marks"]["ready"] = {"pr": 8, "head": HEAD_A, "ready_head": f"8 {HEAD_A}", "ready_at": 1000.0}
         (self.dir / "run.json").write_text(json.dumps(state))
         lines = self.ok("status", str(self.dir)).splitlines()
         self.assertIn("- merged: column-overrides (8.7) #138", lines)
-        self.assertIn("- open: tail (9.0) PR #7, merges after plain, held (9.1) working", lines)
+        self.assertIn("- open: tail (9.0) PR #7, merges after plain, held (9.1) working, ready (9.2) PR #8", lines)
         self.assertIn("- gated: plain may open, late (8.9) may open", lines)
         self.assertRegex(" ".join(lines), r"hold held \(9\.1\): later since \d\d:\d\d")
-        self.assertRegex("\n".join(lines), r"(?m)^  - tail \(9\.0\) PR #7 ready since \d\d:\d\d$")
+        self.assertRegex("\n".join(lines), r"(?m)^  - ready \(9\.2\) PR #8 ready since \d\d:\d\d$")
 
     def test_status_keeps_bare_names_where_a_sha_follows(self):
         self.init()
@@ -472,6 +475,28 @@ class StatusTests(CliTestCase):
         self.assertIn("  - hold a: later since", status)
         self.assertNotIn("ready since", status)
 
+    def test_status_omits_ready_since_for_an_after_blocked_unit(self):
+        # R1-F5
+        self.init()
+        self.ok("unit", str(self.dir), "a", "--branch", "feat/a")
+        self.ok("unit", str(self.dir), "b", "--branch", "feat/b")
+        self.ok("open", str(self.dir), "b")
+        state = self.state()
+        state["units"]["b"]["prs"] = {"7": "OPEN"}
+        state["marks"]["b"] = {"pr": 7, "head": HEAD_A, "ready_head": f"7 {HEAD_A}", "ready_at": 1000.0}
+        (self.dir / "run.json").write_text(json.dumps(state))
+        self.ok("unit", str(self.dir), "b", "--after", "a")
+        self.assertNotIn("ready since", self.ok("status", str(self.dir)))
+
+    def test_status_drops_merges_after_for_a_stopped_unit(self):
+        # R1-F6
+        self.init()
+        self.ok("unit", str(self.dir), "a")
+        self.ok("unit", str(self.dir), "b", "--after", "a")
+        self.ok("open", str(self.dir), "b")
+        self.ok("stop", str(self.dir), "a", "dropped")
+        self.assertIn("- open: b working", self.ok("status", str(self.dir)).splitlines())
+
     def test_status_ready_pr(self):
         self.init()
         self.ok("unit", str(self.dir), "a", "--branch", "feat/a")
@@ -528,6 +553,14 @@ class StatusTests(CliTestCase):
         line = "  - b can merge now its --after units merged: ask it to sync and push"
         self.assertNotIn(line, self.ok("status", str(self.dir)).splitlines())  # a has not merged
         self.ok("merged", str(self.dir), "a", "1")
+        self.assertIn(line, self.ok("status", str(self.dir)).splitlines())
+        # R1-F8: while a go is still outstanding, the child is pushing: no prompt.
+        state = self.state()
+        state["marks"]["b"]["go_head"] = SHA1
+        (self.dir / "run.json").write_text(json.dumps(state))
+        self.assertNotIn(line, self.ok("status", str(self.dir)).splitlines())
+        state["marks"]["b"].pop("go_head")
+        (self.dir / "run.json").write_text(json.dumps(state))
         self.assertIn(line, self.ok("status", str(self.dir)).splitlines())
         self.ok("queue", str(self.dir), "b", SHA2)  # it asked again; the request is what the manager answers
         self.assertNotIn(line, self.ok("status", str(self.dir)).splitlines())

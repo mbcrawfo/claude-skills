@@ -248,30 +248,49 @@ def mergeable(state: dict, unit: str) -> bool:
     return record["hold"] is None and all(units[u]["done"] or units[u]["gate"] == "stopped" for u in record["after"])
 
 
+def _merge_targets(units: dict, active: set[str]) -> set[str]:
+    """Units the active units must wait to merge: their --after units, and everything those need or merge after."""
+    pending = [other for name in active for other in units[name]["after"]]
+    seen: set[str] = set()
+    while pending:
+        current = pending.pop()
+        if current not in seen:
+            seen.add(current)
+            pending += units[current]["prereqs"] + units[current]["after"]
+    return {name for name in seen if not units[name]["done"]}
+
+
 def openable(state: dict) -> list[str]:
     """Closed-gate units whose prerequisites are done, in order, cut to the free WIP.
 
-    Specs units are never cut, nor is a unit that an open, unmerged unit merges after: it must open for that unit
-    to merge, so it does not wait on or use up the WIP.
+    Specs units are never cut, nor is a unit that an open (or opening) unmerged unit must wait to merge: its --after
+    units, and everything those need or merge after. It must open for that unit to merge, so it does not wait on or
+    use up the WIP. Each unit that opens can exempt more, so the list is built until nothing more is added.
     """
     units = state["units"]
-    merged_after_by_open = {
-        other for u in units.values() if u["gate"] == "open" and not u["done"] for other in u["after"]
-    }
+    active = {name for name, u in units.items() if u["gate"] == "open" and not u["done"]}
     wip = state["wip"]
-    in_flight = sum(1 for u in units.values() if u["gate"] == "open" and not u["done"] and not u["specs"])
+    in_flight = sum(1 for name in active if not units[name]["specs"])
     free = None if wip is None else max(wip - in_flight, 0)
-    result = []
-    for name, unit in sorted(units.items(), key=lambda item: item[1]["order"]):
-        if unit["gate"] != "closed" or not all(units[p]["done"] for p in unit["prereqs"]):
-            continue
-        if unit["specs"] or name in merged_after_by_open:
+    result: list[str] = []
+    added = True
+    while added:
+        added = False
+        exempt = _merge_targets(units, active)
+        for name, unit in sorted(units.items(), key=lambda item: item[1]["order"]):
+            if name in result or unit["gate"] != "closed" or not all(units[p]["done"] for p in unit["prereqs"]):
+                continue
+            if unit["specs"] or name in exempt:
+                pass
+            elif free is None or free > 0:
+                if free is not None:
+                    free -= 1
+            else:
+                continue
             result.append(name)
-        elif free is None or free > 0:
-            result.append(name)
-            if free is not None:
-                free -= 1
-    return result
+            active.add(name)
+            added = True
+    return sorted(result, key=lambda name: units[name]["order"])
 
 
 def _append(run_dir: Path, filename: str, line: str) -> None:
@@ -509,7 +528,7 @@ def release(state: dict, unit: str) -> None:
         raise RunError(f"unit {unit!r} is not held")
     record["hold"] = None
     marks = state["marks"].get(unit, {})
-    for key in ("signature", "ready_head", "ready_at", "remind_head"):
+    for key in ("signature", "stalled_key", "ready_head", "ready_at", "remind_head"):
         marks.pop(key, None)
 
 

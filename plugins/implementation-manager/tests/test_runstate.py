@@ -844,8 +844,10 @@ class HoldTests(RunStateTestCase):
         state = self.setup_units("u")
         state["marks"]["u"] = {"signature": {"key": "7 abc", "at": 1.0}, "head": "abc"}
         hold(self.dir, state, "u", "why", NOW)
+        state["marks"]["u"]["stalled_key"] = "7 abc"  # R1-F4: reported STALLED before the hold
         release(state, "u")
         self.assertNotIn("signature", state["marks"]["u"])
+        self.assertNotIn("stalled_key", state["marks"]["u"])
         self.assertEqual(state["marks"]["u"]["head"], "abc")
 
     def test_release_forgets_the_ready_report(self):
@@ -994,6 +996,51 @@ class AfterTests(RunStateTestCase):
         add(state, "b", after=["a"])
         self.open_unit(state, "b")
         self.assertEqual(openable(state), ["a"])
+
+    def test_wip_exemption_reaches_the_prerequisites_of_an_after_unit(self):
+        # R1-F1: a merges after b, b needs c; with a holding the only WIP place, c must still open.
+        state = self.init(wip=1)
+        add(state, "a")
+        add(state, "c")
+        add(state, "b", prereqs=["c"])
+        add(state, "a", after=["b"])
+        self.open_unit(state, "a")
+        self.assertEqual(openable(state), ["c"])
+
+    def test_wip_exemption_applies_within_one_open_ready(self):
+        # R1-F2: a opens and takes the WIP place; b, which a merges after, opens in the same call.
+        state = self.init(wip=1)
+        add(state, "a")
+        add(state, "b")
+        add(state, "a", after=["b"])
+        self.assertEqual(openable(state), ["a", "b"])
+
+    def test_go_serial_allowed_when_the_after_unit_is_stopped(self):
+        # R1-F6
+        state = self.init()
+        add(state, "a")
+        add(state, "b", after=["a"])
+        stop_gate(self.dir, state, "a", "dropped")
+        go(self.dir, state, "b", SHA1, NOW)
+        self.assertEqual(state["slot"]["unit"], "b")
+
+    def test_cycle_of_after_edges_rejected(self):
+        # R1-F7
+        state = self.init()
+        add(state, "a")
+        add(state, "b", after=["a"])
+        with self.assertRaises(RunError):
+            add(state, "a", after=["b"])
+        self.assertEqual(state["units"]["a"]["after"], [])
+
+    def test_cycle_closed_by_a_prereq_over_an_after_edge_rejected(self):
+        # R1-F7
+        state = self.init()
+        add(state, "a")
+        add(state, "b", after=["a"])
+        with self.assertRaises(RunError):
+            add(state, "a", prereqs=["b"])
+        self.assertEqual(state["units"]["a"]["prereqs"], [])
 
     def test_wip_exemption_ends_when_the_open_unit_is_done(self):
         state = self.init(wip=1)
