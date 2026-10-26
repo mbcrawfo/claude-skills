@@ -15,12 +15,14 @@ from runstate import (
     add_unit,
     enqueue,
     go,
+    hold,
     init_run,
     load,
     locked,
     record_closed,
     record_merged,
     redo,
+    release,
     set_option,
     stop_gate,
     yield_slot,
@@ -387,6 +389,20 @@ class NextTests(WatcherTestCase):
         self.assertEqual(run_wait(self.dir), f"NEXT b {SHA2}")
         self.assertEqual([e["unit"] for e in load(self.dir)["queue"]], ["b"])
 
+    def test_next_skips_entries_not_mergeable(self):
+        with locked(self.dir) as state:
+            add_unit(state, "b", prereqs=None, branch=None, worktree=None, specs=None, after=["a"])
+            enqueue(self.dir, state, "b", SHA2, NOW)
+            enqueue(self.dir, state, "c", SHA3, NOW + 1)
+            self.assertEqual(next_event(state), f"NEXT c {SHA3}")
+
+    def test_no_next_when_no_entry_is_mergeable(self):
+        with locked(self.dir) as state:
+            add_unit(state, "b", prereqs=None, branch=None, worktree=None, specs=None, after=["a"])
+            enqueue(self.dir, state, "b", SHA2, NOW)
+            self.assertIsNone(next_event(state))
+            self.assertEqual(len(state["queue"]), 1)
+
     def test_no_next_in_parallel_mode(self):
         with locked(self.dir) as state:
             enqueue(self.dir, state, "b", SHA2, NOW)
@@ -678,6 +694,24 @@ class BehindStuckStalledTests(PrTestCase):
         self.assertEqual(self.wait(gh), f"BEHIND b 8 {HEAD_B}")
         self.assert_quiet(gh)
 
+    def test_parallel_mode_reports_behind_for_a_held_unit(self):
+        # R4-F3: holds suppress READY, REMIND and STALLED only.
+        with locked(self.dir) as state:
+            yield_slot(state, "a", "test", self.clock.now())
+            set_option(state, "queue", "parallel")
+            hold(self.dir, state, "a", "owner question", self.clock.now())
+        self.assertEqual(self.wait(self.gh_a(make_pr(merge="BEHIND"))), f"BEHIND a 7 {HEAD_A}")
+
+    def test_parallel_mode_reports_stuck_for_an_after_blocked_unit(self):
+        # R4-F3: an --after-blocked unit still gets STUCK.
+        self.add_b()
+        with locked(self.dir) as state:
+            yield_slot(state, "a", "test", self.clock.now())
+            set_option(state, "queue", "parallel")
+            add_unit(state, "a", prereqs=None, branch=None, worktree=None, specs=None, after=["b"])
+        gh = FakeGh({"feat/a": [PR7], "feat/b": [NO_PR]}, {7: [make_pr(checks=FAILING)]})
+        self.assertEqual(self.wait(gh, sleeps=400), "STUCK a 7 checks-failed=1")
+
     def test_stuck_after_twenty_minutes_failing(self):
         start = self.clock.t
         gh = self.gh_a(make_pr(checks=FAILING))
@@ -756,6 +790,59 @@ class BehindStuckStalledTests(PrTestCase):
         self.assertGreaterEqual(self.clock.t - start, 10800)
         self.assertLess(self.clock.t - start, 10800 + 60)
         self.assert_quiet(gh, sleeps=1000)
+
+
+class HoldTests(PrTestCase):
+    def test_no_ready_remind_or_stalled_while_held(self):
+        with locked(self.dir) as state:
+            hold(self.dir, state, "a", "waiting on owner", self.clock.now())
+        gh = self.gh_a(make_pr())
+        # Well past the confirm, remind and stall times of a ready PR.
+        self.assert_quiet(gh, sleeps=4000, stall_seconds=10800)
+        marks = load(self.dir)["marks"]["a"]
+        self.assertNotIn("ready_head", marks)
+        self.assertNotIn("stalled_key", marks)
+        with locked(self.dir) as state:
+            release(state, "a")
+        self.assertEqual(self.wait(gh), f"READY a 7 {HEAD_A}")
+
+    def test_no_stalled_right_after_a_long_hold_ends(self):
+        with locked(self.dir) as state:
+            hold(self.dir, state, "a", "waiting on owner", self.clock.now())
+        gh = self.gh_a(make_pr())
+        self.assert_quiet(gh, sleeps=2500, stall_seconds=3600)  # several stall windows pass while held
+        with locked(self.dir) as state:
+            release(state, "a")
+        start = self.clock.t
+        self.assertEqual(self.wait(gh, stall_seconds=3600, remind_seconds=1e9), f"READY a 7 {HEAD_A}")
+        # The stall window starts afresh at the release; the PR stays unchanged and ready for less than that.
+        self.assert_quiet(gh, sleeps=500, stall_seconds=3600, remind_seconds=1e9)
+        self.assertLess(self.clock.t - start, 3600)
+
+    def test_stalled_while_held_answer_sent(self):
+        # An `answer sent:` hold waits on the child to ask again, so a child that never does is reported.
+        with locked(self.dir) as state:
+            hold(self.dir, state, "a", "answer sent: naming", self.clock.now())
+        gh = self.gh_a(make_pr())
+        line = self.wait(gh, sleeps=2000, stall_seconds=3600, remind_seconds=1e9)
+        self.assertEqual(line, f"STALLED a 7 head={SHA_A7}")
+        self.assertNotIn("ready_head", load(self.dir)["marks"]["a"])
+
+    def test_no_stalled_while_held_for_another_reason(self):
+        with locked(self.dir) as state:
+            hold(self.dir, state, "a", "own session: naming", self.clock.now())
+        gh = self.gh_a(make_pr())
+        self.assert_quiet(gh, sleeps=2000, stall_seconds=3600, remind_seconds=1e9)
+
+    def test_ready_reported_afresh_after_hold_and_release_on_the_same_head(self):
+        gh = self.gh_a(make_pr())
+        self.assertEqual(self.wait(gh), f"READY a 7 {HEAD_A}")
+        with locked(self.dir) as state:
+            hold(self.dir, state, "a", "waiting on owner", self.clock.now())
+        self.assert_quiet(gh)
+        with locked(self.dir) as state:
+            release(state, "a")
+        self.assertEqual(self.wait(gh), f"READY a 7 {HEAD_A}")
 
 
 class OrphanTests(PrTestCase):

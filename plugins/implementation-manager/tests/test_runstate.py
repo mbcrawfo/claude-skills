@@ -14,15 +14,19 @@ from runstate import (
     enqueue,
     go,
     has_open_pr,
+    hold,
     init_run,
     load,
     locked,
+    mergeable,
     open_gate,
     openable,
+    queue_head,
     queue_order,
     record_closed,
     record_merged,
     redo,
+    release,
     reportable,
     set_option,
     stop_gate,
@@ -34,8 +38,10 @@ SHA1 = "1" * 40
 SHA2 = "2" * 40
 
 
-def add(state, name, prereqs=(), specs=False):
-    add_unit(state, name, prereqs=list(prereqs), branch=None, worktree=None, specs=specs)
+def add(state, name, prereqs=(), specs=False, after=(), title=None):
+    add_unit(
+        state, name, prereqs=list(prereqs), branch=None, worktree=None, specs=specs, after=list(after), title=title
+    )
 
 
 class RunStateTestCase(unittest.TestCase):
@@ -141,6 +147,9 @@ class UnitTests(RunStateTestCase):
             {
                 "order": 0,
                 "prereqs": [],
+                "after": [],
+                "hold": None,
+                "title": None,
                 "branch": None,
                 "worktree": None,
                 "specs": False,
@@ -680,6 +689,529 @@ class SlotTests(RunStateTestCase):
         self.assertIn("go_head", state["marks"]["a"])
         stop_gate(self.dir, state, "a", "cancelled")
         self.assertNotIn("go_head", state["marks"]["a"])
+
+
+class HoldTests(RunStateTestCase):
+    def setup_units(self, *names):
+        state = self.init()
+        for name in names:
+            add(state, name)
+        return state
+
+    def pushes(self):
+        return (self.dir / "pushes.log").read_text()
+
+    def test_hold_records_reason_and_time(self):
+        state = self.setup_units("u")
+        hold(self.dir, state, "u", "waiting on owner", 5.0)
+        self.assertEqual(state["units"]["u"]["hold"], {"reason": "waiting on owner", "at": 5.0})
+
+    def test_hold_rejects_unknown_done_multiline_and_double_hold(self):
+        state = self.setup_units("u", "d", "s", "v")
+        record_merged(state, "d", 1, more=False)
+        stop_gate(self.dir, state, "s", "dropped")
+        hold(self.dir, state, "u", "first", NOW)
+        before = json.dumps(state, sort_keys=True)
+        cases = (
+            ("zz", "reason"),
+            ("d", "reason"),
+            ("s", "reason"),
+            ("u", "second"),
+            ("u", "one\ntwo"),
+            ("v", "  "),  # R4-F1: blank reasons on a unit that is not held
+            ("v", ""),
+        )
+        for unit, reason in cases:
+            with self.subTest(unit=unit, reason=reason), self.assertRaises(RunError):
+                hold(self.dir, state, unit, reason, NOW)
+        self.assertEqual(json.dumps(state, sort_keys=True), before)
+        self.assertEqual(self.pushes(), "")
+
+    def test_a_rejected_hold_leaves_pending_requests_alone(self):
+        state = self.setup_units("u")
+        state["pending"].append({"unit": "u", "sha": SHA1, "branch": "b", "at": 1.0})
+        with self.assertRaises(RunError):
+            hold(self.dir, state, "u", "one\ntwo", NOW)
+        self.assertEqual(len(state["pending"]), 1)
+        self.assertEqual(self.pushes(), "")
+
+    def test_release_requires_a_hold(self):
+        state = self.setup_units("u")
+        with self.assertRaises(RunError):
+            release(state, "u")
+        hold(self.dir, state, "u", "why", NOW)
+        release(state, "u")
+        self.assertIsNone(state["units"]["u"]["hold"])
+        with self.assertRaises(RunError):
+            release(state, "u")
+        with self.assertRaises(RunError):
+            release(state, "zz")
+
+    def test_held_unit_is_not_mergeable_or_reportable(self):
+        state = self.setup_units("u")
+        self.assertTrue(mergeable(state, "u"))
+        self.assertTrue(reportable(state, "u"))
+        hold(self.dir, state, "u", "why", NOW)
+        self.assertFalse(mergeable(state, "u"))
+        self.assertFalse(reportable(state, "u"))
+        release(state, "u")
+        self.assertTrue(mergeable(state, "u"))
+        self.assertTrue(reportable(state, "u"))
+
+    def test_go_refuses_a_held_unit_before_the_slot_check(self):
+        state = self.setup_units("u", "v")
+        go(self.dir, state, "v", SHA2, NOW)
+        hold(self.dir, state, "u", "waiting on owner", NOW)
+        with self.assertRaises(RunError) as caught:
+            go(self.dir, state, "u", SHA1, NOW)
+        message = str(caught.exception)
+        self.assertEqual(message, "unit 'u' is held: waiting on owner; answer its push requests with: redo <sha> held")
+        self.assertNotIn("push slot", message)
+        self.assertEqual(self.pushes(), f"v go {SHA2}\n")
+
+    def test_go_refuses_a_held_unit_in_parallel_mode(self):
+        state = self.init(queue_mode="parallel")
+        add(state, "u")
+        hold(self.dir, state, "u", "why", NOW)
+        with self.assertRaises(RunError):
+            go(self.dir, state, "u", SHA1, NOW)
+        self.assertEqual(self.pushes(), "")
+
+    def test_go_works_again_after_release(self):
+        state = self.setup_units("u")
+        hold(self.dir, state, "u", "why", NOW)
+        release(state, "u")
+        go(self.dir, state, "u", SHA1, NOW)
+        self.assertEqual(state["slot"]["unit"], "u")
+
+    def test_hold_yields_the_slot_and_keeps_go_head(self):
+        state = self.setup_units("u")
+        state["marks"]["u"] = {"head": SHA2}
+        go(self.dir, state, "u", SHA1, NOW)
+        self.assertEqual(state["marks"]["u"]["go_head"], SHA2)
+        hold(self.dir, state, "u", "why", NOW)
+        self.assertIsNone(state["slot"])
+        self.assertEqual(state["marks"]["u"]["go_head"], SHA2)
+
+    def test_hold_leaves_another_units_slot_alone(self):
+        state = self.setup_units("u", "v")
+        go(self.dir, state, "v", SHA2, NOW)
+        hold(self.dir, state, "u", "why", NOW)
+        self.assertEqual(state["slot"]["unit"], "v")
+
+    def test_hold_answers_pending_requests_with_redo_held(self):
+        state = self.setup_units("u", "v")
+        (self.dir / "requests.log").write_text(f"u push {SHA1} b\n")
+        state["pending"] = [
+            {"unit": "u", "sha": SHA1, "branch": "b", "at": 1.0},
+            {"unit": "v", "sha": SHA2, "branch": "c", "at": 2.0},
+        ]
+        hold(self.dir, state, "u", "why", NOW)
+        self.assertEqual(self.pushes(), f"u redo {SHA1} held\n")
+        self.assertEqual([e["unit"] for e in state["pending"]], ["v"])
+        self.assertEqual(state["marks"]["u"]["answered"][SHA1], (self.dir / "requests.log").stat().st_size)
+
+    def test_hold_answers_a_queued_request_with_redo_held(self):
+        state = self.setup_units("u", "v")
+        (self.dir / "requests.log").write_text(f"u push {SHA1} b\n")
+        enqueue(self.dir, state, "u", SHA1, 1.0)
+        enqueue(self.dir, state, "v", SHA2, 2.0)
+        hold(self.dir, state, "u", "why", NOW)
+        self.assertEqual(self.pushes(), f"u redo {SHA1} held\n")
+        self.assertEqual([e["unit"] for e in state["queue"]], ["v"])
+        self.assertEqual(state["marks"]["u"]["answered"][SHA1], (self.dir / "requests.log").stat().st_size)
+
+    def test_hold_answers_a_sha_pending_and_queued_once(self):
+        state = self.setup_units("u")
+        state["pending"] = [{"unit": "u", "sha": SHA1, "branch": "b", "at": 1.0}]
+        state["queue"] = [{"unit": "u", "sha": SHA1, "at": 1.0, "front": False}]
+        hold(self.dir, state, "u", "why", NOW)
+        self.assertEqual(self.pushes(), f"u redo {SHA1} held\n")
+
+    def test_queue_refuses_a_held_unit_and_writes_nothing(self):
+        state = self.setup_units("u")
+        hold(self.dir, state, "u", "waiting on owner", NOW)
+        before = json.dumps(state, sort_keys=True)
+        with self.assertRaises(RunError) as caught:
+            enqueue(self.dir, state, "u", SHA1, NOW)
+        self.assertEqual(
+            str(caught.exception), "unit 'u' is held: waiting on owner; answer its push requests with: redo <sha> held"
+        )
+        self.assertEqual(json.dumps(state, sort_keys=True), before)
+        self.assertEqual(self.pushes(), "")
+
+    def test_release_restarts_the_stall_clock(self):
+        state = self.setup_units("u")
+        state["marks"]["u"] = {"signature": {"key": "7 abc", "at": 1.0}, "head": "abc"}
+        hold(self.dir, state, "u", "why", NOW)
+        state["marks"]["u"]["stalled_key"] = "7 abc"  # R1-F4: reported STALLED before the hold
+        release(state, "u")
+        self.assertNotIn("signature", state["marks"]["u"])
+        self.assertNotIn("stalled_key", state["marks"]["u"])
+        self.assertEqual(state["marks"]["u"]["head"], "abc")
+
+    def test_release_forgets_the_ready_report(self):
+        state = self.setup_units("u")
+        ready = {"ready_head": "7 abc", "ready_at": 1.0, "remind_head": "7 abc"}
+        state["marks"]["u"] = {**ready, "head": "abc", "behind_head": "abc"}
+        hold(self.dir, state, "u", "why", NOW)
+        release(state, "u")
+        self.assertEqual(state["marks"]["u"], {"head": "abc", "behind_head": "abc"})
+
+    def test_release_without_marks_is_fine(self):
+        state = self.setup_units("u")
+        hold(self.dir, state, "u", "why", NOW)
+        release(state, "u")
+        self.assertNotIn("u", state["marks"])
+
+    def test_hold_notes_no_answer_for_requests_already_read(self):
+        state = self.setup_units("u")
+        (self.dir / "requests.log").write_text(f"u push {SHA1} b\n")
+        state["requests_offset"] = (self.dir / "requests.log").stat().st_size
+        state["pending"] = [{"unit": "u", "sha": SHA1, "branch": "b", "at": 1.0}]
+        hold(self.dir, state, "u", "why", NOW)
+        self.assertNotIn("answered", state["marks"].get("u", {}))
+
+    def test_hold_drops_the_queue_entry(self):
+        state = self.setup_units("u", "v")
+        enqueue(self.dir, state, "u", SHA1, 1.0)
+        hold(self.dir, state, "u", "why", NOW)
+        self.assertEqual(state["queue"], [])
+        go(self.dir, state, "v", SHA2, NOW)  # the first queued unit would have blocked this
+        self.assertEqual(state["slot"]["unit"], "v")
+
+    def test_merged_closed_and_stop_clear_the_hold(self):
+        state = self.setup_units("a", "b", "c", "d")
+        for name in "abcd":
+            hold(self.dir, state, name, "why", NOW)
+        record_merged(state, "a", 1, more=False)
+        record_merged(state, "b", 2, more=True)
+        record_closed(state, "c", 3)
+        stop_gate(self.dir, state, "d", "dropped")
+        for name in "abcd":
+            self.assertIsNone(state["units"][name]["hold"], name)
+
+
+class AfterTests(RunStateTestCase):
+    def test_add_unit_defaults_include_after_hold_title(self):
+        state = self.init()
+        add(state, "a")
+        unit = state["units"]["a"]
+        self.assertEqual((unit["after"], unit["hold"], unit["title"]), ([], None, None))
+
+    def test_add_unit_title_set_and_kept(self):
+        state = self.init()
+        add(state, "a", title="8.7")
+        self.assertEqual(state["units"]["a"]["title"], "8.7")
+        add(state, "a", specs=True)
+        self.assertEqual(state["units"]["a"]["title"], "8.7")
+        add(state, "a", title="8.8")
+        self.assertEqual(state["units"]["a"]["title"], "8.8")
+
+    def test_add_unit_multi_line_title_refused(self):
+        state = self.init()
+        for bad in ("one\ntwo", "one\rtwo"):
+            with self.assertRaises(RunError) as caught:
+                add(state, "a", title=bad)
+            self.assertNotIn("\n", str(caught.exception))
+        self.assertNotIn("a", state["units"])
+        add(state, "b", title="fine")
+        with self.assertRaises(RunError):
+            add(state, "b", title="x\ny")
+        self.assertEqual(state["units"]["b"]["title"], "fine")
+
+    def test_load_fills_new_fields_on_an_old_run(self):
+        state = self.init()
+        add(state, "a")
+        for key in ("after", "hold", "title"):
+            del state["units"]["a"][key]
+        (self.dir / "run.json").write_text(json.dumps(state))
+        unit = load(self.dir)["units"]["a"]
+        self.assertEqual((unit["after"], unit["hold"], unit["title"]), ([], None, None))
+
+    def test_after_unknown_or_self_rejected(self):
+        state = self.init()
+        add(state, "a")
+        for after in (["zz"], ["b"]):
+            with self.assertRaises(RunError, msg=after):
+                add(state, "b", after=after)
+        self.assertNotIn("b", state["units"])
+
+    def test_after_and_prereq_on_same_unit_rejected(self):
+        state = self.init()
+        add(state, "a")
+        with self.assertRaises(RunError):
+            add(state, "b", prereqs=["a"], after=["a"])
+        self.assertNotIn("b", state["units"])
+
+    def test_cycle_across_prereq_and_after_rejected(self):
+        state = self.init()
+        add(state, "a")
+        add(state, "b", prereqs=["a"])
+        with self.assertRaises(RunError) as caught:
+            add_unit(state, "a", prereqs=None, branch=None, worktree=None, specs=None, after=["b"])
+        self.assertIn("wait on itself", str(caught.exception))
+        self.assertEqual(state["units"]["a"]["after"], [])
+
+    def test_after_empty_list_clears(self):
+        state = self.init()
+        add(state, "a")
+        add(state, "b", after=["a"])
+        self.assertEqual(state["units"]["b"]["after"], ["a"])
+        add(state, "b", after=[])
+        self.assertEqual(state["units"]["b"]["after"], [])
+
+    def test_after_none_keeps_the_list(self):
+        state = self.init()
+        add(state, "a")
+        add(state, "b", after=["a"])
+        add_unit(state, "b", prereqs=None, branch="x", worktree=None, specs=None)
+        self.assertEqual(state["units"]["b"]["after"], ["a"])
+
+    def test_after_does_not_gate_opening(self):
+        state = self.init()
+        add(state, "a")
+        add(state, "b", after=["a"])
+        self.assertEqual(openable(state), ["a", "b"])
+
+    def test_mergeable_waits_for_after_units(self):
+        state = self.init()
+        add(state, "a")
+        add(state, "b", after=["a"])
+        self.assertTrue(mergeable(state, "a"))
+        self.assertFalse(mergeable(state, "b"))
+        record_merged(state, "a", 1, more=False)
+        self.assertTrue(mergeable(state, "b"))
+
+    def test_stopped_after_unit_counts_as_satisfied(self):
+        state = self.init()
+        add(state, "a")
+        add(state, "b", after=["a"])
+        stop_gate(self.dir, state, "a", "dropped")
+        self.assertTrue(mergeable(state, "b"))
+
+    def test_wip_exempts_a_unit_an_open_unit_merges_after(self):
+        state = self.init(wip=1)
+        add(state, "a")
+        add(state, "b", after=["a"])
+        self.open_unit(state, "b")
+        self.assertEqual(openable(state), ["a"])
+
+    def test_wip_exemption_reaches_the_prerequisites_of_an_after_unit(self):
+        # R1-F1: a merges after b, b needs c; with a holding the only WIP place, c must still open.
+        state = self.init(wip=1)
+        add(state, "a")
+        add(state, "c")
+        add(state, "b", prereqs=["c"])
+        add(state, "a", after=["b"])
+        self.open_unit(state, "a")
+        self.assertEqual(openable(state), ["c"])
+
+    def test_wip_exemption_skips_a_stopped_after_unit(self):
+        # R2-F1: a stopped --after unit counts as merged, so nothing waits on its prerequisites.
+        state = self.init(wip=1)
+        add(state, "a")
+        add(state, "s")
+        add(state, "c")
+        add(state, "x")
+        add(state, "s", prereqs=["c"])
+        add(state, "a", after=["s"])
+        self.open_unit(state, "a")
+        stop_gate(self.dir, state, "s", "dropped")
+        self.assertEqual(openable(state), [])
+
+    def test_wip_exemption_applies_within_one_open_ready(self):
+        # R1-F2: a opens and takes the WIP place; b, which a merges after, opens in the same call.
+        state = self.init(wip=1)
+        add(state, "a")
+        add(state, "b")
+        add(state, "a", after=["b"])
+        self.assertEqual(openable(state), ["a", "b"])
+
+    def test_go_serial_allowed_when_the_after_unit_is_stopped(self):
+        # R1-F6
+        state = self.init()
+        add(state, "a")
+        add(state, "b", after=["a"])
+        stop_gate(self.dir, state, "a", "dropped")
+        go(self.dir, state, "b", SHA1, NOW)
+        self.assertEqual(state["slot"]["unit"], "b")
+
+    def test_cycle_of_after_edges_rejected(self):
+        # R1-F7
+        state = self.init()
+        add(state, "a")
+        add(state, "b", after=["a"])
+        with self.assertRaises(RunError):
+            add(state, "a", after=["b"])
+        self.assertEqual(state["units"]["a"]["after"], [])
+
+    def test_cycle_closed_by_a_prereq_over_an_after_edge_rejected(self):
+        # R1-F7
+        state = self.init()
+        add(state, "a")
+        add(state, "b", after=["a"])
+        with self.assertRaises(RunError):
+            add(state, "a", prereqs=["b"])
+        self.assertEqual(state["units"]["a"]["prereqs"], [])
+
+    def test_wip_exemption_ends_when_the_open_unit_is_done(self):
+        state = self.init(wip=1)
+        add(state, "a")
+        add(state, "b", after=["a"])
+        add(state, "c")
+        self.open_unit(state, "b")
+        state["units"]["b"]["done"] = True
+        self.open_unit(state, "c")
+        self.assertEqual(openable(state), [])
+
+    def test_exempt_unit_does_not_use_up_free_wip(self):
+        state = self.init(wip=2)
+        add(state, "a")
+        add(state, "b", after=["a"])
+        add(state, "c")
+        add(state, "d")
+        self.open_unit(state, "b")
+        self.assertEqual(openable(state), ["a", "c"])
+
+    def test_reportable_false_until_after_units_merge(self):
+        state = self.init(queue_mode="parallel")
+        add(state, "a")
+        add(state, "b", after=["a"])
+        self.assertFalse(reportable(state, "b"))
+        record_merged(state, "a", 1, more=False)
+        self.assertTrue(reportable(state, "b"))
+
+    def test_go_serial_refuses_a_unit_that_merges_after_an_unmerged_unit(self):
+        state = self.init()
+        add(state, "a")
+        add(state, "b", after=["a"])
+        with self.assertRaises(RunError) as caught:
+            go(self.dir, state, "b", SHA1, NOW)
+        self.assertIn("merges after 'a'", str(caught.exception))
+        self.assertEqual((self.dir / "pushes.log").read_text(), "")
+        self.assertIsNone(state["slot"])
+
+    def test_go_serial_allows_it_once_the_after_unit_merged(self):
+        state = self.init()
+        add(state, "a")
+        add(state, "b", after=["a"])
+        record_merged(state, "a", 1, more=False)
+        go(self.dir, state, "b", SHA1, NOW)
+        self.assertEqual((self.dir / "pushes.log").read_text(), f"b go {SHA1}\n")
+
+    def test_go_parallel_allows_it(self):
+        state = self.init(queue_mode="parallel")
+        add(state, "a")
+        add(state, "b", after=["a"])
+        go(self.dir, state, "b", SHA1, NOW)
+        self.assertEqual((self.dir / "pushes.log").read_text(), f"b go {SHA1}\n")
+
+    def test_first_queued_skips_units_not_mergeable(self):
+        state = self.init()
+        add(state, "a")
+        add(state, "b", after=["a"])
+        add(state, "c")
+        enqueue(self.dir, state, "b", SHA1, 1.0)
+        enqueue(self.dir, state, "c", SHA2, 2.0)
+        go(self.dir, state, "c", SHA2, NOW)
+        self.assertEqual(state["slot"]["unit"], "c")
+
+
+class SlotHolderAfterTests(RunStateTestCase):
+    """`--after` added to the slot holder mid-run: the holder can no longer merge, so it must not keep the slot."""
+
+    def setup_holder(self):
+        state = self.init()
+        add(state, "a")
+        add(state, "b")
+        state["marks"]["b"] = {"head": SHA2}
+        go(self.dir, state, "b", SHA1, NOW)
+        return state
+
+    def test_after_on_the_slot_holder_frees_the_slot_and_keeps_go_head(self):
+        state = self.setup_holder()
+        add(state, "b", after=["a"])
+        self.assertIsNone(state["slot"])
+        self.assertEqual(state["marks"]["b"]["go_head"], SHA2)
+
+    def test_after_on_the_slot_holder_keeps_the_slot_when_the_after_unit_is_done(self):
+        state = self.setup_holder()
+        record_merged(state, "a", 1, more=False)
+        add(state, "b", after=["a"])
+        self.assertEqual(state["slot"]["unit"], "b")
+
+    def test_after_on_another_unit_leaves_the_slot_alone(self):
+        state = self.setup_holder()
+        add(state, "c", after=["a"])
+        self.assertEqual(state["slot"]["unit"], "b")
+
+    def test_go_for_the_after_unit_succeeds_once_the_holder_gains_after(self):
+        state = self.setup_holder()
+        add(state, "b", after=["a"])
+        go(self.dir, state, "a", SHA2, NOW + 1)
+        self.assertEqual(state["slot"]["unit"], "a")
+        enqueue(self.dir, state, "b", SHA1, NOW + 2)
+        self.assertEqual([e["unit"] for e in state["queue"]], ["b"])
+
+    def test_queue_by_an_unmergeable_slot_holder_drops_the_slot_and_queues_it(self):
+        state = self.setup_holder()
+        state["units"]["b"]["after"] = ["a"]  # a run.json written before add_unit freed the slot
+        enqueue(self.dir, state, "b", SHA1, NOW + 1)
+        self.assertIsNone(state["slot"])
+        self.assertEqual([(e["unit"], e["sha"]) for e in state["queue"]], [("b", SHA1)])
+        go(self.dir, state, "a", SHA2, NOW + 2)
+        self.assertEqual(state["slot"]["unit"], "a")
+
+    def test_freeing_the_holder_marks_it_to_ask_again(self):
+        state = self.setup_holder()
+        add(state, "b", after=["a"])
+        self.assertTrue(state["marks"]["b"]["freed_for_after"])
+
+    def test_answers_and_endings_clear_the_freed_mark(self):
+        def freed():
+            state = self.setup_holder()
+            add(state, "b", after=["a"])
+            return state
+
+        def go_after_merge(state):
+            record_merged(state, "a", 1, more=False)
+            go(self.dir, state, "b", SHA1, NOW + 1)
+
+        for name, action in (
+            ("go", go_after_merge),
+            ("queue", lambda state: enqueue(self.dir, state, "b", SHA1, NOW + 1)),
+            ("redo", lambda state: redo(self.dir, state, "b", SHA1, "changes-since-review")),
+            ("merged", lambda state: record_merged(state, "b", 7, more=False)),
+            ("closed", lambda state: record_closed(state, "b", 7)),
+            ("stop", lambda state: stop_gate(self.dir, state, "b", "dropped")),
+        ):
+            with self.subTest(name):
+                self.dir = self.dir.parent / f"run-{name}"  # a fresh run per case
+                state = freed()
+                action(state)
+                self.assertNotIn("freed_for_after", state["marks"]["b"])
+
+    def test_queue_by_a_mergeable_slot_holder_is_still_refused(self):
+        state = self.setup_holder()
+        with self.assertRaises(RunError) as caught:
+            enqueue(self.dir, state, "b", SHA1, NOW + 1)
+        self.assertIn("already holds the push slot", str(caught.exception))
+        self.assertEqual(state["slot"]["unit"], "b")
+
+
+class QueueHeadTests(RunStateTestCase):
+    def test_queue_head_is_the_first_entry_not_done_and_mergeable(self):
+        state = self.init()
+        for name in ("a", "b", "c", "d"):
+            add(state, name)
+        add(state, "c", after=["d"])
+        self.assertIsNone(queue_head(state))
+        enqueue(self.dir, state, "a", SHA1, 1.0)
+        enqueue(self.dir, state, "c", SHA2, 2.0)
+        enqueue(self.dir, state, "b", SHA2, 3.0)
+        record_merged(state, "a", 1, more=False)
+        self.assertEqual(queue_head(state), {"unit": "b", "sha": SHA2, "at": 3.0, "front": False})
 
 
 if __name__ == "__main__":

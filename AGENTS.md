@@ -2,6 +2,13 @@
 
 This repo is a Claude Code plugin marketplace (`mbcrawfo-skills`). See README.md for layout.
 
+## Core rules
+
+These apply to all development in this project.
+
+1. **Document deferred work.**  Any work that is not implemented as planned must be documented in `docs/deferred`, in the same PR that defers it.
+2. **Document tech debt.**  Any problem identified and not resolved, or any intentional choice that is known to be sub-optimal, must be documented in `docs/tech-debt`, in the same PR that discovers or introduces it.
+
 ## Agent instructions
 
 - AGENTS.md is the standard instruction file for this repo. Put all agent guidance here. Do not create CLAUDE.md, GEMINI.md or other tool-specific instruction files.

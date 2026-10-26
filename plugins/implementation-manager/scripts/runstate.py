@@ -16,6 +16,9 @@ REQUESTS = "requests.log"
 PUSHES = "pushes.log"
 GATES = "gates.log"
 
+# A unit's mark: it lost the slot when it gained --after, and has not asked to push since.
+FREED_MARK = "freed_for_after"
+
 # The watcher's mark for the last NEXT it reported; not a unit name, since unit names start with a letter or digit.
 NEXT_MARK = "_next"
 
@@ -110,6 +113,10 @@ def load(run_dir: Path) -> dict:
     missing = [key for key in STATE_KEYS if key not in state]
     if missing:
         raise RunError(f"{path} is missing {', '.join(missing)}")
+    for unit in state["units"].values():  # fields added since a run began
+        unit.setdefault("after", [])
+        unit.setdefault("hold", None)
+        unit.setdefault("title", None)
     return state
 
 
@@ -134,20 +141,65 @@ def _unit(state: dict, name: str) -> dict:
         raise RunError(f"unknown unit {name!r}") from None
 
 
+def _check_order_edges(state: dict, name: str, prereqs: list[str], after: list[str]) -> None:
+    """Refuse a unit whose prerequisites or merge-order units are unknown, overlap, or lead back to the unit."""
+    units = state["units"]
+    for prereq in prereqs:
+        if prereq not in units or prereq == name:
+            raise RunError(f"unit {name!r} has unknown prerequisite {prereq!r}")
+    for other in after:
+        if other not in units or other == name:
+            raise RunError(f"unit {name!r} has unknown merge-order unit {other!r}")
+    for other in after:
+        if other in prereqs:
+            raise RunError(f"unit {name!r} cannot both need and merge after {other!r}")
+    for start in [*prereqs, *after]:
+        seen: set[str] = set()
+        pending = [start]
+        while pending:
+            current = pending.pop()
+            if current == name:
+                raise RunError(f"unit {name!r} would wait on itself through {start!r}")
+            if current not in seen:
+                seen.add(current)
+                pending += units[current]["prereqs"] + units[current]["after"]
+
+
 def add_unit(
-    state: dict, name: str, *, prereqs: list[str] | None, branch: str | None, worktree: str | None, specs: bool | None
+    state: dict,
+    name: str,
+    *,
+    prereqs: list[str] | None,
+    branch: str | None,
+    worktree: str | None,
+    specs: bool | None,
+    after: list[str] | None = None,
+    title: str | None = None,
 ) -> None:
-    """Add a unit, or update the fields given on an existing one; None keeps the old value."""
+    """Add a unit, or update the fields given on an existing one; None keeps the old value.
+
+    `after` lists the units that must merge before this one does; [] clears it. A unit may not wait on itself
+    through its prerequisites and `after` units together. `title` is a one-line display label for status.
+    A slot holder that can no longer merge gives the slot up, as for `hold`: it would block the units it waits for.
+    """
     if not re.fullmatch(UNIT_RE, name):
         raise RunError(f"bad unit name {name!r}: use letters, digits, '_' and '-', starting with a letter or digit")
-    for prereq in prereqs or []:
-        if prereq not in state["units"] or prereq == name:
-            raise RunError(f"unit {name!r} has unknown prerequisite {prereq!r}")
+    if title is not None and ("\n" in title or "\r" in title):
+        raise RunError(f"bad title {title!r}: use a single line")
     unit = state["units"].get(name)
+    _check_order_edges(
+        state,
+        name,
+        prereqs if prereqs is not None else (unit["prereqs"] if unit else []),
+        after if after is not None else (unit["after"] if unit else []),
+    )
     if unit is None:
         unit = state["units"][name] = {
             "order": len(state["units"]),
             "prereqs": [],
+            "after": [],
+            "hold": None,
+            "title": None,
             "branch": None,
             "worktree": None,
             "specs": False,
@@ -156,9 +208,20 @@ def add_unit(
             "done": False,
             "prs": {},
         }
-    for key, value in (("prereqs", prereqs), ("branch", branch), ("worktree", worktree), ("specs", specs)):
+    for key, value in (
+        ("prereqs", prereqs),
+        ("after", after),
+        ("branch", branch),
+        ("worktree", worktree),
+        ("specs", specs),
+        ("title", title),
+    ):
         if value is not None:
-            unit[key] = list(value) if key == "prereqs" else value
+            unit[key] = list(value) if key in ("prereqs", "after") else value
+    if _holds_slot(state, name) and not mergeable(state, name):
+        state["slot"] = None  # a `go` not pushed yet stays outstanding, as for `hold`
+        # Nothing will make its child ask again: status says when it may, once its --after units merge.
+        state["marks"].setdefault(name, {})[FREED_MARK] = True
 
 
 def set_option(state: dict, key: str, value: str) -> None:
@@ -178,23 +241,57 @@ def set_option(state: dict, key: str, value: str) -> None:
         raise RunError(f"unknown option {key!r}: use wip or queue")
 
 
-def openable(state: dict) -> list[str]:
-    """Closed-gate units whose prerequisites are done, in order, cut to the free WIP; specs units are never cut."""
+def mergeable(state: dict, unit: str) -> bool:
+    """True when the unit is not held and every unit it merges after is done or stopped."""
+    record = _unit(state, unit)
     units = state["units"]
+    return record["hold"] is None and all(units[u]["done"] or units[u]["gate"] == "stopped" for u in record["after"])
+
+
+def _merge_targets(units: dict, active: set[str]) -> set[str]:
+    """Units the active units must wait to merge: their --after units and all those need or merge after, unstopped."""
+    pending = [other for name in active for other in units[name]["after"]]
+    seen: set[str] = set()
+    while pending:
+        current = pending.pop()
+        # A stopped unit counts as merged, so nothing waits on it or on what it needs.
+        if current not in seen and units[current]["gate"] != "stopped":
+            seen.add(current)
+            pending += units[current]["prereqs"] + units[current]["after"]
+    return {name for name in seen if not units[name]["done"]}
+
+
+def openable(state: dict) -> list[str]:
+    """Closed-gate units whose prerequisites are done, in order, cut to the free WIP.
+
+    Specs units are never cut, nor is a unit that an open (or opening) unmerged unit must wait to merge: its --after
+    units, and everything those need or merge after. It must open for that unit to merge, so it does not wait on or
+    use up the WIP. Each unit that opens can exempt more, so the list is built until nothing more is added.
+    """
+    units = state["units"]
+    active = {name for name, u in units.items() if u["gate"] == "open" and not u["done"]}
     wip = state["wip"]
-    in_flight = sum(1 for u in units.values() if u["gate"] == "open" and not u["done"] and not u["specs"])
+    in_flight = sum(1 for name in active if not units[name]["specs"])
     free = None if wip is None else max(wip - in_flight, 0)
-    result = []
-    for name, unit in sorted(units.items(), key=lambda item: item[1]["order"]):
-        if unit["gate"] != "closed" or not all(units[p]["done"] for p in unit["prereqs"]):
-            continue
-        if unit["specs"]:
+    result: list[str] = []
+    added = True
+    while added:
+        added = False
+        exempt = _merge_targets(units, active)
+        for name, unit in sorted(units.items(), key=lambda item: item[1]["order"]):
+            if name in result or unit["gate"] != "closed" or not all(units[p]["done"] for p in unit["prereqs"]):
+                continue
+            if unit["specs"] or name in exempt:
+                pass
+            elif free is None or free > 0:
+                if free is not None:
+                    free -= 1
+            else:
+                continue
             result.append(name)
-        elif free is None or free > 0:
-            result.append(name)
-            if free is not None:
-                free -= 1
-    return result
+            active.add(name)
+            added = True
+    return sorted(result, key=lambda name: units[name]["order"])
 
 
 def _append(run_dir: Path, filename: str, line: str) -> None:
@@ -217,22 +314,30 @@ def stop_gate(run_dir: Path, state: dict, unit: str, reason: str) -> None:
     """Log that a unit stopped, with a one-line reason.
 
     Its gate is now `stopped`: it never opens, counts to WIP, gets `go` or joins the queue. It gives up the slot,
-    and its queued and pending requests are dropped.
+    its hold is lifted, and its queued and pending requests are dropped.
     """
     record = _unit(state, unit)
     if "\n" in reason or "\r" in reason:
         raise RunError("a stop reason must be a single line")
     _append(run_dir, GATES, f"{unit} stop {reason}\n")
     record["gate"] = "stopped"
+    record["hold"] = None
     if _holds_slot(state, unit):
         state["slot"] = None
     _drop_entries(state, unit, "pending", "queue")
+    _forget_freed(state, unit)
     state["marks"].get(unit, {}).pop("go_head", None)  # a stopped unit is not pushing
 
 
 def _refuse_stopped(record: dict, unit: str) -> None:
     if record["gate"] == "stopped":
         raise RunError(f"unit {unit!r} is stopped; answer its push requests with: redo <sha> unit-stopped")
+
+
+def _refuse_held(record: dict, unit: str) -> None:
+    if record["hold"] is not None:
+        reason = record["hold"]["reason"]
+        raise RunError(f"unit {unit!r} is held: {reason}; answer its push requests with: redo <sha> held")
 
 
 def has_open_pr(state: dict, unit: str) -> bool:
@@ -245,6 +350,11 @@ def _check_sha(sha: str) -> None:
         raise RunError(f"sha must be a full 40-character lowercase hex commit id, got {sha!r}")
 
 
+def _forget_freed(state: dict, unit: str) -> None:
+    """The unit asked again, merged, closed or stopped: status no longer needs to prompt it."""
+    state["marks"].get(unit, {}).pop(FREED_MARK, None)
+
+
 def _drop_entries(state: dict, unit: str, *keys: str) -> None:
     for key in keys:
         state[key] = [entry for entry in state[key] if entry["unit"] != unit]
@@ -254,12 +364,18 @@ def _holds_slot(state: dict, unit: str) -> bool:
     return state["slot"] is not None and state["slot"]["unit"] == unit
 
 
-def _first_queued(state: dict) -> str | None:
-    """The unit first in the queue, skipping done units, whose entries the watcher drops."""
+def queue_head(state: dict) -> dict | None:
+    """The queue entry served next: the first in queue order whose unit is not done and is mergeable."""
     for entry in queue_order(state):
-        if not state["units"][entry["unit"]]["done"]:
-            return entry["unit"]
+        if not state["units"][entry["unit"]]["done"] and mergeable(state, entry["unit"]):
+            return entry
     return None
+
+
+def _first_queued(state: dict) -> str | None:
+    """The unit at the head of the queue, if any."""
+    head = queue_head(state)
+    return head["unit"] if head else None
 
 
 def _note_answered(run_dir: Path, state: dict, unit: str, sha: str) -> None:
@@ -280,15 +396,20 @@ def _note_answered(run_dir: Path, state: dict, unit: str, sha: str) -> None:
 def go(run_dir: Path, state: dict, unit: str, sha: str, now: float) -> None:
     """Answer a push request with `go`: log it and, in serial mode, take the slot.
 
-    In serial mode it refuses while another unit holds the slot, or while the slot is free and another unit is
-    first in the queue.
+    It refuses a held unit. In serial mode it also refuses while the unit merges after an unmerged unit, while
+    another unit holds the slot, or while the slot is free and another unit is first in the queue.
     """
     record = _unit(state, unit)
     _check_sha(sha)
     if record["done"]:
         raise RunError(f"unit {unit!r} is done; answer its push requests with: redo <sha> pr-merged")
     _refuse_stopped(record, unit)
+    _refuse_held(record, unit)
     if state["queue_mode"] == "serial":
+        units = state["units"]
+        for other in record["after"]:
+            if not units[other]["done"] and units[other]["gate"] != "stopped":
+                raise RunError(f"unit {unit!r} merges after {other!r}; use queue to line it up until it merges")
         holder = state["slot"]["unit"] if state["slot"] else None
         if holder not in (None, unit):
             raise RunError(f"the push slot is held by {holder!r}; use queue to line {unit!r} up behind it")
@@ -298,6 +419,7 @@ def go(run_dir: Path, state: dict, unit: str, sha: str, now: float) -> None:
     _append(run_dir, PUSHES, f"{unit} go {sha}\n")
     _note_answered(run_dir, state, unit, sha)
     _drop_entries(state, unit, "pending", "queue")
+    _forget_freed(state, unit)
     marks = state["marks"].setdefault(unit, {})
     if marks.get("head") == sha:
         # The approved commit is already the PR's head: there is nothing new to wait for.
@@ -323,22 +445,31 @@ def redo(run_dir: Path, state: dict, unit: str, sha: str, reasons: str) -> None:
     _append(run_dir, PUSHES, f"{unit} redo {sha} {reasons}\n")
     _note_answered(run_dir, state, unit, sha)
     _drop_entries(state, unit, "pending", "queue")
+    _forget_freed(state, unit)
     state["marks"].get(unit, {}).pop("go_head", None)
     if _holds_slot(state, unit):
         state["slot"] = None
 
 
 def enqueue(run_dir: Path, state: dict, unit: str, sha: str, now: float) -> None:
-    """Line a unit's request up behind the slot holder, replacing any earlier entry; the same sha keeps its time."""
-    _refuse_stopped(_unit(state, unit), unit)
+    """Line a unit's request up behind the slot holder, replacing any earlier entry; the same sha keeps its time.
+
+    A slot holder that can no longer merge (it gained an `--after` unit) gives the slot up and is queued.
+    """
+    record = _unit(state, unit)
+    _refuse_stopped(record, unit)
+    _refuse_held(record, unit)
     _check_sha(sha)
     if state["queue_mode"] == "parallel":
         raise RunError("queue is not used in parallel mode; answer with go")
     if _holds_slot(state, unit):
-        raise RunError(f"unit {unit!r} already holds the push slot")
+        if mergeable(state, unit):
+            raise RunError(f"unit {unit!r} already holds the push slot")
+        state["slot"] = None
     # The same sha queued again (a NEXT whose go was refused) keeps its place.
     at = next((entry["at"] for entry in state["queue"] if entry["unit"] == unit and entry["sha"] == sha), now)
     _drop_entries(state, unit, "pending", "queue")
+    _forget_freed(state, unit)
     _note_answered(run_dir, state, unit, sha)
     state["queue"].append({"unit": unit, "sha": sha, "at": at, "front": has_open_pr(state, unit)})
 
@@ -361,26 +492,71 @@ def yield_slot(state: dict, unit: str, reason: str, now: float) -> None:
     state["slot"] = None
 
 
-def record_merged(state: dict, unit: str, pr: int, *, more: bool) -> None:
-    """Note a merged PR: free the slot if held, and mark the unit done unless more PRs are coming."""
+def hold(run_dir: Path, state: dict, unit: str, reason: str, now: float) -> None:
+    """Hold a unit's merge, with a one-line reason, until `release`, `merged`, `closed` or `stop`.
+
+    A held unit is not mergeable: it is not reported READY or REMIND, not STALLED unless the reason starts with
+    `answer sent:` (that hold waits on the child), and never heads the queue, and `go` and `queue` refuse it. Its
+    pending and queued requests are answered `redo held`, and it gives up the slot. A `go` it has not pushed yet
+    stays outstanding, as for `yield`.
+    """
     record = _unit(state, unit)
+    if "\n" in reason or "\r" in reason or not reason.strip():
+        raise RunError("a hold reason must be a single non-empty line")
+    if record["done"]:
+        raise RunError(f"unit {unit!r} is done and cannot be held")
+    _refuse_stopped(record, unit)
+    if record["hold"] is not None:
+        raise RunError(f"unit {unit!r} is already held: {record['hold']['reason']}")
+    unanswered = [e["sha"] for key in ("pending", "queue") for e in state[key] if e["unit"] == unit]
+    for sha in dict.fromkeys(unanswered):  # each sha once, in order
+        _append(run_dir, PUSHES, f"{unit} redo {sha} held\n")
+        _note_answered(run_dir, state, unit, sha)
+    _drop_entries(state, unit, "pending", "queue")
+    if _holds_slot(state, unit):
+        state["slot"] = None
+    record["hold"] = {"reason": reason, "at": now}
+
+
+def release(state: dict, unit: str) -> None:
+    """Lift a unit's hold; it is mergeable again, and the watcher reports it afresh.
+
+    The stall clock restarts: the hold was waiting on purpose, so the watcher starts a new stall window. A READY
+    or REMIND reported before the hold is forgotten, so the same head is reported READY again.
+    """
+    record = _unit(state, unit)
+    if record["hold"] is None:
+        raise RunError(f"unit {unit!r} is not held")
+    record["hold"] = None
+    marks = state["marks"].get(unit, {})
+    for key in ("signature", "stalled_key", "ready_head", "ready_at", "remind_head"):
+        marks.pop(key, None)
+
+
+def record_merged(state: dict, unit: str, pr: int, *, more: bool) -> None:
+    """Note a merged PR: free the slot if held, lift any hold, and mark the unit done unless more PRs are coming."""
+    record = _unit(state, unit)
+    _forget_freed(state, unit)
     record["prs"][str(pr)] = "MERGED"
+    record["hold"] = None
     if _holds_slot(state, unit):
         state["slot"] = None
     record["done"] = not more
 
 
 def record_closed(state: dict, unit: str, pr: int) -> None:
-    """Note a PR closed without merging, and free the slot if the unit holds it."""
+    """Note a PR closed without merging, lift any hold, and free the slot if the unit holds it."""
     record = _unit(state, unit)
+    _forget_freed(state, unit)
     record["prs"][str(pr)] = "CLOSED"
+    record["hold"] = None
     if _holds_slot(state, unit):
         state["slot"] = None
 
 
 def reportable(state: dict, unit: str) -> bool:
-    """True when the unit may be reported on (READY/REMIND): it is not stopped, and the run is in parallel mode or
-    the slot is free or its own."""
-    if _unit(state, unit)["gate"] == "stopped":
+    """True when the unit may be reported on (READY/REMIND): it is not stopped, it is mergeable, and the run is in
+    parallel mode or the slot is free or its own."""
+    if _unit(state, unit)["gate"] == "stopped" or not mergeable(state, unit):
         return False
     return state["queue_mode"] == "parallel" or state["slot"] is None or state["slot"]["unit"] == unit

@@ -4,7 +4,7 @@
 The run folder is always the first argument after the subcommand:
 
   init <dir> --repo O/R --base B --method merge|squash|rebase [--wip N] [--queue serial|parallel]
-  unit <dir> <name> [--prereq U ...] [--branch B] [--worktree P] [--specs]
+  unit <dir> <name> [--prereq U ...] [--after U ...|none] [--branch B] [--worktree P] [--specs] [--title T]
   set <dir> wip <N|none> | set <dir> queue <serial|parallel>
                                     in parallel mode, print each request still queued: queued <unit> <sha>
   open <dir> <unit>                 open one gate
@@ -12,6 +12,8 @@ The run folder is always the first argument after the subcommand:
   stop <dir> <unit> <reason...>     the unit never opens, gets go or queues again, and gives up the slot
   go <dir> <unit> <sha>             serial mode: take the push slot, or refuse while another unit holds it
   redo <dir> <unit> <sha> <reasons...>
+  hold <dir> <unit> <reason...>     hold the unit's merge: no READY or REMIND, no go, not first in the queue
+  release <dir> <unit>              lift the hold
   queue <dir> <unit> <sha>          line a covered request up behind the slot holder
   yield <dir> <unit> <reason...>    the slot holder gives the slot up
   merged <dir> <unit> <pr> [--more] record a merge; print the gates that may open now, one per line
@@ -78,6 +80,12 @@ def _behind_holder(state: dict, unit: str) -> bool:
     )
 
 
+def _label(state: dict, name: str) -> str:
+    """The unit's name with its display title, for lines a person reads; commands keep the bare name."""
+    title = state["units"][name]["title"]
+    return f"{name} ({title})" if title else name
+
+
 def _needs(run_dir: Path, state: dict) -> list[str]:
     """What waits on the manager, one line each."""
     units = state["units"]
@@ -96,19 +104,32 @@ def _needs(run_dir: Path, state: dict) -> list[str]:
         marks = state["marks"].get(name, {})
         if record["done"]:
             continue
+        hold = record["hold"]
+        if hold:
+            needs.append(f"hold {_label(state, name)}: {hold['reason']} since {_clock(hold['at'])}")
         ready = marks.get("ready_head")
-        if ready:
+        if ready and runstate.mergeable(state, name):  # not held, and every --after unit merged or stopped
             pr, _, sha = ready.partition(" ")
             if record["prs"].get(pr) == "OPEN" and marks.get("head") == sha:
-                needs.append(f"{name} PR #{pr} ready since {_clock(marks['ready_at'])}")
+                needs.append(f"{_label(state, name)} PR #{pr} ready since {_clock(marks['ready_at'])}")
         if "go_head" in marks:
             sha = _last_go(run_dir, name)
             needs.append(f"push approved for {name} {sha[:7] if sha else '-'}, not seen yet")
         elif _behind_holder(state, name):
             needs.append(f"slot holder {name} PR #{marks['pr']} behind base")
-    if state["queue_mode"] == "serial" and state["slot"] is None and state["queue"]:
-        head = runstate.queue_order(state)[0]
-        needs.append(f"slot free with a queue, next {head['unit']} {head['sha']}")
+        if (
+            marks.get(runstate.FREED_MARK)
+            and record["gate"] != "stopped"
+            and runstate.mergeable(state, name)
+            and "go_head" not in marks
+            and not any(entry["unit"] == name for entry in state["pending"] + state["queue"])
+        ):
+            # It lost the slot when it gained --after, and nothing else makes its child ask again.
+            needs.append(f"{name} can merge now its --after units merged: ask it to sync and push")
+    if state["queue_mode"] == "serial" and state["slot"] is None:
+        head = runstate.queue_head(state)  # the head the watcher reports as NEXT
+        if head:
+            needs.append(f"slot free with a queue, next {head['unit']} {head['sha']}")
     needs += [f"bad request line: {line}" for line in state["bad_requests"]]
     needs += [f"gate {name} may open" for name in runstate.openable(state)]
     return needs
@@ -123,7 +144,12 @@ def _status(run_dir: Path, state: dict) -> str:
     lines.append(f"- slot: {slot['unit']} {slot['sha'][:7]} since {_clock(slot['at'])}" if slot else "- slot: free")
     queue = [f"{entry['unit']} {entry['sha'][:7]}" for entry in runstate.queue_order(state)]
     lines.append(f"- queue: {', '.join(queue)}" if queue else "- queue: empty")
-    merged = [f"{name} #{pr}" for name in order for pr, status in units[name]["prs"].items() if status == "MERGED"]
+    merged = [
+        f"{_label(state, name)} #{pr}"
+        for name in order
+        for pr, status in units[name]["prs"].items()
+        if status == "MERGED"
+    ]
     lines.append(f"- merged: {', '.join(merged) or 'none'}")
     open_units = []
     gated = []
@@ -133,16 +159,22 @@ def _status(run_dir: Path, state: dict) -> str:
         if record["done"]:
             continue
         if record["gate"] == "stopped":
-            gated.append(f"{name} stopped")
+            gated.append(f"{_label(state, name)} stopped")
         elif record["gate"] == "open":
             prs = [pr for pr, status in record["prs"].items() if status == "OPEN"]
-            open_units.append(f"{name} PR #{max(prs, key=int)}" if prs else f"{name} working")
+            label = _label(state, name)
+            entry = f"{label} PR #{max(prs, key=int)}" if prs else f"{label} working"
+            unmerged = [u for u in record["after"] if not units[u]["done"] and units[u]["gate"] != "stopped"]
+            if unmerged:
+                entry += f", merges after {', '.join(_label(state, u) for u in unmerged)}"
+            open_units.append(entry)
         else:
             waiting_on = [p for p in record["prereqs"] if not units[p]["done"]]
             if waiting_on:
-                gated.append(f"{name} on {', '.join(waiting_on)}")
+                gated.append(f"{_label(state, name)} on {', '.join(_label(state, p) for p in waiting_on)}")
             else:
-                gated.append(f"{name} may open" if name in openable else f"{name} on WIP")
+                label = _label(state, name)
+                gated.append(f"{label} may open" if name in openable else f"{label} on WIP")
     lines.append(f"- open: {', '.join(open_units) or 'none'}")
     lines.append(f"- gated: {', '.join(gated) or 'none'}")
     needs = _needs(run_dir, state)
@@ -190,9 +222,11 @@ def _parser() -> argparse.ArgumentParser:
     p = command("unit", "add a unit, or update the fields given")
     p.add_argument("name")
     p.add_argument("--prereq", nargs="+", action="extend", metavar="U")
+    p.add_argument("--after", nargs="+", action="extend", metavar="U", help="units that merge first; none clears")
     p.add_argument("--branch")
     p.add_argument("--worktree")
     p.add_argument("--specs", action="store_true", default=None, help="the manager's own planning PR")
+    p.add_argument("--title", help="one-line display label shown beside the name in status")
 
     p = command("set", "change the WIP limit or the queue mode")
     p.add_argument("key", choices=("wip", "queue"))
@@ -213,6 +247,11 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("unit")
     p.add_argument("sha")
     p.add_argument("reasons", nargs="+")
+    p = command("hold", "hold a unit's merge")
+    p.add_argument("unit")
+    p.add_argument("reason", nargs="+")
+    p = command("release", "lift a unit's merge hold")
+    p.add_argument("unit")
     p = command("yield", "take the push slot from its holder")
     p.add_argument("unit")
     p.add_argument("reason", nargs="+")
@@ -281,8 +320,18 @@ def _run(args: argparse.Namespace) -> str | None:
         return check_once(state["repo"], record["branch"], gh=run_gh, sleep=time.sleep)
     with locked(run_dir) as state:
         if command == "unit":
+            if args.after and "none" in args.after and len(args.after) > 1:
+                raise RunError("--after none clears the list; give it alone")
+            after = [] if args.after == ["none"] else args.after
             runstate.add_unit(
-                state, args.name, prereqs=args.prereq, branch=args.branch, worktree=args.worktree, specs=args.specs
+                state,
+                args.name,
+                prereqs=args.prereq,
+                after=after,
+                branch=args.branch,
+                worktree=args.worktree,
+                specs=args.specs,
+                title=args.title,
             )
         elif command == "set":
             runstate.set_option(state, args.key, args.value)
@@ -303,6 +352,10 @@ def _run(args: argparse.Namespace) -> str | None:
             runstate.go(run_dir, state, args.unit, args.sha, now)
         elif command == "redo":
             runstate.redo(run_dir, state, args.unit, args.sha, " ".join(args.reasons))
+        elif command == "hold":
+            runstate.hold(run_dir, state, args.unit, " ".join(args.reason), now)
+        elif command == "release":
+            runstate.release(state, args.unit)
         elif command == "queue":
             runstate.enqueue(run_dir, state, args.unit, args.sha, now)
         elif command == "yield":

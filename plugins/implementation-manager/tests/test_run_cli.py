@@ -87,6 +87,14 @@ class SetupTests(CliTestCase):
         self.assertEqual(state["wip"], 1)
         self.assertEqual(state["units"]["b"]["prereqs"], ["a"])
 
+    def test_unit_after_and_none(self):
+        self.init()
+        self.ok("unit", str(self.dir), "a")
+        self.ok("unit", str(self.dir), "b", "--after", "a")
+        self.assertEqual(self.state()["units"]["b"]["after"], ["a"])
+        self.ok("unit", str(self.dir), "b", "--after", "none")
+        self.assertEqual(self.state()["units"]["b"]["after"], [])
+
     def test_init_creates_the_files(self):
         self.init()
         for name in ("run.json", "requests.log", "pushes.log", "gates.log"):
@@ -159,6 +167,14 @@ class PushTests(CliTestCase):
         self.assertEqual(len(result.stderr.splitlines()), 1)
         self.assertIn("held by 'a'", result.stderr)
         self.assertEqual(self.read("pushes.log"), f"a go {SHA1}\n")
+
+    def test_after_on_the_slot_holder_frees_the_slot(self):
+        self.ok("go", str(self.dir), "b", SHA1)
+        self.ok("unit", str(self.dir), "b", "--after", "a")
+        self.assertIn("- slot: free", self.ok("status", str(self.dir)).splitlines())
+        self.ok("go", str(self.dir), "a", SHA2)
+        self.ok("queue", str(self.dir), "b", SHA3)
+        self.assertEqual(self.read("pushes.log"), f"b go {SHA1}\na go {SHA2}\n")
 
     def test_go_refused_while_another_unit_is_first_in_the_queue_exit_1(self):
         self.ok("unit", str(self.dir), "c")
@@ -320,6 +336,87 @@ class StatusTests(CliTestCase):
         self.assertEqual(lines[6], "- needs the manager:")
         self.assertEqual(lines[7:], ["  - push approved for a 1111111, not seen yet"])
 
+    def test_status_shows_merges_after(self):
+        self.init()
+        self.ok("unit", str(self.dir), "a")
+        self.ok("unit", str(self.dir), "b", "--after", "a")
+        self.ok("open", str(self.dir), "b")
+        self.assertIn("- open: b working, merges after a", self.ok("status", str(self.dir)).splitlines())
+
+    def test_status_shows_titles(self):
+        self.init()
+        self.ok("unit", str(self.dir), "column-overrides", "--title", "8.7")
+        self.ok("unit", str(self.dir), "plain")
+        self.ok("unit", str(self.dir), "late", "--title", "8.9", "--prereq", "column-overrides")
+        self.ok("unit", str(self.dir), "tail", "--title", "9.0", "--after", "plain", "column-overrides")
+        self.ok("unit", str(self.dir), "held", "--title", "9.1", "--branch", "feat/held")
+        self.ok("unit", str(self.dir), "ready", "--title", "9.2")
+        self.ok("open", str(self.dir), "column-overrides")
+        self.ok("open", str(self.dir), "tail")
+        self.ok("open", str(self.dir), "held")
+        self.ok("open", str(self.dir), "ready")
+        self.ok("merged", str(self.dir), "column-overrides", "138")
+        self.ok("hold", str(self.dir), "held", "later")
+        state = self.state()
+        state["units"]["tail"]["prs"] = {"7": "OPEN"}
+        state["units"]["ready"]["prs"] = {"8": "OPEN"}
+        state["marks"]["ready"] = {"pr": 8, "head": HEAD_A, "ready_head": f"8 {HEAD_A}", "ready_at": 1000.0}
+        (self.dir / "run.json").write_text(json.dumps(state))
+        lines = self.ok("status", str(self.dir)).splitlines()
+        self.assertIn("- merged: column-overrides (8.7) #138", lines)
+        self.assertIn("- open: tail (9.0) PR #7, merges after plain, held (9.1) working, ready (9.2) PR #8", lines)
+        self.assertIn("- gated: plain may open, late (8.9) may open", lines)
+        self.assertRegex(" ".join(lines), r"hold held \(9\.1\): later since \d\d:\d\d")
+        self.assertRegex("\n".join(lines), r"(?m)^  - ready \(9\.2\) PR #8 ready since \d\d:\d\d$")
+
+    def test_status_keeps_bare_names_where_a_sha_follows(self):
+        self.init()
+        self.ok("unit", str(self.dir), "a", "--title", "8.7")
+        self.ok("unit", str(self.dir), "b", "--title", "8.8")
+        self.ok("open", str(self.dir), "a")
+        self.ok("open", str(self.dir), "b")
+        self.ok("go", str(self.dir), "a", SHA1)
+        self.ok("queue", str(self.dir), "b", SHA2)
+        self.append_request(f"b push {SHA2} feat/b\n")
+        self.ok("wait", str(self.dir))
+        lines = self.ok("status", str(self.dir)).splitlines()
+        self.assertRegex(lines[1], r"^- slot: a 1111111 since \d\d:\d\d$")
+        self.assertEqual(lines[2], "- queue: b 2222222")
+        self.assertIn("  - push approved for a 1111111, not seen yet", lines)
+        self.assertRegex("\n".join(lines), rf"(?m)^  - request b {SHA2} feat/b unanswered since")
+        self.ok("merged", str(self.dir), "a", "1")
+        self.assertIn(f"  - slot free with a queue, next b {SHA2}", self.ok("status", str(self.dir)).splitlines())
+
+    def test_status_keeps_bare_names_in_gate_and_behind_lines(self):
+        self.init()
+        self.ok("unit", str(self.dir), "a", "--title", "8.7", "--branch", "feat/a")
+        self.ok("unit", str(self.dir), "b", "--title", "8.8")
+        self.ok("open", str(self.dir), "a")
+        self.ok("go", str(self.dir), "a", SHA1)
+        state = self.state()
+        state["units"]["a"]["prs"] = {"7": "OPEN"}
+        state["marks"]["a"] = {"pr": 7, "head": HEAD_A, "behind_head": HEAD_A}
+        (self.dir / "run.json").write_text(json.dumps(state))
+        lines = self.ok("status", str(self.dir)).splitlines()
+        self.assertIn("  - slot holder a PR #7 behind base", lines)
+        self.assertIn("  - gate b may open", lines)
+
+    def test_unit_title_with_a_newline_is_refused(self):
+        self.init()
+        result = self.run_cli("unit", str(self.dir), "a", "--title", "one\ntwo")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(len(result.stderr.splitlines()), 1)
+
+    def test_status_next_skips_queue_entries_that_are_not_mergeable(self):
+        self.init()
+        self.ok("unit", str(self.dir), "a")
+        self.ok("unit", str(self.dir), "b", "--after", "a")
+        self.ok("unit", str(self.dir), "c")
+        self.ok("queue", str(self.dir), "b", SHA1)
+        self.assertNotIn("slot free with a queue", self.ok("status", str(self.dir)))
+        self.ok("queue", str(self.dir), "c", SHA2)
+        self.assertIn(f"  - slot free with a queue, next c {SHA2}", self.ok("status", str(self.dir)).splitlines())
+
     def test_status_nothing_needed(self):
         self.init()
         self.ok("unit", str(self.dir), "a")
@@ -347,6 +444,69 @@ class StatusTests(CliTestCase):
         lines = self.ok("status", str(self.dir)).splitlines()
         self.assertIn("- gated: b on WIP", lines)
         self.assertIn(f"  - slot free with a queue, next a {SHA1}", lines)
+
+    def test_hold_and_release_commands(self):
+        self.init()
+        self.ok("unit", str(self.dir), "u")
+        self.ok("hold", str(self.dir), "u", "waiting", "on", "owner")
+        status = self.ok("status", str(self.dir))
+        self.assertRegex(status, r"(?m)^  - hold u: waiting on owner since \d\d:\d\d$")
+        result = self.run_cli("go", str(self.dir), "u", SHA1)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("is held: waiting on owner", result.stderr)
+        self.ok("release", str(self.dir), "u")
+        self.assertNotIn("hold u", self.ok("status", str(self.dir)))
+        result = self.run_cli("release", str(self.dir), "u")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(len(result.stderr.splitlines()), 1)
+        self.assertEqual(result.stdout, "")
+
+    def test_status_omits_ready_since_for_a_held_unit(self):
+        self.init()
+        self.ok("unit", str(self.dir), "a", "--branch", "feat/a")
+        self.ok("open", str(self.dir), "a")
+        state = self.state()
+        state["units"]["a"]["prs"] = {"7": "OPEN"}
+        state["marks"]["a"] = {"pr": 7, "head": HEAD_A, "ready_head": f"7 {HEAD_A}", "ready_at": 1000.0}
+        (self.dir / "run.json").write_text(json.dumps(state))
+        self.assertIn("a PR #7 ready since", self.ok("status", str(self.dir)))
+        self.ok("hold", str(self.dir), "a", "later")
+        status = self.ok("status", str(self.dir))
+        self.assertIn("  - hold a: later since", status)
+        self.assertNotIn("ready since", status)
+
+    def test_status_omits_ready_since_for_an_after_blocked_unit(self):
+        # R1-F5
+        self.init()
+        self.ok("unit", str(self.dir), "a", "--branch", "feat/a")
+        self.ok("unit", str(self.dir), "b", "--branch", "feat/b")
+        self.ok("open", str(self.dir), "b")
+        state = self.state()
+        state["units"]["b"]["prs"] = {"7": "OPEN"}
+        state["marks"]["b"] = {"pr": 7, "head": HEAD_A, "ready_head": f"7 {HEAD_A}", "ready_at": 1000.0}
+        (self.dir / "run.json").write_text(json.dumps(state))
+        self.ok("unit", str(self.dir), "b", "--after", "a")
+        self.assertNotIn("ready since", self.ok("status", str(self.dir)))
+
+    def test_status_drops_merges_after_for_a_stopped_unit(self):
+        # R1-F6
+        self.init()
+        self.ok("unit", str(self.dir), "a")
+        self.ok("unit", str(self.dir), "b", "--after", "a")
+        self.ok("open", str(self.dir), "b")
+        self.ok("stop", str(self.dir), "a", "dropped")
+        self.assertIn("- open: b working", self.ok("status", str(self.dir)).splitlines())
+
+    def test_unit_refuses_none_mixed_with_unit_names_in_after(self):
+        # R4-F4: `--after none` clears the list and is given alone.
+        self.init()
+        self.ok("unit", str(self.dir), "none")
+        self.ok("unit", str(self.dir), "a")
+        result = self.run_cli("unit", str(self.dir), "b", "--after", "a", "none")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(len(result.stderr.splitlines()), 1)
+        self.assertIn("give it alone", result.stderr)
+        self.assertNotIn("b", self.state()["units"])
 
     def test_status_ready_pr(self):
         self.init()
@@ -390,6 +550,39 @@ class StatusTests(CliTestCase):
                 self.assertNotIn("behind base", "\n".join(status_with(marks, slot)))
         # It already asked to push again (after syncing): the request is what needs the manager.
         self.assertNotIn("behind base", "\n".join(status_with(behind, pending=True)))
+
+    def test_status_asks_a_freed_holder_to_push_once_its_after_units_merge(self):
+        self.init()
+        self.ok("unit", str(self.dir), "a")
+        self.ok("unit", str(self.dir), "b", "--branch", "feat/b")
+        self.ok("go", str(self.dir), "b", SHA1)
+        state = self.state()
+        state["units"]["b"]["prs"] = {"7": "OPEN"}
+        state["marks"]["b"] = {"pr": 7, "head": SHA1}  # pushed under its go: nothing outstanding
+        (self.dir / "run.json").write_text(json.dumps(state))
+        self.ok("unit", str(self.dir), "b", "--after", "a")
+        line = "  - b can merge now its --after units merged: ask it to sync and push"
+        self.assertNotIn(line, self.ok("status", str(self.dir)).splitlines())  # a has not merged
+        self.ok("merged", str(self.dir), "a", "1")
+        self.assertIn(line, self.ok("status", str(self.dir)).splitlines())
+        # R1-F8: while a go is still outstanding, the child is pushing: no prompt.
+        state = self.state()
+        state["marks"]["b"]["go_head"] = SHA1
+        (self.dir / "run.json").write_text(json.dumps(state))
+        self.assertNotIn(line, self.ok("status", str(self.dir)).splitlines())
+        state["marks"]["b"].pop("go_head")
+        (self.dir / "run.json").write_text(json.dumps(state))
+        self.assertIn(line, self.ok("status", str(self.dir)).splitlines())
+        # R4-F2: its re-ask read by a wait is a pending request; the request line is what needs the manager.
+        state["pending"] = [{"unit": "b", "sha": SHA2, "branch": "feat/b", "at": 1000.0}]
+        (self.dir / "run.json").write_text(json.dumps(state))
+        status = self.ok("status", str(self.dir)).splitlines()
+        self.assertNotIn(line, status)
+        self.assertTrue(any(entry.startswith("  - request b ") for entry in status))
+        state["pending"] = []
+        (self.dir / "run.json").write_text(json.dumps(state))
+        self.ok("queue", str(self.dir), "b", SHA2)  # it asked again; the request is what the manager answers
+        self.assertNotIn(line, self.ok("status", str(self.dir)).splitlines())
 
     def test_status_ready_pr_with_a_newer_head_is_not_listed(self):
         self.init()
