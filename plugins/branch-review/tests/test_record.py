@@ -128,6 +128,24 @@ class RecordTest(RecordHarness, unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("detached HEAD", err)
 
+    def test_records_a_branch_whose_name_starts_with_detached(self):
+        repo = make_repo(self.tmp / "d", branch="detached-ui")
+        git(repo, "update-ref", "refs/remotes/origin/detached-ui", "HEAD")
+        result = run(repo, "record", "--reason-file", self.reason(), "--base", "main", state_dir=self.state_dir)
+        self.assertTrue(result["recorded"])
+        self.assertEqual(result["branch"], "detached-ui")
+
+    def test_record_base_replaces_the_stored_base(self):
+        self.review()
+        self.assertEqual(self.state()["base_ref"], "main")
+        self.assertEqual(self.cli("locate")["base"], "main")
+        git(self.repo, "branch", "other", "main")
+        commit_file(self.repo, "c.txt", "c\n", "add c")  # a record at the anchor's own head is a no-op
+        self.publish()
+        self.cli("record", "--reason-file", self.reason(), "--base", "other")
+        self.assertEqual(self.state()["base_ref"], "other")
+        self.assertEqual(self.cli("locate")["base"], "other")
+
     def test_no_op_at_the_anchor_head(self):
         self.publish()
         self.assertTrue(self.record()["recorded"])

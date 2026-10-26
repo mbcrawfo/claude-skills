@@ -799,7 +799,7 @@ def cmd_record(args: argparse.Namespace) -> dict:
     """
     repo = Path(args.repo)
     rkey, branch, directory = _locate_keys(Path(args.state_dir).expanduser(), repo)
-    if branch_key(repo)[1].startswith("detached-"):
+    if branch == "HEAD":  # branch_key names a detached HEAD "HEAD"; a branch called detached-ui is a branch
         raise StateError("record needs a branch, not a detached HEAD")
     commit = _git_try(repo, "rev-parse", "--verify", "--quiet", args.commit + "^{commit}")
     if not commit:
