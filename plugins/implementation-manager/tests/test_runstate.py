@@ -11,14 +11,19 @@ import helpers  # noqa: F401  (puts the scripts dir on sys.path)
 from runstate import (
     RunError,
     add_unit,
+    all_stopped,
     enqueue,
+    final_due,
     go,
     has_open_pr,
     hold,
     init_run,
+    integration_unit,
+    late_units,
     load,
     locked,
     mergeable,
+    open_final,
     open_gate,
     openable,
     queue_head,
@@ -30,6 +35,7 @@ from runstate import (
     reportable,
     set_option,
     stop_gate,
+    unit_base,
     yield_slot,
 )
 
@@ -1212,6 +1218,277 @@ class QueueHeadTests(RunStateTestCase):
         enqueue(self.dir, state, "b", SHA2, 3.0)
         record_merged(state, "a", 1, more=False)
         self.assertEqual(queue_head(state), {"unit": "b", "sha": SHA2, "at": 3.0, "front": False})
+
+
+INTEGRATION = {"branch": "integration/x", "final_merge": "manager", "feature_review": True}
+
+
+class IntegrationTestCase(RunStateTestCase):
+    def init_integration(self, **overrides):
+        return init_run(
+            self.dir,
+            repo="o/r",
+            base="main",
+            method="merge",
+            wip=overrides.pop("wip", None),
+            queue_mode="serial",
+            now=NOW,
+            integration={**INTEGRATION, **overrides},
+        )
+
+    def add_integration(self, state, name="int", **kwargs):
+        add_unit(
+            state,
+            name,
+            prereqs=kwargs.pop("prereqs", None),
+            branch=kwargs.pop("branch", None),
+            worktree=None,
+            specs=None,
+            integration=True,
+            **kwargs,
+        )
+
+
+class IntegrationConfigTests(IntegrationTestCase):
+    def test_init_stores_the_block_with_the_final_gate_closed(self):
+        state = self.init_integration()
+        expected = {**INTEGRATION, "final_gate": False}
+        self.assertEqual(state["integration"], expected)
+        self.assertEqual(json.loads((self.dir / "run.json").read_text())["integration"], expected)
+
+    def test_init_refuses_a_bad_final_merge_or_branch(self):
+        for overrides in ({"final_merge": "later"}, {"branch": "a b"}, {"branch": ""}):
+            with self.subTest(overrides):
+                with self.assertRaises(RunError):
+                    self.init_integration(**overrides)
+                self.assertFalse((self.dir / "run.json").exists())
+
+    def test_load_fills_fields_a_version_0_4_run_lacks(self):
+        self.dir.mkdir(parents=True)
+        old = {
+            "version": 1,
+            "repo": "o/r",
+            "base": "main",
+            "method": "merge",
+            "queue_mode": "serial",
+            "wip": None,
+            "units": {
+                "a": {
+                    "order": 0,
+                    "prereqs": [],
+                    "branch": None,
+                    "worktree": None,
+                    "specs": False,
+                    "gate": "closed",
+                    "gate_at": None,
+                    "done": False,
+                    "prs": {},
+                }
+            },
+            "slot": None,
+            "queue": [],
+            "pending": [],
+            "bad_requests": [],
+            "requests_offset": 0,
+            "marks": {},
+        }
+        (self.dir / "run.json").write_text(json.dumps(old))
+        state = load(self.dir)
+        self.assertIsNone(state["integration"])
+        self.assertIs(state["units"]["a"]["integration"], False)
+        self.assertEqual(openable(state), ["a"])
+        self.assertFalse(final_due(state))
+        self.assertFalse(all_stopped(state))
+        self.assertEqual(late_units(state), ["a"])
+        self.assertIsNone(integration_unit(state))
+
+    def test_unit_base_is_the_integration_branch_in_the_mode(self):
+        self.assertEqual(unit_base(self.init_integration()), "integration/x")
+
+    def test_unit_base_is_the_base_without_the_mode(self):
+        self.assertEqual(unit_base(self.init()), "main")
+
+    def test_set_option_updates_the_block(self):
+        state = self.init_integration()
+        set_option(state, "final-merge", "owner")
+        set_option(state, "feature-review", "no")
+        self.assertEqual(state["integration"]["final_merge"], "owner")
+        self.assertIs(state["integration"]["feature_review"], False)
+        set_option(state, "feature-review", "yes")
+        self.assertIs(state["integration"]["feature_review"], True)
+
+    def test_set_option_refuses_bad_values(self):
+        state = self.init_integration()
+        for key, value in (("feature-review", "maybe"), ("final-merge", "later")):
+            with self.subTest(key):
+                with self.assertRaises(RunError):
+                    set_option(state, key, value)
+
+    def test_set_option_refuses_once_the_final_gate_is_open(self):
+        state = self.init_integration()
+        state["integration"]["final_gate"] = True
+        for key, value in (("final-merge", "owner"), ("feature-review", "no")):
+            with self.subTest(key):
+                with self.assertRaises(RunError) as caught:
+                    set_option(state, key, value)
+                self.assertIn("the final gate is open", str(caught.exception))
+
+    def test_set_option_refuses_without_the_mode(self):
+        state = self.init()
+        for key, value in (("final-merge", "owner"), ("feature-review", "no")):
+            with self.subTest(key):
+                with self.assertRaises(RunError):
+                    set_option(state, key, value)
+
+
+class IntegrationUnitTests(IntegrationTestCase):
+    def test_default_branch_is_the_integration_branch(self):
+        state = self.init_integration()
+        self.add_integration(state)
+        self.assertEqual(state["units"]["int"]["branch"], "integration/x")
+        self.assertIs(state["units"]["int"]["integration"], True)
+        self.assertEqual(integration_unit(state), "int")
+
+    def test_integration_unit_is_none_without_one(self):
+        state = self.init_integration()
+        add(state, "a")
+        self.assertIsNone(integration_unit(state))
+        self.assertIs(state["units"]["a"]["integration"], False)
+
+    def test_refusals_leave_the_state_unchanged(self):
+        state = self.init_integration()
+        self.add_integration(state)
+        add(state, "a")
+        before = json.dumps(state)
+        cases = {
+            "a second integration unit": lambda: self.add_integration(state, "int2"),
+            "prereqs": lambda: self.add_integration(state, "int3", prereqs=["a"]),
+            "after": lambda: self.add_integration(state, "int", after=["a"]),
+            "another branch": lambda: self.add_integration(state, "int", branch="other"),
+        }
+        for label, call in cases.items():
+            with self.subTest(label), self.assertRaises(RunError):
+                call()
+        self.assertEqual(json.dumps(state), before)
+
+    def test_an_existing_unit_that_something_waits_on_cannot_become_the_integration_unit(self):
+        state = self.init_integration()
+        add(state, "a")
+        add(state, "b", prereqs=["a"])
+        with self.assertRaises(RunError):
+            self.add_integration(state, "a")
+
+    def test_refused_without_the_mode(self):
+        state = self.init()
+        with self.assertRaises(RunError) as caught:
+            self.add_integration(state)
+        self.assertIn("run has no integration branch", str(caught.exception))
+
+    def test_nothing_may_wait_on_the_integration_unit(self):
+        state = self.init_integration()
+        self.add_integration(state)
+        for kwargs in ({"prereqs": ["int"]}, {"after": ["int"]}):
+            with self.subTest(kwargs), self.assertRaises(RunError) as caught:
+                add(state, "b", **kwargs)
+            self.assertIn("no unit may wait on the integration unit", str(caught.exception))
+
+    def test_openable_never_cuts_or_counts_the_integration_unit(self):
+        state = self.init_integration(wip=1)
+        self.add_integration(state)
+        add(state, "a")
+        add(state, "b")
+        self.assertEqual(openable(state), ["int", "a"])
+        self.open_unit(state, "int")
+        self.assertEqual(openable(state), ["a"])
+        self.open_unit(state, "a")
+        self.assertEqual(openable(state), [])
+
+
+class FinalGateTests(IntegrationTestCase):
+    def setup_run(self):
+        state = self.init_integration()
+        self.add_integration(state)
+        add(state, "a")
+        self.open_unit(state, "int")
+        return state
+
+    def test_final_due_waits_for_the_other_units(self):
+        state = self.setup_run()
+        self.assertFalse(final_due(state))
+        self.assertEqual(late_units(state), ["a"])
+        record_merged(state, "a", 1, more=False)
+        self.assertEqual(late_units(state), [])
+        self.assertTrue(final_due(state))
+
+    def test_final_due_needs_the_integration_gate_open(self):
+        state = self.init_integration()
+        self.add_integration(state)
+        add(state, "a")
+        record_merged(state, "a", 1, more=False)
+        self.assertFalse(final_due(state))
+
+    def test_final_due_is_false_when_the_only_other_unit_is_stopped(self):
+        state = self.setup_run()
+        stop_gate(self.dir, state, "a", "gave up")
+        self.assertEqual(late_units(state), [])
+        self.assertFalse(final_due(state))
+        self.assertTrue(all_stopped(state))
+
+    def test_final_due_with_one_done_and_one_stopped(self):
+        state = self.setup_run()
+        add(state, "b")
+        record_merged(state, "a", 1, more=False)
+        stop_gate(self.dir, state, "b", "gave up")
+        self.assertTrue(final_due(state))
+        self.assertFalse(all_stopped(state))
+
+    def test_specs_unit_is_a_normal_unit(self):
+        state = self.setup_run()
+        add(state, "s", specs=True)
+        record_merged(state, "a", 1, more=False)
+        self.assertEqual(late_units(state), ["s"])
+        self.assertFalse(final_due(state))
+
+    def test_all_stopped_needs_the_mode_and_a_unit(self):
+        self.assertFalse(all_stopped(self.init()))
+        self.dir = self.dir.parent / "run-b"
+        state = self.init_integration()
+        self.add_integration(state)
+        self.assertFalse(all_stopped(state))
+
+    def test_open_final_logs_a_review_line(self):
+        state = self.setup_run()
+        record_merged(state, "a", 1, more=False)
+        self.assertEqual(
+            open_final(
+                self.dir,
+                state,
+            ),
+            "int final review",
+        )
+        self.assertEqual((self.dir / "gates.log").read_text(), "int open\nint final review\n")
+        self.assertTrue(state["integration"]["final_gate"])
+        self.assertFalse(final_due(state))
+
+    def test_open_final_logs_a_no_review_line(self):
+        state = self.setup_run()
+        set_option(state, "feature-review", "no")
+        record_merged(state, "a", 1, more=False)
+        self.assertEqual(open_final(self.dir, state), "int final no-review")
+        self.assertTrue((self.dir / "gates.log").read_text().endswith("int final no-review\n"))
+
+    def test_open_final_twice_is_refused(self):
+        state = self.setup_run()
+        record_merged(state, "a", 1, more=False)
+        open_final(self.dir, state)
+        with self.assertRaises(RunError):
+            open_final(self.dir, state)
+
+    def test_open_final_when_not_due_is_refused(self):
+        state = self.setup_run()
+        with self.assertRaises(RunError):
+            open_final(self.dir, state)
+        self.assertEqual((self.dir / "gates.log").read_text(), "int open\n")
 
 
 if __name__ == "__main__":
