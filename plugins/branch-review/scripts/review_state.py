@@ -499,6 +499,15 @@ def cmd_locate(args: argparse.Namespace) -> dict:
         stored_base = _stored_base(state)
     base = args.base or stored_base or default_base(repo)
     mode, reason = choose_mode(repo, state, base, normalize_paths(repo, args.paths))
+    focus = None
+    if (
+        mode == "followup"
+        and reason in ("continuing", "base-updated")
+        and not any(f.get("status") in ("open", "still-open") for f in open_findings)
+        and second_opinion_due(state)[0]
+    ):
+        # The second opinion replaces the follow-up and verifies the claimed fixes.
+        mode, reason, focus = "deep", SECOND_OPINION_FOCUS, SECOND_OPINION_FOCUS
     conflicts: list[str] = []
     if mode == "merge-check":
         anchor = _anchor(_recorded(state["rounds"]))
@@ -512,6 +521,7 @@ def cmd_locate(args: argparse.Namespace) -> dict:
         "exists": state is not None,
         "mode": mode,
         "reason": reason,
+        "focus": focus,
         "rounds": rounds,
         "open_findings": open_findings,
         "conflicts": conflicts,
@@ -1269,8 +1279,29 @@ def _cycle_start(rounds: list) -> int:
     return start
 
 
+def _escalated(state: dict) -> bool:
+    return any(isinstance(f, dict) and f.get("status") == "escalated" for f in state.get("findings", []))
+
+
 def second_opinion_due(state: dict) -> tuple[bool, list[str]]:
-    """Whether the recorded state calls for a second-opinion round, and why.
+    """Whether a second-opinion round is due now, and why.
+
+    It waits while any finding is escalated: the developer's answer may add
+    code the second opinion must see (`second_opinion_held` says so).
+    """
+    reasons = _second_opinion_triggers(state)
+    if not reasons or _escalated(state):
+        return False, []
+    return True, reasons
+
+
+def second_opinion_held(state: dict) -> bool:
+    """A second opinion would be due but waits for escalated findings."""
+    return bool(_second_opinion_triggers(state)) and _escalated(state)
+
+
+def _second_opinion_triggers(state: dict) -> list[str]:
+    """The reasons the recorded state calls for a second opinion, decisions aside.
 
     State from v0.7 (no round carries `plugin_version`) is exempt from the
     automatic reasons; a `--second-opinion` request still counts.
@@ -1283,7 +1314,7 @@ def second_opinion_due(state: dict) -> tuple[bool, list[str]]:
     if requested is not None and not any(n >= requested for n in opinions):
         reasons.append("requested")
     if flags.get("skipped") or opinions or not any("plugin_version" in r for r in rounds):
-        return bool(reasons), reasons
+        return reasons
     start = _cycle_start(rounds)
     cycle = [r for r in rounds if r.get("number", 0) >= start]
     if any(r.get("mode") == "deep" and (r.get("merge_risk") or {}).get("level") in ("moderate", "high") for r in cycle):
@@ -1296,7 +1327,7 @@ def second_opinion_due(state: dict) -> tuple[bool, list[str]]:
         for f in state.get("findings", [])
     ):
         reasons.append("major-finding")
-    return bool(reasons), reasons
+    return reasons
 
 
 def _cap_floor(rounds: list, since_round: int) -> int:
@@ -1318,17 +1349,20 @@ def cmd_status(args: argparse.Namespace) -> dict:
         counts[f.get("status")] = counts.get(f.get("status"), 0) + 1
 
     opinion_reasons: list[str] = []
-    # Escalated findings wait for the developer; they do not keep the loop going.
+    # Escalated findings wait for the developer; they do not keep the loop
+    # going, but a loop that stops with them stops awaiting decisions. A due
+    # second opinion runs once nothing is open, carrying the claimed fixes.
+    due, reasons_now = second_opinion_due(state)
     if counts["open"] or counts["still-open"]:
         cont, reason = True, "open-findings"
+    elif due:
+        cont, reason, opinion_reasons = True, "second-opinion", reasons_now
     elif counts["fixed"]:
         cont, reason = True, "unverified-fixes"
+    elif counts["escalated"]:
+        cont, reason = False, "awaiting-decisions"
     else:
-        due, opinion_reasons = second_opinion_due(state)
-        if due:
-            cont, reason = True, "second-opinion"
-        else:
-            cont, reason = False, "converged"
+        cont, reason = False, "converged"
     # The cap only stops a loop that would otherwise go on.
     floor = _cap_floor(rounds, args.since_round)
     run_rounds = sum(1 for r in rounds if r.get("number", 0) > floor)
@@ -1347,6 +1381,7 @@ def cmd_status(args: argparse.Namespace) -> dict:
         "next_mode": "deep" if second else "followup" if reason == "final-verification" else None,
         "next_focus": SECOND_OPINION_FOCUS if second else None,
         "second_opinion_reasons": opinion_reasons if second else [],
+        "second_opinion_held": second_opinion_held(state),
     }
 
 
@@ -1420,6 +1455,8 @@ def cmd_covered(args: argparse.Namespace) -> dict:
         "reasons": reasons,
         "counts": counts,
         "rounds": len(recorded),
+        "second_opinion_held": second_opinion_held(state) if recorded else False,
+        "behavior_to_confirm": len((state or {}).get("behavior_to_confirm") or []),
     }
 
 
