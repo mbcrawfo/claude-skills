@@ -106,7 +106,7 @@ Parts 8 to 11 follow, word for word. Replace `<run>` (the absolute run folder), 
 
 For a unit added mid-run that the owner will design in the child's session, leave out part 2 when `run.py open-ready` opened its gate, keep every other part, and add this to part 6:
 
-"The owner designs this unit with you in this session. While you are designing, begin every final message with `[designing]`. Ask design questions here, to the owner, not to the implementation manager. Send the implementation manager only ordering conflicts with other units. After your first push request, a question that blocks the merge also goes to the implementation manager as a one-line notice: "blocks merge: yes" and where the question is."
+"The owner designs this unit with you in this session. While you are designing, begin every final message with `[designing]`. Ask design questions here, to the owner, not to the implementation manager. Send the implementation manager only ordering conflicts with other units. After your first push request, a question that blocks the merge also goes to the implementation manager as a one-line notice: 'blocks merge: yes' and where the question is. While a question that blocks the merge is open, don't ask to push."
 
 ## Event handling
 
@@ -114,7 +114,7 @@ Every turn: handle what woke you, then make sure exactly one `run.py wait` is ru
 
 **On every user message,** before anything else: run `run.py status` and act on each line under "needs the manager". Where a unit has a title, `status` shows it in brackets after the name; commands take the bare name.
 - `request <unit> <sha> <branch> unanswered since …`: handle it as `REQUEST`.
-- `hold <unit>: <reason> since …`: nothing to do; list it under "Waiting on you" in the tracker.
+- `hold <unit>: <reason> since …`: nothing to do. A reason that starts with `answer sent:` waits on the child: show it in the tracker as `<unit> held until it asks again`. List any other hold under "Waiting on you".
 - `<unit> PR #<pr> ready since …`: run `run.py check <unit>`; on `READY <pr> <sha>`, handle it as `READY`.
 - `push approved for <unit> <sha7>, not seen yet`: `list_events` on the child (limit 5). Idle, with its latest note `[push-request]` for that sha: its answer poll died. If the unit holds the slot (or the queue is parallel), send it one message to read `<run>/pushes.log`; if it gave the slot up, send it one message to ask again. Otherwise nothing; it is syncing, validating or fixing, or waiting on the owner.
 - `slot holder <unit> PR #<pr> behind base`: handle it as `BEHIND`, unless `list_events` on the child (limit 5) shows it already syncing.
@@ -136,9 +136,9 @@ Every turn: handle what woke you, then make sure exactly one `run.py wait` is ru
 | `ORPHAN <unit> <pr>` | A PR opened on a done unit's branch after its last merge. Tell the user in one line what it changes (`gh pr view <pr> -R <repo>`) and ask whether to merge or close it. Merge: the merge bar, with `run.py check <unit>` for readiness, then `run.py merged <unit> <pr>`. Close: `gh pr close <pr> -R <repo>`, then `run.py closed <unit> <pr>`. |
 | `STALLED <unit> <pr> head=<sha7><reasons>` | `list_events` on the child (limit 5). Legitimately waiting (on a decision, a review still running, CI queued): nothing. Otherwise tell the user what is stuck, in two lines. |
 | `ERROR <message>` | Tell the user the line. `gh` failures: start the `wait` again. A run folder it cannot read: run `run.py status` for the cause, and fix it or wait for the user before starting the `wait` again. |
-| A one-line notice from a `[designing]` child that a question in its own session blocks the merge | `run.py hold <unit> own session: <topic>` (if it refuses with `already held`, leave the hold as it is), and tell the user in one line where the question is. Its next push request releases the hold ("Answering a push request"): it may not ask while the question is open. |
-| Child message with an escalated review finding or a question, or a `[blocked]` note | Give the user the finding or question, the child's recommendation and yours, in the reply text, and list it under "Waiting on you". It blocks the merge when it is an escalated finding, says "blocks merge: yes", or has no "blocks merge" marker. A blocking one: note it under the unit's open questions in `notes.md`, then `run.py hold <unit> <short reason>`; if that refuses with `already held`, leave the hold as it is. "blocks merge: no": hold nothing; a `READY` that meets the merge bar is merged. A `[blocked]` note that doesn't block the merge, while the unit holds the slot: `run.py yield <unit> blocked`. |
-| The user answers a question you relayed | If the unit's last PR has already merged, forward nothing: an answer that needs no work on that branch is only recorded, and one that needs work becomes a card (the row on work outside every unit). Otherwise forward the answer to the child in one message, quoting the user's words (an escalated finding: the child records it with `--resolve`; it then asks to push again). Strike the question from the unit's open questions in `notes.md`. If the unit is held and none is left open: `run.py release <unit>`, then `run.py hold <unit> answer sent: <topic>`. That hold ends at its next push request, so a `READY` on the old head can't merge before the answer is applied. Add the decision to `notes.md` if later units need it. |
+| A one-line notice from a `[designing]` child that a question in its own session blocks the merge | Note it under the unit's open questions in `notes.md`, marked `own session`, then `run.py hold <unit> own session: <topic>`; if that refuses with `already held`, handle it as in the next row. Tell the user in one line where the question is. Its next push request settles it ("Answering a push request", step 5): it may not ask while the question is open. |
+| Child message with an escalated review finding or a question, or a `[blocked]` note | Give the user the finding or question, the child's recommendation and yours, in the reply text, and list it under "Waiting on you". It blocks the merge when it is an escalated finding, says "blocks merge: yes", or has no "blocks merge" marker. A blocking one: note it under the unit's open questions in `notes.md`, then `run.py hold <unit> <short reason>`. If that refuses with `already held` and the hold's reason starts with `answer sent:`, run `run.py release <unit>`, then the `hold` again, so `status` shows what it waits on; any other hold stays as it is. "blocks merge: no": hold nothing; a `READY` that meets the merge bar is merged. A `[blocked]` note that doesn't block the merge, while the unit holds the slot: `run.py yield <unit> blocked`. |
+| The user answers a question you relayed | If the unit's last PR has already merged, forward nothing: an answer that needs no work on that branch is only recorded, and one that needs work becomes a card (the row on work outside every unit). Otherwise forward the answer to the child in one message, quoting the user's words (an escalated finding: the child records it with `--resolve`; it then asks to push again). Strike the question from the unit's open questions in `notes.md`. If the unit is held and none is left open: `run.py release <unit>`, then `run.py hold <unit> answer sent: <topic>`. That hold ends at its next push request: part 8 has the child always ask again after a forwarded answer, with the same sha if nothing changed. Until then a `READY` on the old head can't merge. Add the decision to `notes.md` if later units need it. |
 | A child message that says nothing waits on the answer | Apply what it asks (a `notes.md` entry, an `--after`) and send no reply. |
 | Any other child note | Nothing. The reply stays one line, for a note from a child at `[designing]` too. |
 | Work outside every unit turns up (in a note, message or PR) | Propose it as a card (`own_initiative`), once, its prompt built from the child prompt's parts, gate included. It merges like any unit and gates nothing. |
@@ -152,7 +152,7 @@ Every turn: handle what woke you, then make sure exactly one `run.py wait` is ru
 2. Read the unit's branch and worktree from `<run>/run.json` (under `units`). Either missing: `get_session` on the child and record them with `run.py unit <unit> --branch <branch> --worktree <path>`. Still no working directory: `run.py redo <unit> <sha> no-worktree-path` and tell the user in one line.
 3. Invoke `branch-review:check --repo <worktree> --commit <sha>`. It errors (exit 1): `run.py redo <unit> <sha> check-error` and tell the user its stderr line.
 4. The check JSON's `branch` differs from the request's branch or from the unit's branch in `run.json`: `run.py redo <unit> <sha> wrong-branch`.
-5. The unit is held (`status` lists `hold <unit>: <reason>`). A reason that starts with `answer sent:` or `own session:`: `run.py release <unit>`, then go on to step 6; the request means the answer is applied. Any other reason: `run.py redo <unit> <sha> held`.
+5. The unit is held (`status` lists `hold <unit>: <reason>`). A reason that starts with `answer sent:` or `own session:`: the request means the child applied the answer or settled its own-session questions, so strike those marked `own session` from the unit's open questions in `notes.md`. None left open: `run.py release <unit>`, then go on to step 6. Otherwise, and for any other reason: `run.py redo <unit> <sha> held`.
 6. Covered: `run.py go <unit> <sha>`. If it refuses with `unit '<unit>' is held:`, handle it as step 5. If it refuses because another unit holds the slot or is first in the queue, or (serial mode) because the unit `merges after` a unit not yet merged: `run.py queue <unit> <sha>`.
 7. Not covered: `run.py redo <unit> <sha> '<reasons>'`, `<reasons>` the JSON's `reasons` joined by `, ` (no `not covered: ` prefix).
 
@@ -201,9 +201,9 @@ Run <run> (<owner/repo>)
 - Slot: <unit> since <HH:MM> | free
 - Queue: <unit> · <unit> | empty
 - <unit> merged #<pr> · <unit> merged #<pr>
-- <unit> PR #<pr> open · <unit> building · <unit> PR #<pr> open, merges after <unit>
+- <unit> PR #<pr> open · <unit> building · <unit> PR #<pr> open, merges after <unit> · <unit> held until it asks again
 - <unit> gated on <units>
-- Waiting on you: nothing | <what>, holds included
+- Waiting on you: nothing | <what>, holds included except `answer sent:` ones
 ```
 
 ## Red flags
