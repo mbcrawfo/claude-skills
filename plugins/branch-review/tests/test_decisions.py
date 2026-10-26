@@ -87,5 +87,30 @@ class DecisionTest(LedgerHarness, unittest.TestCase):
         self.assertEqual(self.set_status("R1-F1", "fixed", "--note", "n")["status"], "fixed")
 
 
+class ConfirmBehaviorTest(LedgerHarness, unittest.TestCase):
+    def confirm(self, text):
+        return self.cli("confirm-behavior", "--text-file", self.write("b.md", text))
+
+    def test_confirm_behavior_appends(self):
+        self.begin()
+        self.record(output(findings=[]))
+        self.assertEqual(self.confirm("int4=Guid is now accepted")["behavior_to_confirm"], 1)
+        self.assertEqual(self.confirm("SQLSRC014 no longer fires")["behavior_to_confirm"], 2)
+        self.assertEqual(self.confirm("int4=Guid is now accepted\n")["behavior_to_confirm"], 2)
+        texts = [b["text"] for b in self.state()["behavior_to_confirm"]]
+        self.assertEqual(texts, ["int4=Guid is now accepted", "SQLSRC014 no longer fires"])
+
+    def test_confirm_behavior_empty_refused(self):
+        self.begin()
+        self.record(output(findings=[]))
+        self.assert_error("confirm-behavior", "--text-file", self.write("b.md", " \n"))
+
+    def test_confirm_behavior_does_not_block_covered(self):
+        self.begin()
+        self.record(output(findings=[]))
+        self.confirm("int4=Guid is now accepted")
+        self.assertTrue(self.cli("covered")["covered"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1234,6 +1234,17 @@ def cmd_resolve(args: argparse.Namespace) -> dict:
     }
 
 
+def cmd_confirm_behavior(args: argparse.Namespace) -> dict:
+    """Record a behavior change that existing users rely on, for the developer to confirm."""
+    directory, state = _ledger_state(args)
+    text = _text_arg(None, args.text_file, "--text", required=True)
+    items = state.setdefault("behavior_to_confirm", [])
+    if not any(item.get("text") == text for item in items):
+        items.append({"text": text, "round": state["rounds"][-1]["number"]})
+    save_state(directory, state)
+    return {"behavior_to_confirm": len(items)}
+
+
 def _reported_state(directory: Path) -> dict:
     """Load state whose last round is recorded; `status` and `summary` need one."""
     state = load_state(directory)
@@ -1957,6 +1968,14 @@ def _build_parser() -> argparse.ArgumentParser:
     note.add_argument("--note", help="the decision, in the developer's words")
     note.add_argument("--note-file", metavar="PATH", help="read the decision from a UTF-8 file")
     res.set_defaults(func=cmd_resolve)
+
+    confirm = sub.add_parser(
+        "confirm-behavior",
+        parents=[common],
+        help="record a behavior change existing users rely on, for the developer to confirm",
+    )
+    confirm.add_argument("--text-file", metavar="PATH", required=True, help="the behavior, as a UTF-8 file")
+    confirm.set_defaults(func=cmd_confirm_behavior)
 
     stat = sub.add_parser("status", parents=[common], help="counts and whether to continue")
     stat.add_argument(
