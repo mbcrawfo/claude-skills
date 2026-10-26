@@ -39,10 +39,17 @@ By default only one unit's PR is in flight at a time, so every other open PR doe
 
 - A covered request from the slot holder gets `go` at once. A covered request from any other unit gets `go` if the slot is free and no other unit is first in the queue, and is queued otherwise. A request that is not covered gets `redo` at once, wherever the unit stands, so it can fix things while it waits.
 - The queue serves units that already have an open PR and gave up the slot first, then everyone else, each in the order they asked.
-- The holder gives up the slot (`yield`) when the manager relays its question or escalated finding to the owner, when it reports `[blocked]`, and when the watcher reports it `STUCK`. A `redo` to the holder frees the slot too. Its PR stays open, and it goes to the front of the queue when it asks again; after an owner answer, it always asks again. A `go` the holder has not pushed yet stays outstanding through a `yield`, so its old head is not reported ready while the approved push may still land; a `redo` or the unit's next request ends it.
+- A held unit (see below) or one whose `--after` units have not all merged never takes the slot: `go` and `queue` refuse a held unit, `go` refuses an `--after`-blocked one in serial mode, and the queue skips an `--after`-blocked unit at its head, so the next one is served.
+- The holder gives up the slot (`yield`) when it reports `[blocked]` on something that does not block the merge, and when the watcher reports it `STUCK`. A `redo` to the holder frees the slot too. A question or escalated finding that blocks the merge gets `hold` instead, which also frees the slot. After either, the unit's PR stays open, and it goes to the front of the queue when it asks again; after an owner answer, it always asks again. A `go` the holder has not pushed yet stays outstanding through a `yield`, so its old head is not reported ready while the approved push may still land; a `redo` or the unit's next request ends it.
 - When the slot frees, the watcher reports `NEXT` for the first queued request. The manager checks it again and answers `go`; the child's sync on `go` keeps the waiting request from going stale.
 - A request after the unit's last PR merged gets `redo <sha> pr-merged`, and the manager asks the owner whether it becomes a follow-up.
 - Parallel mode (`set queue parallel`, only when the owner asks) answers every covered request with `go` at once. Requests still queued when it is turned on are answered again, one `go` each.
+
+### Holds and ordering
+
+A question the owner must answer before the PR can merge puts the unit on *hold* (`hold <unit> <reason>`). A held unit gets no `READY`, `REMIND` or `STALLED`, frees the slot if it holds it, loses its queue entry, and has every waiting request answered `redo <sha> held`. Its later requests are refused the same way (`go` and `queue` refuse it, naming the reason), so the child waits for the answer. Children mark each question they send "blocks merge: yes" or "blocks merge: no"; an escalated finding always blocks. When the owner answers, the manager forwards the answer and holds the unit again as `answer sent: <topic>`, which ends at the child's next push request: the manager releases it (`release`) once no blocking question is left open and answers the request normally. `merged`, `closed` and `stop` clear a hold.
+
+`--after U` on a unit says the unit must merge after `U`, without needing `U` merged to start (`--prereq` does that). `--after none` clears it. A unit cannot both need and merge after the same unit, and a cycle is refused. An `--after` unit that is stopped counts as satisfied. A unit that an open unit merges after is exempt from the WIP limit, so the limit cannot deadlock the ordering.
 
 A WIP limit (`init --wip N` or `set wip N|none`) caps the units whose gate is open and that have not merged. Every unit is gated, so a lower limit holds back units that have not started; it never stops one that has. The manager's own `specs` unit is not counted.
 
@@ -53,6 +60,7 @@ The manager merges a PR when all of these hold:
 - The watcher reported `READY` (or `REMIND`) for its head, or `run.py check` printed `READY`.
 - `branch-review:check`, run in the unit's worktree, says the review covers that head commit.
 - The unit has no unanswered or queued request, and in serial mode the slot is free or the unit's own.
+- The unit is not held, and every `--after` unit has merged (`status` shows neither `hold <unit>` nor `<unit> ... merges after`).
 - The unit is not stopped. The watcher never reports `READY` or `REMIND` for a stopped unit.
 - No approved push is outstanding for the unit (`status` does not list `push approved for <unit>`), so a stale head is never merged while the child pushes a newer one.
 
@@ -81,7 +89,7 @@ python3 scripts/run.py <command> <run folder> [args]
 | Command | Does |
 |---|---|
 | `init <dir> --repo O/R --base B --method merge\|squash\|rebase [--wip N] [--queue serial\|parallel]` | Creates the run folder and its files. |
-| `unit <dir> <name> [--prereq U ...] [--branch B] [--worktree P] [--specs]` | Adds a unit, or updates the fields given. Names use letters, digits, `-` and `_`, starting with a letter or digit. |
+| `unit <dir> <name> [--prereq U ...] [--after U ... \| --after none] [--title T] [--branch B] [--worktree P] [--specs]` | Adds a unit, or updates the fields given. `--after` units must merge first but do not gate the start; `--after none` clears them. `--title` is a label shown as `name (title)` in `status`. Names use letters, digits, `-` and `_`, starting with a letter or digit. |
 | `set <dir> wip <N\|none>`, `set <dir> queue <serial\|parallel>` | Changes the WIP limit or the queue mode. In parallel mode it prints `queued <unit> <sha>` for each request still queued, which the manager answers with a fresh check and `go`. |
 | `open <dir> <unit>`, `open-ready <dir>` | Opens one gate, or every gate that may open now (prerequisites merged, within the WIP limit), printing one name per line. |
 | `stop <dir> <unit> <reason...>` | Stops a unit for good: its gate never opens again, it gives up the slot, its queued and unanswered requests are dropped, and `go` and `queue` refuse it (its later requests get `redo <sha> unit-stopped`). A child that has already started never reads `gates.log` again, so the manager also tells it by message. |
@@ -89,9 +97,11 @@ python3 scripts/run.py <command> <run folder> [args]
 | `redo <dir> <unit> <sha> <reasons...>` | Refuses the push with one line of reasons. |
 | `queue <dir> <unit> <sha>` | Holds a covered request until the slot frees. |
 | `yield <dir> <unit> <reason...>` | The slot holder gives up the slot. |
+| `hold <dir> <unit> <reason...>` | Holds the unit's merge until `release`, `merged`, `closed` or `stop`. It frees the slot, drops the queue entry and answers each waiting request `redo <sha> held`; `go` and `queue` refuse the unit (`unit 'X' is held: <reason>; answer its push requests with: redo <sha> held`). |
+| `release <dir> <unit>` | Lifts the hold and restarts the stall clock. |
 | `merged <dir> <unit> <pr> [--more]` | Records a merge and frees the slot; `--more` keeps the unit open for its next part. Prints the gates that may open now. |
 | `closed <dir> <unit> <pr>` | Records a PR closed without merging and frees the slot. |
-| `status <dir>` | The slot, the queue, merged, open and gated units, and everything waiting on the manager, including a `go` not pushed yet and a slot holder whose PR is behind the base. |
+| `status <dir>` | The slot, the queue, merged, open and gated units (with `merges after`, `hold <unit>: <reason> since HH:MM` and `name (title)` labels), and everything waiting on the manager, including a `go` not pushed yet and a slot holder whose PR is behind the base. |
 | `clear-bad <dir>` | Forgets the malformed request lines `status` lists, and prints how many. |
 | `check <dir> <unit>` | Checks the unit's PR now: `READY <pr> <sha>` (two equal clean polls 30 s apart), `NOT-READY <pr> head=<sha7><reasons>`, `NOT-READY - no open PR from <branch>`, `MERGED <pr>`, `CLOSED <pr>` or `ERROR <message>`. |
 | `wait <dir> [--stall-hours N]` | Blocks until one event, prints it as one line and exits 0, also on error. |
