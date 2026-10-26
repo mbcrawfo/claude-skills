@@ -15,12 +15,14 @@ from runstate import (
     add_unit,
     enqueue,
     go,
+    hold,
     init_run,
     load,
     locked,
     record_closed,
     record_merged,
     redo,
+    release,
     set_option,
     stop_gate,
     yield_slot,
@@ -770,6 +772,21 @@ class BehindStuckStalledTests(PrTestCase):
         self.assertGreaterEqual(self.clock.t - start, 10800)
         self.assertLess(self.clock.t - start, 10800 + 60)
         self.assert_quiet(gh, sleeps=1000)
+
+
+class HoldTests(PrTestCase):
+    def test_no_ready_remind_or_stalled_while_held(self):
+        with locked(self.dir) as state:
+            hold(self.dir, state, "a", "waiting on owner", self.clock.now())
+        gh = self.gh_a(make_pr())
+        # Well past the confirm, remind and stall times of a ready PR.
+        self.assert_quiet(gh, sleeps=4000, stall_seconds=10800)
+        marks = load(self.dir)["marks"]["a"]
+        self.assertNotIn("ready_head", marks)
+        self.assertNotIn("stalled_key", marks)
+        with locked(self.dir) as state:
+            release(state, "a")
+        self.assertEqual(self.wait(gh), f"READY a 7 {HEAD_A}")
 
 
 class OrphanTests(PrTestCase):

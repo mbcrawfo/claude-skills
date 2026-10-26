@@ -284,13 +284,14 @@ def stop_gate(run_dir: Path, state: dict, unit: str, reason: str) -> None:
     """Log that a unit stopped, with a one-line reason.
 
     Its gate is now `stopped`: it never opens, counts to WIP, gets `go` or joins the queue. It gives up the slot,
-    and its queued and pending requests are dropped.
+    its hold is lifted, and its queued and pending requests are dropped.
     """
     record = _unit(state, unit)
     if "\n" in reason or "\r" in reason:
         raise RunError("a stop reason must be a single line")
     _append(run_dir, GATES, f"{unit} stop {reason}\n")
     record["gate"] = "stopped"
+    record["hold"] = None
     if _holds_slot(state, unit):
         state["slot"] = None
     _drop_entries(state, unit, "pending", "queue")
@@ -347,14 +348,17 @@ def _note_answered(run_dir: Path, state: dict, unit: str, sha: str) -> None:
 def go(run_dir: Path, state: dict, unit: str, sha: str, now: float) -> None:
     """Answer a push request with `go`: log it and, in serial mode, take the slot.
 
-    In serial mode it refuses while the unit merges after an unmerged unit, while another unit holds the slot, or
-    while the slot is free and another unit is first in the queue.
+    It refuses a held unit. In serial mode it also refuses while the unit merges after an unmerged unit, while
+    another unit holds the slot, or while the slot is free and another unit is first in the queue.
     """
     record = _unit(state, unit)
     _check_sha(sha)
     if record["done"]:
         raise RunError(f"unit {unit!r} is done; answer its push requests with: redo <sha> pr-merged")
     _refuse_stopped(record, unit)
+    if record["hold"] is not None:
+        reason = record["hold"]["reason"]
+        raise RunError(f"unit {unit!r} is held: {reason}; answer its push requests with: redo <sha> held")
     if state["queue_mode"] == "serial":
         units = state["units"]
         for other in record["after"]:
@@ -432,19 +436,53 @@ def yield_slot(state: dict, unit: str, reason: str, now: float) -> None:
     state["slot"] = None
 
 
+def hold(run_dir: Path, state: dict, unit: str, reason: str, now: float) -> None:
+    """Hold a unit's merge, with a one-line reason, until `release`, `merged`, `closed` or `stop`.
+
+    A held unit is not mergeable: it is not reported READY or REMIND, not STALLED, and never heads the queue, and
+    `go` refuses it. Its unanswered requests are answered `redo held`, and it gives up the queue and the slot. A
+    `go` it has not pushed yet stays outstanding, as for `yield`.
+    """
+    record = _unit(state, unit)
+    if "\n" in reason or "\r" in reason or not reason.strip():
+        raise RunError("a hold reason must be a single non-empty line")
+    if record["done"]:
+        raise RunError(f"unit {unit!r} is done and cannot be held")
+    _refuse_stopped(record, unit)
+    if record["hold"] is not None:
+        raise RunError(f"unit {unit!r} is already held: {record['hold']['reason']}")
+    for entry in [e for e in state["pending"] if e["unit"] == unit]:
+        _append(run_dir, PUSHES, f"{unit} redo {entry['sha']} held\n")
+        _note_answered(run_dir, state, unit, entry["sha"])
+    _drop_entries(state, unit, "pending", "queue")
+    if _holds_slot(state, unit):
+        state["slot"] = None
+    record["hold"] = {"reason": reason, "at": now}
+
+
+def release(state: dict, unit: str) -> None:
+    """Lift a unit's hold; it is mergeable again, and the watcher reports it afresh."""
+    record = _unit(state, unit)
+    if record["hold"] is None:
+        raise RunError(f"unit {unit!r} is not held")
+    record["hold"] = None
+
+
 def record_merged(state: dict, unit: str, pr: int, *, more: bool) -> None:
-    """Note a merged PR: free the slot if held, and mark the unit done unless more PRs are coming."""
+    """Note a merged PR: free the slot if held, lift any hold, and mark the unit done unless more PRs are coming."""
     record = _unit(state, unit)
     record["prs"][str(pr)] = "MERGED"
+    record["hold"] = None
     if _holds_slot(state, unit):
         state["slot"] = None
     record["done"] = not more
 
 
 def record_closed(state: dict, unit: str, pr: int) -> None:
-    """Note a PR closed without merging, and free the slot if the unit holds it."""
+    """Note a PR closed without merging, lift any hold, and free the slot if the unit holds it."""
     record = _unit(state, unit)
     record["prs"][str(pr)] = "CLOSED"
+    record["hold"] = None
     if _holds_slot(state, unit):
         state["slot"] = None
 

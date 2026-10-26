@@ -12,6 +12,8 @@ The run folder is always the first argument after the subcommand:
   stop <dir> <unit> <reason...>     the unit never opens, gets go or queues again, and gives up the slot
   go <dir> <unit> <sha>             serial mode: take the push slot, or refuse while another unit holds it
   redo <dir> <unit> <sha> <reasons...>
+  hold <dir> <unit> <reason...>     hold the unit's merge: no READY, REMIND or STALLED, no go, not first in the queue
+  release <dir> <unit>              lift the hold
   queue <dir> <unit> <sha>          line a covered request up behind the slot holder
   yield <dir> <unit> <reason...>    the slot holder gives the slot up
   merged <dir> <unit> <pr> [--more] record a merge; print the gates that may open now, one per line
@@ -96,8 +98,11 @@ def _needs(run_dir: Path, state: dict) -> list[str]:
         marks = state["marks"].get(name, {})
         if record["done"]:
             continue
+        hold = record["hold"]
+        if hold:
+            needs.append(f"hold {name}: {hold['reason']} since {_clock(hold['at'])}")
         ready = marks.get("ready_head")
-        if ready:
+        if ready and not hold:
             pr, _, sha = ready.partition(" ")
             if record["prs"].get(pr) == "OPEN" and marks.get("head") == sha:
                 needs.append(f"{name} PR #{pr} ready since {_clock(marks['ready_at'])}")
@@ -227,6 +232,11 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("unit")
     p.add_argument("sha")
     p.add_argument("reasons", nargs="+")
+    p = command("hold", "hold a unit's merge")
+    p.add_argument("unit")
+    p.add_argument("reason", nargs="+")
+    p = command("release", "lift a unit's merge hold")
+    p.add_argument("unit")
     p = command("yield", "take the push slot from its holder")
     p.add_argument("unit")
     p.add_argument("reason", nargs="+")
@@ -324,6 +334,10 @@ def _run(args: argparse.Namespace) -> str | None:
             runstate.go(run_dir, state, args.unit, args.sha, now)
         elif command == "redo":
             runstate.redo(run_dir, state, args.unit, args.sha, " ".join(args.reasons))
+        elif command == "hold":
+            runstate.hold(run_dir, state, args.unit, " ".join(args.reason), now)
+        elif command == "release":
+            runstate.release(state, args.unit)
         elif command == "queue":
             runstate.enqueue(run_dir, state, args.unit, args.sha, now)
         elif command == "yield":

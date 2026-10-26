@@ -373,6 +373,36 @@ class StatusTests(CliTestCase):
         self.assertIn("- gated: b on WIP", lines)
         self.assertIn(f"  - slot free with a queue, next a {SHA1}", lines)
 
+    def test_hold_and_release_commands(self):
+        self.init()
+        self.ok("unit", str(self.dir), "u")
+        self.ok("hold", str(self.dir), "u", "waiting", "on", "owner")
+        status = self.ok("status", str(self.dir))
+        self.assertRegex(status, r"(?m)^  - hold u: waiting on owner since \d\d:\d\d$")
+        result = self.run_cli("go", str(self.dir), "u", SHA1)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("is held: waiting on owner", result.stderr)
+        self.ok("release", str(self.dir), "u")
+        self.assertNotIn("hold u", self.ok("status", str(self.dir)))
+        result = self.run_cli("release", str(self.dir), "u")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(len(result.stderr.splitlines()), 1)
+        self.assertEqual(result.stdout, "")
+
+    def test_status_omits_ready_since_for_a_held_unit(self):
+        self.init()
+        self.ok("unit", str(self.dir), "a", "--branch", "feat/a")
+        self.ok("open", str(self.dir), "a")
+        state = self.state()
+        state["units"]["a"]["prs"] = {"7": "OPEN"}
+        state["marks"]["a"] = {"pr": 7, "head": HEAD_A, "ready_head": f"7 {HEAD_A}", "ready_at": 1000.0}
+        (self.dir / "run.json").write_text(json.dumps(state))
+        self.assertIn("a PR #7 ready since", self.ok("status", str(self.dir)))
+        self.ok("hold", str(self.dir), "a", "later")
+        status = self.ok("status", str(self.dir))
+        self.assertIn("  - hold a: later since", status)
+        self.assertNotIn("ready since", status)
+
     def test_status_ready_pr(self):
         self.init()
         self.ok("unit", str(self.dir), "a", "--branch", "feat/a")
