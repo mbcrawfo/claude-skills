@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Facts about a repo's superpowers spec, plan and research files.
 
-Used by the superpowers-cleanup `cleanup` skill. Every command prints one JSON
+Used by the maintenance plugin's `superpowers-cleanup` skill. Every command prints one JSON
 object on stdout. On failure it exits 1 and prints one `error: ...` line on
 stderr. The script only reads: it never writes, deletes or edits anything.
 

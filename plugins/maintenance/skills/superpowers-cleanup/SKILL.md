@@ -1,6 +1,6 @@
 ---
-name: cleanup
-description: Manual use only, when the user invokes /superpowers-cleanup:cleanup to remove old superpowers spec, plan and research files. Never use it on your own initiative or because a plan or another skill mentions cleanup.
+name: superpowers-cleanup
+description: Manual use only, when the user invokes /maintenance:superpowers-cleanup to remove old superpowers spec, plan and research files. Never use it on your own initiative or because a plan or another skill mentions cleanup.
 argument-hint: "<what to remove, in plain words>"
 disable-model-invocation: true
 ---
@@ -18,8 +18,8 @@ What to remove: `$ARGUMENTS`
 Every fact about the files comes from one read-only script. Shell variables do not survive between Bash calls, so write the prefix out in full each time:
 
 ```
-python3 "${CLAUDE_SKILL_DIR}/../../scripts/docs_inventory.py" inventory --repo <repo root> [--specs DIR] [--plans DIR] [--research DIR] [--base REF]
-python3 "${CLAUDE_SKILL_DIR}/../../scripts/docs_inventory.py" refs --repo <repo root> <path> [<path> ...]
+python3 "${CLAUDE_SKILL_DIR}/scripts/docs_inventory.py" inventory --repo <repo root> [--specs DIR] [--plans DIR] [--research DIR] [--base REF]
+python3 "${CLAUDE_SKILL_DIR}/scripts/docs_inventory.py" refs --repo <repo root> <path> [<path> ...]
 ```
 
 Each call prints one JSON object. On failure it exits 1 with one `error: ...` line: report that line and stop. Never work around a failing script with your own guesses.

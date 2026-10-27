@@ -2,7 +2,7 @@ from pathlib import Path
 import re
 import unittest
 
-SKILL = Path(__file__).resolve().parent.parent / "skills" / "cleanup" / "SKILL.md"
+SKILL = Path(__file__).resolve().parent.parent / "skills" / "superpowers-cleanup" / "SKILL.md"
 
 
 def parse_frontmatter(path: Path) -> dict:
@@ -21,10 +21,23 @@ def parse_frontmatter(path: Path) -> dict:
 class SkillMdTest(unittest.TestCase):
     def test_frontmatter(self):
         meta = parse_frontmatter(SKILL)
-        self.assertEqual(meta["name"], "cleanup")
+        self.assertEqual(meta["name"], "superpowers-cleanup")
         self.assertEqual(meta["disable-model-invocation"], "true")
         self.assertIn("manual", meta["description"].lower())
         self.assertEqual(meta["argument-hint"], "<what to remove, in plain words>")
+
+    def test_names_the_new_command(self):
+        meta = parse_frontmatter(SKILL)
+        self.assertIn("/maintenance:superpowers-cleanup", meta["description"])
+
+    def test_script_lives_in_skill(self):
+        self.assertTrue((SKILL.parent / "scripts" / "docs_inventory.py").is_file())
+        self.assertFalse((SKILL.parent.parent.parent / "scripts").exists())
+        text = SKILL.read_text(encoding="utf-8")
+        calls = re.findall(r'"([^"]*docs_inventory\.py)"', text)
+        self.assertTrue(calls)
+        for call in calls:
+            self.assertEqual(call, "${CLAUDE_SKILL_DIR}/scripts/docs_inventory.py")
 
     def test_no_dollar_digit(self):
         self.assertIsNone(re.search(r"\$\d", SKILL.read_text(encoding="utf-8")))
@@ -75,7 +88,7 @@ class SkillMdTest(unittest.TestCase):
 
 
 class NothingChangedGraderTest(unittest.TestCase):
-    GRADER = Path(__file__).resolve().parent.parent / "evals" / "cleanup-run" / "graders" / "nothing-changed.md"
+    GRADER = Path(__file__).resolve().parent.parent / "evals" / "superpowers-cleanup-run" / "graders" / "nothing-changed.md"
 
     def pattern(self):
         line = next(x for x in self.GRADER.read_text().splitlines() if x.startswith("input_match:"))
