@@ -12,10 +12,12 @@
 # Planted statements, numbered as the review grader numbers them:
 #   1. root: "unittest discover -s test", but the folder is `tests/`: a fix.
 #   2. root: "Write clear, readable code.": obvious, a delete.
-#   3. root: a wordy ruff rule: a trim that must keep `ruff format .`.
+#   3. root: a wordy ruff rule: a trim that must keep `ruff format .`
+#      (pyproject.toml has [tool.ruff] and .github/workflows/ci.yml runs `ruff format --check .`).
 #   4. root: "Use `uv` ... never `pip`": a project choice, keep or ask, never a delete.
 #   5. root: `src/payments/retry.py` MAX_ATTEMPTS quirk: a single-file move.
-#   6. root: API handlers return `Result`: belongs in src/AGENTS.md, a move.
+#   6. root: API handlers return `Result`: belongs in src/AGENTS.md, a move
+#      (src/handlers.py defines `Result` and a handler that returns it).
 #   src/AGENTS.md: repeats the parse_date() docstring: a delete.
 set -euo pipefail
 unset CDPATH # a set CDPATH makes `cd` print and can send it elsewhere
@@ -29,7 +31,7 @@ export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_NOSYST
 export GIT_AUTHOR_NAME="Fixture Author" GIT_AUTHOR_EMAIL="fixture@example.invalid"
 export GIT_COMMITTER_NAME="Fixture Author" GIT_COMMITTER_EMAIL="fixture@example.invalid"
 
-for existing in .git AGENTS.md src tests pyproject.toml uv.lock; do
+for existing in .git .github AGENTS.md src tests pyproject.toml uv.lock; do
   if [ -e "$existing" ]; then
     echo "error: $existing already exists in $(pwd -P); run the scaffold in an empty directory" >&2
     exit 1
@@ -41,13 +43,27 @@ git symbolic-ref HEAD refs/heads/main
 git config commit.gpgsign false
 git config core.hooksPath .git/no-hooks
 
-mkdir -p src/payments tests
+mkdir -p src/payments tests .github/workflows
 
 cat >pyproject.toml <<'EOF'
 [project]
 name = "fixture"
 version = "0.1.0"
 requires-python = ">=3.9"
+
+[tool.ruff]
+line-length = 120
+EOF
+
+cat >.github/workflows/ci.yml <<'EOF'
+name: ci
+on: [push, pull_request]
+jobs:
+  ruff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: pipx run ruff format --check .
 EOF
 
 cat >uv.lock <<'EOF'
@@ -67,6 +83,26 @@ from datetime import date
 def parse_date(text):
     """Parse a date string. Accepts ISO 8601 dates only."""
     return date.fromisoformat(text)
+EOF
+
+cat >src/handlers.py <<'EOF'
+from dataclasses import dataclass
+from typing import Optional
+
+from src.dates import parse_date
+
+
+@dataclass
+class Result:
+    value: Optional[object] = None
+    error: Optional[str] = None
+
+
+def get_date(params):
+    try:
+        return Result(value=parse_date(params["date"]))
+    except (KeyError, ValueError) as exc:
+        return Result(error=str(exc))
 EOF
 
 cat >src/payments/retry.py <<'EOF'

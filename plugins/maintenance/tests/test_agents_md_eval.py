@@ -101,8 +101,21 @@ class FixtureTest(FixtureTestCase):
         ]:
             self.assertIn(statement, root)
         self.assertIn("`parse_date()` accepts ISO 8601 dates only.", (ws / "src" / "AGENTS.md").read_text())
-        for name in ["pyproject.toml", "uv.lock", "tests/test_dates.py", "src/dates.py", "src/payments/retry.py"]:
+        for name in [
+            "pyproject.toml",
+            "uv.lock",
+            "tests/test_dates.py",
+            "src/dates.py",
+            "src/payments/retry.py",
+            "src/handlers.py",
+            ".github/workflows/ci.yml",
+        ]:
             self.assertTrue((ws / name).is_file(), name)
+        self.assertIn("[tool.ruff]", (ws / "pyproject.toml").read_text())
+        self.assertIn("ruff format --check .", (ws / ".github" / "workflows" / "ci.yml").read_text())
+        handlers = (ws / "src" / "handlers.py").read_text()
+        self.assertIn("class Result", handlers)
+        self.assertIn("return Result(", handlers)
 
     def test_refuses_to_overwrite(self):
         for case in (FIRST, REVIEW):
@@ -138,6 +151,9 @@ class GraderTest(unittest.TestCase):
                 "git switch main",
                 "git clean -fd",
                 "rm -r src",
+                "rm -r -- AGENTS.md",
+                "git -C . add x",
+                "git -C /tmp/x commit -m x",
                 "mv a b",
                 "sed -i '' 's/a/b/' src/a.py",
             ]:
@@ -148,8 +164,15 @@ class GraderTest(unittest.TestCase):
                 "git diff --stat",
                 'python3 "x/agents_md_inventory.py" inventory --repo . 2>&1',
                 "sed -n 1,20p src/a.py",
+                "git -C . status --porcelain",
             ]:
                 self.assertIsNone(pattern.search(cmd), cmd)
+            # The review run ends with the skill removing its own mktemp -d directory; the first-run case stays strict.
+            for cmd in ["rm -r -- /var/folders/ab/T/tmp.XYZ", "rm -r -- /tmp/tmp.XYZ", "rm -rf /tmp/tmp.XYZ"]:
+                if case == REVIEW:
+                    self.assertIsNone(pattern.search(cmd), cmd)
+                else:
+                    self.assertIsNotNone(pattern.search(cmd), cmd)
 
     def test_skill_ran_matches_inventory_command(self):
         for case in (FIRST, REVIEW):
