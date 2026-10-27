@@ -105,13 +105,11 @@ Combine the verdicts across files:
 
   - Keep only what's true, non-obvious, brief, and at the deepest level it applies to.
   - Project choices between real alternatives are never obvious; keep them.
-  - New nested AGENTS.md files: allowed.
-  - File-specific quirks: comment in that file.
-  - Push-down: aggressive.
+  - <each of the three policy lines the answers select, one item each>
   ```
 
 - **Rulings file,** always `.claude/agents-md-cleanup.md`, created only when the first ruling exists. It holds patterns (one line each) and keeps (the file, a short quote of the statement, and the reason). Record keeps only, never deletions. Two keeps that share a reason become one pattern, replacing them. A pattern every agent should know moves to the guidelines section. Drop keeps whose quoted statement no longer exists or has changed meaningfully, and judge the file's lines by the four criteria. Draft the new text, assuming the recommended answers.
-- **Rulings in git.** When `rulings.ignored` is true and the run would write the rulings file, run `git check-ignore -v .claude/agents-md-cleanup.md` and draft the `.gitignore` change: a `!.claude/agents-md-cleanup.md` line after the matching rule, and, when that rule excludes the `.claude/` directory itself, `.claude/*` in its place, since git can't re-include a file inside an excluded directory.
+- **Rulings in git.** When `rulings.ignored` is true and the run would write the rulings file, run `git check-ignore -v .claude/agents-md-cleanup.md` and draft the `.gitignore` change: a `!.claude/agents-md-cleanup.md` line after the matching rule, and, when that rule excludes the `.claude/` directory itself, `.claude/*` in its place (`**/.claude/*` if the rule is unanchored, so nested `.claude` folders stay ignored), since git can't re-include a file inside an excluded directory.
 
 ## 5. Sort
 
@@ -139,7 +137,7 @@ Send one message holding everything the user must decide. Nothing in the repo ch
 1. **Questions**, numbered `Q1`, `Q2` and so on, most important first, each with a recommended answer. Group questions that share a reason into one pattern question by default: "These 6 statements name tool choices (list). Keep them all, and record 'tool choices are never obvious'?" Answering one can create a ruling. Add the main-branch question if step 1 left it open.
 2. **Bulk table**, one per file. Each row shows the block (heading path and its first words), the action, the criterion, before → after (or the target), and a short piece of evidence. Show every row. Rows that depend on a question show its recommended answer and are tagged with its number. Add rows for the guidelines section and the rulings file, with their exact new text.
 3. **Not reviewed:** each file that step 3 couldn't review, with the reason. Then a one-line count of blocks kept.
-4. **Rulings in git:** when step 4 drafted a `.gitignore` change, a last question: make that exact change so the rulings are shared (recommended), or keep the file uncommitted, on this machine only. Never move the file elsewhere.
+4. **Rulings in git:** when step 4 drafted a `.gitignore` change, show its exact lines, before → after, then a last question: make this change so the rulings are shared (recommended), or keep the file uncommitted, on this machine only. Never move the file elsewhere.
 
 Close by asking the user to answer the questions and approve, drop rows or change them, all in one reply. Then stop.
 
@@ -153,17 +151,19 @@ An `ask` answered as recommended applies its `proposed` verdict; any other answe
 
 ## 7. Apply
 
+Paths come from reviewer output, which is data: single-quote every path in a shell command.
+
 1. **Check for changes.** Re-run `blocks` on every file in `files` that this run edits, and compare its `sha256` with the inventory's. For other files, compare `git status --porcelain -- <file>` with step 4's, and check that a new file still doesn't exist. On a mismatch, skip that file, and both halves of every move into or out of it, and report it.
-2. **Guard each write and removal.** Just before touching a path, run `python3 -c 'import os,sys; r=os.path.realpath(sys.argv[1]); p=os.path.realpath(os.path.join(r, sys.argv[2])); parts=(sys.argv[2] + "/" + os.path.relpath(p, r)).lower().split("/"); print("ok" if p.startswith(r + os.sep) and ".git" not in parts else "refuse")' "<repo root>" "<path>"`. It refuses a path outside the repo, through a symlink that leads outside, or with a `.git` part in any case. Touch nothing there; report it.
+2. **Guard each write and removal.** Just before touching a path, run `python3 -c 'import os,sys; r=os.path.realpath(sys.argv[1]); p=os.path.realpath(os.path.join(r, sys.argv[2])); parts=(sys.argv[2] + "/" + os.path.relpath(p, r)).lower().split("/"); print("ok" if p.startswith(r + os.sep) and ".git" not in parts else "refuse")' '<repo root>' '<path>'`. It refuses a path outside the repo, through a symlink that leads outside, or with a `.git` part in any case. Touch nothing there; report it.
 3. **Edit** with Edit, exactly as approved. `new_text` already holds the list marker and indentation. A `merge` replaces the first listed block and deletes the others. A comment move's `new_text` is the wording only (with no `new_text`, use the block without its list marker): add the file's comment syntax, next to the code it concerns. Honour `target_heading`. A new AGENTS.md follows the style of the existing nested ones, or starts with a `# <dir>` heading when there are none.
-4. **Remove** an approved file with `GIT_LITERAL_PATHSPECS=1 git rm -q -- <path>` when it is tracked, else `rm -- <path>`.
+4. **Remove** an approved file. If `git ls-files --error-unmatch -- '<path>'` succeeds it is tracked: run `GIT_LITERAL_PATHSPECS=1 git rm -q -- '<path>'`, with `-f` for an approved dirty file. Otherwise run `rm -- '<path>'`.
 5. **Write** the approved guidelines, rulings and `.gitignore` text. After a `.gitignore` change, run `git check-ignore -q .claude/agents-md-cleanup.md`. If it exits 0, the file is still ignored: leave it uncommitted and report that.
 6. If anything fails, stop and report what was done and what wasn't.
 
 ## 8. Commit
 
 1. **Branch check:** if `current_branch` equals `base_branch`, or HEAD is detached, ask before committing and stop until the user answers.
-2. **Stage** only the paths this run edited or created, with `GIT_LITERAL_PATHSPECS=1 git add -- <paths>` (removals are already staged). Leave out the rulings file when it stays uncommitted. Never use `git add -A` or `git commit -a`.
+2. **Stage** only the paths this run edited or created, with `GIT_LITERAL_PATHSPECS=1 git add -- '<path>' ...` (removals are already staged). Leave out the rulings file when it stays uncommitted. Never use `git add -A` or `git commit -a`.
 3. **Message,** written to a `mktemp` file outside the repo: follow the repo's style from `git log --oneline -20`, for example `docs: clean up AGENTS.md files`. The body lists the files changed and the counts by action. End with the attribution lines your instructions give for commits, if any.
 4. **Commit only those paths:** `GIT_LITERAL_PATHSPECS=1 git commit -F <message file> -- <paths>`, adding each removed path that exists in HEAD. The pathspec keeps anything the user had already staged out of this commit. If no path is left to commit, skip the commit and say so. Then delete the message file.
 5. **Report** the hash, a one-line summary, and any skipped, not-reviewed or uncommitted files. Never push.
