@@ -16,7 +16,7 @@ _FENCE = re.compile(r"^```(\w+)\n(.*?)\n```$", re.S | re.M)
 def parse_frontmatter(path: Path) -> dict:
     """Simple `key: value` lines between the first two `---` lines."""
     lines = path.read_text(encoding="utf-8").splitlines()
-    assert lines and lines[0] == "---", "SKILL.md must start with frontmatter"
+    assert lines and lines[0] == "---", f"{path} must start with frontmatter"
     meta = {}
     for line in lines[1:]:
         if line == "---":
