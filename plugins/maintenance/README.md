@@ -9,7 +9,7 @@ Skills for keeping a repo tidy. Today it holds one skill, `superpowers-cleanup`.
 /plugin install maintenance@mbcrawfo-skills
 ```
 
-This plugin used to be called `superpowers-cleanup`, and an install under that name no longer updates. If you have it, swap it for the new one:
+This plugin used to be called `superpowers-cleanup`. Once the marketplace updates, an install under that name fails to load and its `/superpowers-cleanup:cleanup` command goes away. If you have it, swap it for the new one:
 
 ```
 /plugin uninstall superpowers-cleanup@mbcrawfo-skills
