@@ -509,18 +509,21 @@ def cmd_locate(args: argparse.Namespace) -> dict:
             "skipped": not args.second_opinion,
         }
     focus = None
-    if (
-        mode == "followup"
-        and reason in ("continuing", "base-updated")
-        and not any(f.get("status") in ("open", "still-open") for f in open_findings)
-        and second_opinion_due(probe)[0]
-    ):
-        # The second opinion replaces the follow-up and verifies the claimed fixes.
-        mode, reason, focus = "deep", SECOND_OPINION_FOCUS, SECOND_OPINION_FOCUS
     conflicts: list[str] = []
+    conflict_anchor = None
     if mode == "merge-check":
         anchor = _anchor(_recorded(state["rounds"]))
         conflicts = base_conflicts(repo, anchor, _merge_base(repo, base)) or []
+        conflict_anchor = anchor["snapshot"]
+    if (
+        (mode == "followup" and reason in ("continuing", "base-updated") or mode == "merge-check")
+        and not any(f.get("status") in ("open", "still-open") for f in open_findings)
+        and second_opinion_due(probe)[0]
+    ):
+        # The second opinion replaces the follow-up and verifies the claimed fixes. It replaces a merge-check
+        # too: its deep round covers the whole change on the new base, and `conflicts` (with the anchor whose
+        # merge base is the old one) tells the reviewer which resolutions to check against both sides.
+        mode, reason, focus = "deep", SECOND_OPINION_FOCUS, SECOND_OPINION_FOCUS
 
     return {
         "repo_key": rkey,
@@ -534,6 +537,7 @@ def cmd_locate(args: argparse.Namespace) -> dict:
         "rounds": rounds,
         "open_findings": open_findings,
         "conflicts": conflicts,
+        "conflict_anchor": conflict_anchor,
         "plugin_version": PLUGIN_VERSION,
         "earlier_not_checked": _earlier_not_checked(state),
     }
@@ -688,8 +692,22 @@ def cmd_begin_round(args: argparse.Namespace) -> dict:
     diff_to = snapshot
 
     state["base_ref"] = base_ref
+    previous_intent = state.get("intent")
     if args.intent_file:
         state["intent"] = _read_text_file(args.intent_file)
+    # Decisions recorded since the last round began may change what the change does; an intent passed unchanged
+    # since then may no longer describe it.
+    last_round = rounds[-1]["number"] if rounds else None
+    decided = [
+        f["id"]
+        for f in state["findings"]
+        if isinstance(f, dict)
+        and isinstance(f.get("decision"), dict)
+        and last_round is not None
+        and f["decision"].get("round", 0) >= last_round
+    ]
+    unchanged = _normalize_ws(state.get("intent") or "") == _normalize_ws(previous_intent or "")
+    decisions_since_intent = decided if unchanged else []
     if args.notes_file is not None:
         state["notes"] = _read_text_file(args.notes_file).strip() or None
     if args.related_branch is not None:
@@ -784,6 +802,7 @@ def cmd_begin_round(args: argparse.Namespace) -> dict:
             "saved": saved,
             "notes": state.get("notes"),
             "related_branches": state.get("related_branches", []),
+            "decisions_since_intent": decisions_since_intent,
         }
     )
     if mode == "merge-check":
@@ -1028,8 +1047,8 @@ def _validate_variants(f: dict, where: str) -> list:
 
 
 def _validate_fix_options(f: dict, where: str) -> list:
-    if "fix_options" not in f:
-        return []
+    if "fix_options" not in f or f["fix_options"] == []:
+        return []  # an empty list says the same as leaving the key out
     options = _require_str_list(f, "fix_options", where)
     if len(options) < 2 or not all(o.strip() for o in options):
         raise _bad(f"{where}.fix_options must hold two or more non-empty alternatives")

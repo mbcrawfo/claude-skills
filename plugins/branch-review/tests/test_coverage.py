@@ -32,6 +32,11 @@ class CoverageTest(LedgerHarness, unittest.TestCase):
     def test_fix_options_with_one_entry_is_refused(self):
         self.assertIn("fix_options", self.record_error(output(findings=[finding(fix_options=["only"])])))
 
+    def test_empty_fix_options_is_the_same_as_none(self):
+        self.begin()
+        self.record(output(findings=[finding(fix_options=[])]))
+        self.assertEqual(self.find("R1-F1")["fix_options"], [])
+
     def test_variant_result_enum(self):
         bad = finding(variants=[{"input": "System.Int64", "result": "maybe"}])
         self.assertIn("result", self.record_error(output(findings=[bad])))

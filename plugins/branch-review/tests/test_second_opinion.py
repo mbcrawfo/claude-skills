@@ -1,8 +1,9 @@
 import json
 from pathlib import Path
+import subprocess
 import unittest
 
-from helpers import LedgerHarness, finding, git, output
+from helpers import LedgerHarness, commit_file, finding, git, output
 import review_state
 
 MODERATE = {"level": "moderate", "reason": "touches shared state"}
@@ -178,6 +179,44 @@ class SecondOpinionTest(LedgerHarness, unittest.TestCase):
         self.assertEqual(found["reason"], "second-opinion")
         self.assertEqual(found["focus"], "second-opinion")
         self.assertEqual([f["id"] for f in found["open_findings"]], ["R1-F1"])
+
+    def conflicting_merge(self):
+        """Merge a main that also adds b.txt, with other content, and commit the resolution."""
+        git(self.repo, "checkout", "main")
+        commit_file(self.repo, "b.txt", "main\n", "main adds b")
+        git(self.repo, "checkout", "feature/x")
+        merge = subprocess.run(["git", "merge", "main"], cwd=str(self.repo), capture_output=True, text=True)
+        self.assertNotEqual(merge.returncode, 0)
+        (self.repo / "b.txt").write_text("resolved\n")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "--no-edit")
+
+    def test_a_due_second_opinion_replaces_a_merge_check(self):
+        self.begin()
+        self.record(output(findings=[finding(severity="major")]))
+        self.set_status("R1-F1", "fixed", "--commit", "c1")
+        anchor = json.loads(self.review_json.read_text())["rounds"][-1]["snapshot"]
+        self.conflicting_merge()
+        found = self.cli("locate", "--base", "main")
+        self.assertEqual((found["mode"], found["reason"], found["focus"]), ("deep", "second-opinion", "second-opinion"))
+        self.assertEqual(found["conflicts"], ["b.txt"])
+        self.assertEqual(found["conflict_anchor"], anchor)
+        self.assertEqual([f["id"] for f in found["open_findings"]], ["R1-F1"])
+
+    def test_a_merge_check_stays_while_a_finding_is_open(self):
+        self.begin()
+        self.record(output(findings=[finding(severity="major")]))
+        self.conflicting_merge()
+        found = self.cli("locate", "--base", "main")
+        self.assertEqual((found["mode"], found["reason"], found["focus"]), ("merge-check", "base-moved", None))
+        self.assertEqual(found["conflicts"], ["b.txt"])
+        self.assertIsNotNone(found["conflict_anchor"])
+
+    def test_no_conflict_anchor_without_conflicts(self):
+        self.begin()
+        self.record(output(findings=[finding(severity="minor")]))
+        found = self.cli("locate", "--base", "main")
+        self.assertEqual((found["conflicts"], found["conflict_anchor"]), ([], None))
 
     def test_locate_follows_up_while_open(self):
         self.begin()
