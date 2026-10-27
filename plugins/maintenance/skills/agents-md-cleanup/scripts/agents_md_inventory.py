@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import posixpath
 import re
@@ -320,6 +321,16 @@ def current_branch(root: Path) -> str | None:
     return result.stdout.strip() if result.returncode == 0 else None
 
 
+def _is_inside(root: Path, path: Path) -> bool:
+    """Whether `path` is a file whose symlinks, if any, resolve to somewhere inside the repo."""
+    try:
+        resolved = path.resolve()
+        resolved.relative_to(root)
+        return resolved.is_file()
+    except (OSError, ValueError):
+        return False
+
+
 def discover(root: Path) -> list[str]:
     """Repo-relative paths of every AGENTS.md (any case) that git knows and that exists, sorted.
 
@@ -329,7 +340,7 @@ def discover(root: Path) -> list[str]:
     found = {
         path
         for path in listing.split("\0")
-        if path and posixpath.basename(path).lower() == "agents.md" and (root / path).is_file()
+        if path and posixpath.basename(path).lower() == "agents.md" and _is_inside(root, root / path)
     }
     return sorted(found)
 
@@ -463,11 +474,12 @@ def cmd_inventory(args: argparse.Namespace) -> dict:
 
 def cmd_blocks(args: argparse.Namespace) -> dict:
     root = repo_root(Path(args.repo))
+    # Report the requested path, normalised but with its last component unresolved, so a symlinked
+    # AGENTS.md keeps its own name, as `inventory` lists it. A link that leads outside the repo is refused.
     try:
-        target = (root / args.path).resolve()
-        rel = target.relative_to(root).as_posix()
-        is_file = target.is_file()
-    except (OSError, ValueError):
+        rel = Path(os.path.normpath(root / args.path)).relative_to(root).as_posix()
+        is_file = _is_inside(root, root / rel)
+    except ValueError:
         is_file = False
     if not is_file:
         raise CliError(f"no such file in the repo: {args.path}")

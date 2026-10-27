@@ -309,14 +309,46 @@ class BlocksCommandTest(RepoTestCase):
         self.assertEqual(len(after["blocks"]), 2)
 
     def test_blocks_missing_file(self):
+        (self.repo / "src").mkdir()
         for bad in ["AGENTS.md", "nope/AGENTS.md", "../outside.md", "src", str(Path("/etc/hosts"))]:
             with self.subTest(path=bad):
-                (self.repo / "src").mkdir(exist_ok=True)
                 code, out, err = call("blocks", "--repo", str(self.repo), bad)
                 self.assertEqual(code, 1)
                 self.assertEqual(out, "")
                 self.assertTrue(err.startswith("error: "), err)
                 self.assertEqual(len(err.strip().splitlines()), 1)
+
+    def test_in_repo_symlink_keeps_its_own_path(self):
+        write(self.repo, "CLAUDE.md", "- shared\n")
+        (self.repo / "AGENTS.md").symlink_to("CLAUDE.md")
+        commit_all(self.repo, "add")
+        files = self.inventory()["files"]
+        self.assertEqual([f["path"] for f in files], ["AGENTS.md"])
+        out = run("blocks", "--repo", str(self.repo), "AGENTS.md")
+        self.assertEqual(out, {"path": "AGENTS.md", "sha256": files[0]["sha256"], "blocks": files[0]["blocks"]})
+
+    def test_outside_repo_symlink_is_omitted_and_rejected(self):
+        outside = self.tmp / "outside.md"
+        outside.write_text("- secret\n", encoding="utf-8")
+        (self.repo / "AGENTS.md").symlink_to(outside)
+        write(self.repo, "src/AGENTS.md", "- x\n")
+        commit_all(self.repo, "add")
+        out = self.inventory()
+        self.assertEqual([f["path"] for f in out["files"]], ["src/AGENTS.md"])
+        self.assertEqual(out["agents_md_dirs"], ["src"])
+        code, stdout, err = call("blocks", "--repo", str(self.repo), "AGENTS.md")
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "")
+        self.assertEqual(err.strip(), "error: no such file in the repo: AGENTS.md")
+
+    def test_blocks_normalises_path(self):
+        write(self.repo, "src/AGENTS.md", "- x\n")
+        commit_all(self.repo, "add")
+        self.assertEqual(run("blocks", "--repo", str(self.repo), "./src/../src/AGENTS.md")["path"], "src/AGENTS.md")
+        self.assertEqual(
+            run("blocks", "--repo", str(self.repo), str(self.repo.resolve() / "src" / "AGENTS.md"))["path"],
+            "src/AGENTS.md",
+        )
 
 
 class ErrorPathTest(unittest.TestCase):
