@@ -9,6 +9,7 @@ from agents_helpers import call, commit_all, make_repo, write
 
 PLUGIN = Path(__file__).resolve().parent.parent
 AGENT = PLUGIN / "agents" / "agents-md-reviewer.md"
+SKILL = PLUGIN / "skills" / "agents-md-cleanup" / "SKILL.md"
 
 _FENCE = re.compile(r"^```(\w+)\n(.*?)\n```$", re.S | re.M)
 
@@ -124,6 +125,68 @@ class ReviewerAgentTest(unittest.TestCase):
             )
         self.assertEqual(code, 0, err)
         self.assertEqual(json.loads(out)["verdicts"], data["verdicts"])
+
+
+class SkillMdTest(unittest.TestCase):
+    def test_frontmatter(self):
+        meta = parse_frontmatter(SKILL)
+        self.assertEqual(meta["name"], "agents-md-cleanup")
+        self.assertEqual(meta["disable-model-invocation"], "true")
+        self.assertIn("/maintenance:agents-md-cleanup", meta["description"])
+        self.assertIn("manual", meta["description"].lower())
+
+    def test_no_dollar_digit(self):
+        self.assertIsNone(re.search(r"\$\d", SKILL.read_text(encoding="utf-8")))
+
+    def test_script_calls(self):
+        text = SKILL.read_text(encoding="utf-8")
+        prefixes = re.findall(r"(\S*)agents_md_inventory\.py", text)
+        self.assertTrue(prefixes)
+        for p in prefixes:
+            self.assertEqual(p, '"${CLAUDE_SKILL_DIR}/scripts/')
+        for cmd in re.findall(r"agents_md_inventory\.py\"?\s+([\w-]+)", text):
+            self.assertIn(cmd, {"inventory", "blocks", "check-verdicts"})
+
+    def test_dispatch_and_fallback(self):
+        text = SKILL.read_text(encoding="utf-8")
+        self.assertIn("`maintenance:agents-md-reviewer`", text)
+        self.assertIn("${CLAUDE_SKILL_DIR}/../../agents/agents-md-reviewer.md", text)
+        self.assertTrue((SKILL.parent / ".." / ".." / "agents" / "agents-md-reviewer.md").resolve().is_file())
+
+    def test_confirm_before_dispatch(self):
+        text = SKILL.read_text(encoding="utf-8")
+        self.assertLess(text.index("## 2. Confirm before dispatch"), text.index("## 3. Dispatch"))
+        self.assertIn("Stop until the user answers", text)
+
+    def test_policy_options(self):
+        text = SKILL.read_text(encoding="utf-8")
+        for opt in (
+            "`allowed`",
+            "`ask each time`",
+            "`comment in that file`",
+            "`nearest AGENTS.md`",
+            "`aggressive`",
+            "`conservative`",
+        ):
+            self.assertIn(opt, text)
+
+    def test_rulings_path_fixed(self):
+        self.assertIn(".claude/agents-md-cleanup.md", SKILL.read_text(encoding="utf-8"))
+
+    def test_apply_checks_sha(self):
+        text = SKILL.read_text(encoding="utf-8")
+        self.assertIn("sha256", text[text.index("## 7. Apply") :])
+
+    def test_approval_and_commit_rules(self):
+        text = SKILL.read_text(encoding="utf-8")
+        for phrase in (
+            "Anything else is not approval",
+            "Nothing in the repo changes before the user approves",
+            "git commit -F <message file> -- <paths>",
+            "git status --porcelain -- <file>",
+            "Never push",
+        ):
+            self.assertIn(phrase, text)
 
 
 if __name__ == "__main__":
