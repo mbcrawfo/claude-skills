@@ -66,54 +66,81 @@ Splitting rules, which the tests pin:
 ```python
 from agents_helpers import agents_md_inventory as inv
 
+
 def kl(text):
     return [(b["kind"], b["start_line"], b["end_line"], b["heading_path"]) for b in inv.split_blocks(text)]
+
 
 class SplitBlocksTest(unittest.TestCase):
     def test_core_rules_section_is_three_blocks(self):
         text = "# T\n\n## Core rules\n\nThese apply.\n\n1. **A.** x\n2. **B.** y\n"
-        self.assertEqual(kl(text), [
-            ("paragraph", 5, 5, ["T", "Core rules"]),
-            ("list_item", 7, 7, ["T", "Core rules"]),
-            ("list_item", 8, 8, ["T", "Core rules"]),
-        ])
+        self.assertEqual(
+            kl(text),
+            [
+                ("paragraph", 5, 5, ["T", "Core rules"]),
+                ("list_item", 7, 7, ["T", "Core rules"]),
+                ("list_item", 8, 8, ["T", "Core rules"]),
+            ],
+        )
+
     def test_ids_and_text_exact(self):
         blocks = inv.split_blocks("a\nb\n\n- c\n")
         self.assertEqual([b["id"] for b in blocks], ["b1", "b2"])
         self.assertEqual(blocks[0]["text"], "a\nb")
+
     def test_nested_items_belong_to_parent(self):
         self.assertEqual(kl("- a\n  - a1\n  - a2\n- b\n"), [("list_item", 1, 3, []), ("list_item", 4, 4, [])])
+
     def test_multi_paragraph_item(self):
         self.assertEqual(kl("1. step\n\n   more\n2. next\n"), [("list_item", 1, 3, []), ("list_item", 4, 4, [])])
+
     def test_lazy_continuation(self):
         self.assertEqual(kl("- a long\nwrapped\n- b\n"), [("list_item", 1, 2, []), ("list_item", 3, 3, [])])
+
     def test_list_then_paragraph(self):
         self.assertEqual(kl("- a\n\nPara.\n"), [("list_item", 1, 1, []), ("paragraph", 3, 3, [])])
+
     def test_other_markers(self):
         self.assertEqual([k for k, *_ in kl("* a\n+ b\n3) c\n")], ["list_item"] * 3)
+
     def test_fence_hides_headings_and_blanks(self):
         self.assertEqual(kl("```\n# not heading\n\nx\n```\n"), [("code", 1, 5, [])])
+
     def test_tilde_fence(self):
         self.assertEqual(kl("~~~\n- x\n~~~\n"), [("code", 1, 3, [])])
+
     def test_fence_inside_item(self):
-        self.assertEqual(kl("- run:\n\n  ```\n  cmd\n  ```\n- next\n"), [("list_item", 1, 5, []), ("list_item", 6, 6, [])])
+        self.assertEqual(
+            kl("- run:\n\n  ```\n  cmd\n  ```\n- next\n"), [("list_item", 1, 5, []), ("list_item", 6, 6, [])]
+        )
+
     def test_table(self):
-        self.assertEqual(kl("| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n"),
-                         [("table_header", 1, 2, []), ("table_row", 3, 3, []), ("table_row", 4, 4, [])])
+        self.assertEqual(
+            kl("| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n"),
+            [("table_header", 1, 2, []), ("table_row", 3, 3, []), ("table_row", 4, 4, [])],
+        )
+
     def test_quote(self):
         self.assertEqual(kl("> one\n> two\n\nP\n"), [("quote", 1, 2, []), ("paragraph", 4, 4, [])])
+
     def test_comment(self):
         self.assertEqual(kl("<!-- a\nb -->\nP\n"), [("comment", 1, 2, []), ("paragraph", 3, 3, [])])
+
     def test_front_matter_skipped(self):
         self.assertEqual(kl("---\nname: x\n---\n# H\nP\n"), [("paragraph", 5, 5, ["H"])])
+
     def test_setext_headings(self):
         self.assertEqual(kl("Title\n=====\n\nSub\n---\n\nP\n"), [("paragraph", 7, 7, ["Title", "Sub"])])
+
     def test_thematic_break_is_not_heading(self):
         self.assertEqual(kl("P1\n\n---\n\nP2\n"), [("paragraph", 1, 1, []), ("paragraph", 5, 5, [])])
+
     def test_heading_levels_pop(self):
         self.assertEqual([p for *_, p in kl("# A\n## B\nx\n## C\ny\n# D\nz\n")], [["A", "B"], ["A", "C"], ["D"]])
+
     def test_closing_hashes_dropped(self):
         self.assertEqual(kl("## Foo ##\nx\n")[0][3], ["Foo"])
+
     def test_empty(self):
         self.assertEqual(inv.split_blocks(""), [])
 ```
@@ -181,51 +208,69 @@ class InventoryTest(unittest.TestCase):
         self.assertEqual(out["agents_md_dirs"], [".", "docs", "src"])
         self.assertEqual(out["totals"]["agents"], 3)
         self.assertEqual(out["totals"]["blocks"], sum(len(f["blocks"]) for f in out["files"]))
+
     def test_ignored_and_untracked(self):
         # .gitignore "build/"; build/AGENTS.md exists; new/AGENTS.md untracked
         paths = [f["path"] for f in run("inventory", "--repo", str(repo))["files"]]
         self.assertNotIn("build/AGENTS.md", paths)
         self.assertIn("new/AGENTS.md", paths)
+
     def test_partial_run_roles(self):
         # AGENTS.md, tests/AGENTS.md, tests/unit/AGENTS.md, src/AGENTS.md
         out = run("inventory", "--repo", str(repo), "--scope", "tests/unit")
-        self.assertEqual({f["path"]: f["role"] for f in out["files"]},
-                         {"AGENTS.md": "ancestor", "tests/AGENTS.md": "ancestor", "tests/unit/AGENTS.md": "full"})
+        self.assertEqual(
+            {f["path"]: f["role"] for f in out["files"]},
+            {"AGENTS.md": "ancestor", "tests/AGENTS.md": "ancestor", "tests/unit/AGENTS.md": "full"},
+        )
         self.assertEqual(out["scope"], ["tests/unit"])
+
     def test_scope_dot_is_whole_repo(self):
-        self.assertTrue(all(f["role"] == "full" for f in run("inventory", "--repo", str(repo), "--scope", ".")["files"]))
+        self.assertTrue(
+            all(f["role"] == "full" for f in run("inventory", "--repo", str(repo), "--scope", ".")["files"])
+        )
+
     def test_bad_scope(self):
         for bad in ["missing", "../outside", "AGENTS.md"]:
             code, out, err = call("inventory", "--repo", str(repo), "--scope", bad)
-            self.assertEqual(code, 1); self.assertEqual(out, "")
+            self.assertEqual(code, 1)
+            self.assertEqual(out, "")
             self.assertTrue(err.startswith("error: scope is not a directory in the repo"), err)
             self.assertEqual(len(err.strip().splitlines()), 1)
+
     def test_guidelines_found(self):
         # root: "# R\n\n## AGENTS.md guidelines\n\n- Keep it lean.\n\n## Other\n\nx\n"
         g = run("inventory", "--repo", str(repo))["guidelines"]
         self.assertEqual((g["path"], g["start_line"], g["end_line"]), ("AGENTS.md", 3, 6))
         self.assertIn("Keep it lean.", g["text"])
+
     def test_guidelines_null_without_section(self): ...  # assertIsNone(out["guidelines"])
     def test_guidelines_read_on_partial_run_outside_scope(self): ...  # --scope src still returns root guidelines
     def test_rulings_missing_and_ignored(self):
         # .gitignore ".claude/"
         r = run("inventory", "--repo", str(repo))["rulings"]
         self.assertEqual(r, {"path": ".claude/agents-md-cleanup.md", "exists": False, "ignored": True, "text": None})
+
     def test_rulings_present(self): ...  # exists True, ignored False, text equals file content
     def test_dirty_and_branch(self):
         # modify AGENTS.md after commit; checkout -b feature
         out = run("inventory", "--repo", str(repo))
         self.assertTrue(out["files"][0]["dirty"])
         self.assertEqual((out["base"], out["base_branch"], out["current_branch"]), ("main", "main", "feature"))
+
     def test_no_agents_md(self):
         out = run("inventory", "--repo", str(repo))
-        self.assertEqual(out["files"], []); self.assertEqual(out["totals"]["agents"], 0)
+        self.assertEqual(out["files"], [])
+        self.assertEqual(out["totals"]["agents"], 0)
+
 
 class BlocksCommandTest(unittest.TestCase):
     def test_blocks_matches_inventory(self):
         inv_file = run("inventory", "--repo", str(repo))["files"][0]
-        self.assertEqual(run("blocks", "--repo", str(repo), "AGENTS.md"),
-                         {"path": "AGENTS.md", "sha256": inv_file["sha256"], "blocks": inv_file["blocks"]})
+        self.assertEqual(
+            run("blocks", "--repo", str(repo), "AGENTS.md"),
+            {"path": "AGENTS.md", "sha256": inv_file["sha256"], "blocks": inv_file["blocks"]},
+        )
+
     def test_blocks_sha_changes_with_content(self): ...  # edit file, sha256 differs
     def test_blocks_missing_file(self): ...  # exit 1, one "error: " line
 ```
@@ -291,35 +336,68 @@ Extra checks:
 
 ```python
 def test_valid_full_coverage(self):
-    code, out, _ = check([{"blocks": ["b1"], "action": "keep"},
-                          {"blocks": ["b2"], "action": "trim", "criterion": "brief", "new_text": "x", "evidence": ["wordy"]},
-                          {"blocks": ["b3", "b4"], "action": "merge", "criterion": "brief", "new_text": "y", "evidence": ["same rule"]}])
+    code, out, _ = check(
+        [
+            {"blocks": ["b1"], "action": "keep"},
+            {"blocks": ["b2"], "action": "trim", "criterion": "brief", "new_text": "x", "evidence": ["wordy"]},
+            {
+                "blocks": ["b3", "b4"],
+                "action": "merge",
+                "criterion": "brief",
+                "new_text": "y",
+                "evidence": ["same rule"],
+            },
+        ]
+    )
     self.assertEqual(code, 0)
     self.assertEqual(json.loads(out)["counts"], {"keep": 1, "trim": 1, "merge": 1})
-def test_uses_last_json_fence(self): ...      # an earlier invalid fence is ignored
-def test_no_json_block(self): ...             # err == "error: no json block\n"
-def test_wrong_file(self): ...                # "verdicts are for src/AGENTS.md, expected AGENTS.md"
-def test_unknown_block(self): ...             # "b9" -> error mentions b9
-def test_uncovered_block_full(self): ...      # omit b4 -> "error: block b4 not covered"
-def test_duplicate_block(self): ...           # b1 in two verdicts -> error
-def test_bad_action(self): ...                # "rewrite" -> error
+
+
+def test_uses_last_json_fence(self): ...  # an earlier invalid fence is ignored
+def test_no_json_block(self): ...  # err == "error: no json block\n"
+def test_wrong_file(self): ...  # "verdicts are for src/AGENTS.md, expected AGENTS.md"
+def test_unknown_block(self): ...  # "b9" -> error mentions b9
+def test_uncovered_block_full(self): ...  # omit b4 -> "error: block b4 not covered"
+def test_duplicate_block(self): ...  # b1 in two verdicts -> error
+def test_bad_action(self): ...  # "rewrite" -> error
 def test_missing_new_text_for_fix(self): ...
-def test_rename_only_only_on_fix(self): ...   # on trim -> error
+def test_rename_only_only_on_fix(self): ...  # on trim -> error
 def test_merge_needs_two_blocks(self): ...
-def test_missing_evidence(self): ...          # delete without evidence -> error
+def test_missing_evidence(self): ...  # delete without evidence -> error
 def test_ask_needs_question_and_recommendation(self): ...
 def test_move_targets(self):
-    for target, kind, ok in [("src/AGENTS.md", "agents_md", True), ("src/a.py", "comment", True),
-                             ("src/missing.py", "comment", False), ("src/notes.md", "agents_md", False),
-                             ("../x/AGENTS.md", "agents_md", False), ("/abs/AGENTS.md", "agents_md", False),
-                             ("AGENTS.md", "agents_md", False)]:
+    for target, kind, ok in [
+        ("src/AGENTS.md", "agents_md", True),
+        ("src/a.py", "comment", True),
+        ("src/missing.py", "comment", False),
+        ("src/notes.md", "agents_md", False),
+        ("../x/AGENTS.md", "agents_md", False),
+        ("/abs/AGENTS.md", "agents_md", False),
+        ("AGENTS.md", "agents_md", False),
+    ]:
         ...  # assert exit code 0 iff ok
+
+
 def test_ancestor_allows_uncovered(self):
-    code, *_ = check([{"blocks": ["b2"], "action": "move", "criterion": "level", "target": "src/AGENTS.md",
-                       "target_kind": "agents_md", "evidence": ["about src"]}], role="ancestor", scope=["src"])
+    code, *_ = check(
+        [
+            {
+                "blocks": ["b2"],
+                "action": "move",
+                "criterion": "level",
+                "target": "src/AGENTS.md",
+                "target_kind": "agents_md",
+                "evidence": ["about src"],
+            }
+        ],
+        role="ancestor",
+        scope=["src"],
+    )
     self.assertEqual(code, 0)
-def test_ancestor_rejects_other_actions(self): ...    # trim on ancestor -> error
-def test_ancestor_move_must_target_scope(self): ...   # target docs/AGENTS.md with scope src -> error
+
+
+def test_ancestor_rejects_other_actions(self): ...  # trim on ancestor -> error
+def test_ancestor_move_must_target_scope(self): ...  # target docs/AGENTS.md with scope src -> error
 def test_ancestor_requires_scope(self): ...
 ```
 
@@ -389,6 +467,7 @@ disallowedTools: Agent, Edit, Write, NotebookEdit
 ```python
 AGENT = PLUGIN / "agents" / "agents-md-reviewer.md"
 
+
 class ReviewerAgentTest(unittest.TestCase):
     def test_frontmatter(self):
         meta = parse_frontmatter(AGENT)  # copy parse_frontmatter from test_skill_md.py
@@ -396,14 +475,31 @@ class ReviewerAgentTest(unittest.TestCase):
         self.assertIn("never on its own", meta["description"])
         for tool in ("Edit", "Write", "Agent"):
             self.assertIn(tool, meta["disallowedTools"])
-        self.assertNotIn("Edit", meta["tools"]); self.assertNotIn("Write", meta["tools"])
+        self.assertNotIn("Edit", meta["tools"])
+        self.assertNotIn("Write", meta["tools"])
+
     def test_names_every_action_and_criterion(self):
         text = AGENT.read_text(encoding="utf-8")
-        for word in ("`keep`", "`fix`", "`trim`", "`delete`", "`merge`", "`move`", "`ask`",
-                     "`accurate`", "`valuable`", "`brief`", "`level`", "`rename_only`", "`target_kind`"):
+        for word in (
+            "`keep`",
+            "`fix`",
+            "`trim`",
+            "`delete`",
+            "`merge`",
+            "`move`",
+            "`ask`",
+            "`accurate`",
+            "`valuable`",
+            "`brief`",
+            "`level`",
+            "`rename_only`",
+            "`target_kind`",
+        ):
             self.assertIn(word, text)
+
     def test_doubt_asks(self):
         self.assertIn("never `delete`", AGENT.read_text(encoding="utf-8"))
+
     def test_example_json_matches_schema(self):
         # Every ```json block in the agent file parses, and each verdict's action is a known action.
         ...
@@ -489,6 +585,7 @@ The body follows the spec's *Flow*. Use these numbered headings, each written fr
 ```python
 SKILL = PLUGIN / "skills" / "agents-md-cleanup" / "SKILL.md"
 
+
 class SkillMdTest(unittest.TestCase):
     def test_frontmatter(self):
         meta = parse_frontmatter(SKILL)
@@ -496,8 +593,10 @@ class SkillMdTest(unittest.TestCase):
         self.assertEqual(meta["disable-model-invocation"], "true")
         self.assertIn("/maintenance:agents-md-cleanup", meta["description"])
         self.assertIn("manual", meta["description"].lower())
+
     def test_no_dollar_digit(self):
         self.assertIsNone(re.search(r"\$\d", SKILL.read_text(encoding="utf-8")))
+
     def test_script_calls(self):
         text = SKILL.read_text(encoding="utf-8")
         prefixes = re.findall(r"(\S*)agents_md_inventory\.py", text)
@@ -506,29 +605,46 @@ class SkillMdTest(unittest.TestCase):
             self.assertEqual(p, '"${CLAUDE_SKILL_DIR}/scripts/')
         for cmd in re.findall(r"agents_md_inventory\.py\"?\s+([\w-]+)", text):
             self.assertIn(cmd, {"inventory", "blocks", "check-verdicts"})
+
     def test_dispatch_and_fallback(self):
         text = SKILL.read_text(encoding="utf-8")
         self.assertIn("`maintenance:agents-md-reviewer`", text)
         self.assertIn("${CLAUDE_SKILL_DIR}/../../agents/agents-md-reviewer.md", text)
         self.assertTrue((SKILL.parent / ".." / ".." / "agents" / "agents-md-reviewer.md").resolve().is_file())
+
     def test_confirm_before_dispatch(self):
         text = SKILL.read_text(encoding="utf-8")
         self.assertLess(text.index("## 2. Confirm before dispatch"), text.index("## 3. Dispatch"))
         self.assertIn("Stop until the user answers", text)
+
     def test_policy_options(self):
         text = SKILL.read_text(encoding="utf-8")
-        for opt in ("`allowed`", "`ask each time`", "`comment in that file`", "`nearest AGENTS.md`",
-                    "`aggressive`", "`conservative`"):
+        for opt in (
+            "`allowed`",
+            "`ask each time`",
+            "`comment in that file`",
+            "`nearest AGENTS.md`",
+            "`aggressive`",
+            "`conservative`",
+        ):
             self.assertIn(opt, text)
+
     def test_rulings_path_fixed(self):
         self.assertIn(".claude/agents-md-cleanup.md", SKILL.read_text(encoding="utf-8"))
+
     def test_apply_checks_sha(self):
         text = SKILL.read_text(encoding="utf-8")
-        self.assertIn("sha256", text[text.index("## 7. Apply"):])
+        self.assertIn("sha256", text[text.index("## 7. Apply") :])
+
     def test_approval_and_commit_rules(self):
         text = SKILL.read_text(encoding="utf-8")
-        for phrase in ("Anything else is not approval", "Nothing in the repo changes before the user approves",
-                       "git commit -F <message file> -- <paths>", "git status --porcelain -- <file>", "Never push"):
+        for phrase in (
+            "Anything else is not approval",
+            "Nothing in the repo changes before the user approves",
+            "git commit -F <message file> -- <paths>",
+            "git status --porcelain -- <file>",
+            "Never push",
+        ):
             self.assertIn(phrase, text)
 ```
 
@@ -609,15 +725,19 @@ def test_first_run_fixture(self):
     self.assertEqual([f["path"] for f in out["files"]], ["AGENTS.md", "src/AGENTS.md"])
     self.assertIsNone(out["guidelines"])
     self.assertEqual(out["current_branch"], "chore/agents-md")
-    self.assertTrue((self.ws / "tests").is_dir()); self.assertFalse((self.ws / "test").exists())
+    self.assertTrue((self.ws / "tests").is_dir())
+    self.assertFalse((self.ws / "test").exists())
     self.assertEqual(git(self.ws, "status", "--porcelain"), "")
-def test_review_fixture_has_policy(self):
-    ...  # guidelines not None; text contains "comment in that file" and "allowed"
-def test_fixtures_differ_only_in_guidelines(self):
-    ...  # scaffold both into two dirs; every file except AGENTS.md byte-identical; review AGENTS.md minus the guidelines section equals first-run AGENTS.md
+
+
+def test_review_fixture_has_policy(self): ...  # guidelines not None; text contains "comment in that file" and "allowed"
+def test_fixtures_differ_only_in_guidelines(
+    self,
+): ...  # scaffold both into two dirs; every file except AGENTS.md byte-identical; review AGENTS.md minus the guidelines section equals first-run AGENTS.md
 def test_refuses_to_overwrite(self): ...
-def test_graders_bounds(self):
-    ...  # no-dispatch.md has "min: 0" and "max: 0"; nothing-changed regex catches the commands in NothingChangedGraderTest.test_catches_changes
+def test_graders_bounds(
+    self,
+): ...  # no-dispatch.md has "min: 0" and "max: 0"; nothing-changed regex catches the commands in NothingChangedGraderTest.test_catches_changes
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
