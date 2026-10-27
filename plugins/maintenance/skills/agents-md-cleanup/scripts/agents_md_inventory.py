@@ -8,6 +8,8 @@ Commands:
   inventory  every AGENTS.md in scope (and the ancestors of a partial run), split into blocks,
              with git state, the root file's guidelines section and any saved rulings
   blocks     one file's blocks and content hash, to check it before an edit is applied
+  check-verdicts
+             validate a reviewer's verdicts for one file against that file's blocks
 
 `split_blocks` cuts a markdown file into the addressable blocks the skill's verdicts refer to.
 """
@@ -327,7 +329,7 @@ def _is_inside(root: Path, path: Path) -> bool:
         resolved = path.resolve()
         resolved.relative_to(root)
         return resolved.is_file()
-    except (OSError, ValueError):
+    except (OSError, RuntimeError, ValueError):  # RuntimeError: a symlink loop, on Python 3.9-3.12
         return False
 
 
@@ -472,19 +474,147 @@ def cmd_inventory(args: argparse.Namespace) -> dict:
     }
 
 
-def cmd_blocks(args: argparse.Namespace) -> dict:
-    root = repo_root(Path(args.repo))
+def _repo_file(root: Path, arg: str) -> tuple[str, bytes]:
+    """Normalise a user-given path to repo-relative POSIX and read it; refuse anything but a file in the repo."""
     # Report the requested path, normalised but with its last component unresolved, so a symlinked
     # AGENTS.md keeps its own name, as `inventory` lists it. A link that leads outside the repo is refused.
     try:
-        rel = Path(os.path.normpath(root / args.path)).relative_to(root).as_posix()
+        rel = Path(os.path.normpath(root / arg)).relative_to(root).as_posix()
         is_file = _is_inside(root, root / rel)
     except ValueError:
         is_file = False
     if not is_file:
-        raise CliError(f"no such file in the repo: {args.path}")
-    raw = _read_bytes(root, rel)
+        raise CliError(f"no such file in the repo: {arg}")
+    return rel, _read_bytes(root, rel)
+
+
+def cmd_blocks(args: argparse.Namespace) -> dict:
+    root = repo_root(Path(args.repo))
+    rel, raw = _repo_file(root, args.path)
     return {"path": rel, "sha256": hashlib.sha256(raw).hexdigest(), "blocks": split_blocks(_decode(raw))}
+
+
+ACTIONS = ("keep", "fix", "trim", "delete", "merge", "move", "ask")
+CRITERIA = ("accurate", "valuable", "brief", "level")
+TARGET_KINDS = ("agents_md", "comment")
+_JSON_FENCE = re.compile(r"```json\s*\n(.*?)\n```", re.S)
+
+
+def _text_field(verdict: dict, name: str) -> str:
+    value = verdict.get(name)
+    if not isinstance(value, str) or not value.strip():
+        raise CliError(f"{name} must be a non-empty string")
+    return value
+
+
+def _check_move(verdict: dict, file: str, root: Path) -> None:
+    target = _text_field(verdict, "target")
+    kind = verdict.get("target_kind")
+    if kind not in TARGET_KINDS:
+        raise CliError(f"target_kind must be one of {', '.join(TARGET_KINDS)}")
+    if target.startswith("/") or "\\" in target or posixpath.normpath(target) != target or ".." in target.split("/"):
+        raise CliError(f"target must be a repo-relative path without '..': {target}")
+    if target == file:
+        raise CliError(f"target must not be the file itself: {target}")
+    if kind == "agents_md" and posixpath.basename(target).lower() != "agents.md":
+        raise CliError(f"target {target} is not an AGENTS.md file")
+    if kind == "comment" and not _is_inside(root, root / target):
+        raise CliError(f"target {target} is not a file in the repo")
+    if "target_heading" in verdict and not isinstance(verdict["target_heading"], str):
+        raise CliError("target_heading must be a string")
+
+
+def _check_verdict(verdict: dict, file: str, root: Path) -> None:
+    action = verdict.get("action")
+    if action not in ACTIONS:
+        raise CliError(f"unknown action {action!r}; expected one of {', '.join(ACTIONS)}")
+    if action != "keep" or "criterion" in verdict:
+        if verdict.get("criterion") not in CRITERIA:
+            raise CliError(f"criterion must be one of {', '.join(CRITERIA)}")
+    evidence = verdict.get("evidence")
+    if action != "keep" or "evidence" in verdict:
+        if not (isinstance(evidence, list) and evidence and all(isinstance(e, str) and e.strip() for e in evidence)):
+            raise CliError("evidence must be a non-empty list of non-empty strings")
+    if action in ("fix", "trim", "merge") or (action == "move" and "new_text" in verdict):
+        _text_field(verdict, "new_text")
+    if "rename_only" in verdict and (action != "fix" or not isinstance(verdict["rename_only"], bool)):
+        raise CliError("rename_only is an optional boolean allowed only on fix")
+    if action == "merge" and len(verdict["blocks"]) < 2:
+        raise CliError("merge needs at least 2 blocks")
+    if action == "move":
+        _check_move(verdict, file, root)
+    elif any(name in verdict for name in ("target", "target_kind", "target_heading")):
+        raise CliError("target, target_kind and target_heading are allowed only on move")
+    if action == "ask":
+        _text_field(verdict, "question")
+        _text_field(verdict, "recommendation")
+    if "proposed" in verdict and (action != "ask" or not isinstance(verdict["proposed"], dict)):
+        raise CliError("proposed is an optional object allowed only on ask")
+    if "ruling" in verdict and not isinstance(verdict["ruling"], str):
+        raise CliError("ruling must be a string")
+
+
+def validate_verdicts(blocks: list[dict], data: dict, role: str, scope: list[str], file: str, root: Path) -> dict:
+    """Check a reviewer's verdicts against `file`'s blocks; return the report, or raise CliError."""
+    got = data.get("file")
+    if got != file:
+        raise CliError(f"verdicts are for {got if isinstance(got, str) else 'no file'}, expected {file}")
+    verdicts = data.get("verdicts")
+    if not isinstance(verdicts, list):
+        raise CliError("verdicts must be a list")
+    ids = {block["id"] for block in blocks}
+    seen: set[str] = set()
+    for number, verdict in enumerate(verdicts, start=1):
+        try:
+            if not isinstance(verdict, dict):
+                raise CliError("must be an object")
+            listed = verdict.get("blocks")
+            if not (isinstance(listed, list) and listed and all(isinstance(b, str) for b in listed)):
+                raise CliError("blocks must be a non-empty list of block ids")
+            for block in listed:
+                if block not in ids:
+                    raise CliError(f"unknown block {block}")
+                if block in seen:
+                    raise CliError(f"block {block} is in more than one verdict")
+                seen.add(block)
+            _check_verdict(verdict, file, root)
+            if role == "ancestor":
+                if verdict["action"] not in ("move", "ask"):
+                    raise CliError(f"action {verdict['action']} is not allowed on an ancestor file; use move or ask")
+                if verdict["action"] == "move" and not any(_within(_dir_of(verdict["target"]), s) for s in scope):
+                    raise CliError(f"target {verdict['target']} is outside the scope")
+        except CliError as exc:
+            raise CliError(f"verdict {number}: {exc}") from exc
+    if role == "full":
+        for block in blocks:
+            if block["id"] not in seen:
+                raise CliError(f"block {block['id']} not covered")
+    counts: dict[str, int] = {}
+    for verdict in verdicts:
+        counts[verdict["action"]] = counts.get(verdict["action"], 0) + 1
+    return {"file": file, "role": role, "verdicts": verdicts, "counts": counts}
+
+
+def cmd_check_verdicts(args: argparse.Namespace) -> dict:
+    root = repo_root(Path(args.repo))
+    scope = resolve_scope(root, args.scope) if args.scope else []
+    if args.role == "ancestor" and not scope:
+        raise CliError("--scope is required for the ancestor role")
+    file, raw = _repo_file(root, args.file)
+    try:
+        message = _decode(Path(args.input).read_bytes())
+    except OSError as exc:
+        raise CliError(f"cannot read {args.input}: {exc.strerror or exc}") from exc
+    fences = _JSON_FENCE.findall(message)
+    if not fences:
+        raise CliError("no json block")
+    try:
+        data = json.loads(fences[-1])
+    except ValueError as exc:
+        raise CliError(f"invalid json: {exc}") from exc
+    if not isinstance(data, dict):
+        raise CliError("invalid json: the top level must be an object")
+    return validate_verdicts(split_blocks(_decode(raw)), data, args.role, scope, file, root)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -501,6 +631,14 @@ def _parser() -> argparse.ArgumentParser:
     blocks.add_argument("--repo", default=".")
     blocks.add_argument("path", help="repo-relative path of the file")
     blocks.set_defaults(func=cmd_blocks)
+
+    verdicts = sub.add_parser("check-verdicts", help="validate a reviewer's verdicts for one file")
+    verdicts.add_argument("--repo", default=".")
+    verdicts.add_argument("--file", required=True, help="repo-relative path of the reviewed file")
+    verdicts.add_argument("--role", required=True, choices=["full", "ancestor"])
+    verdicts.add_argument("--scope", action="append", default=[], help="a reviewed directory; required for ancestor")
+    verdicts.add_argument("--input", required=True, help="a file holding the reviewer's whole message")
+    verdicts.set_defaults(func=cmd_check_verdicts)
     return parser
 
 
