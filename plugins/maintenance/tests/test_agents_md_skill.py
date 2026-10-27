@@ -188,6 +188,15 @@ class SkillMdTest(unittest.TestCase):
         ):
             self.assertIn(phrase, text)
 
+    def test_manifest_descriptions_match(self):
+        repo = PLUGIN.parent.parent
+        plugin = json.loads((PLUGIN / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+        market = json.loads((repo / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8"))
+        entry = next(p for p in market["plugins"] if p["name"] == "maintenance")
+        self.assertEqual(entry["description"], plugin["description"])
+        self.assertIn("agents-md-cleanup", plugin["description"])
+        self.assertEqual(plugin["version"], "0.3.0")
+
 
 if __name__ == "__main__":
     unittest.main()
