@@ -71,15 +71,15 @@ The skill runs only when you invoke it. Claude never starts it on its own. Pass 
 
 What it does:
 
-- **Confirms before dispatch:** it shows the file and block counts and a concurrency limit (4 unless you say otherwise), and waits. No reviewer starts until you answer.
+- **Confirms before dispatch:** it shows the file and block counts and a concurrency limit (4 unless you say otherwise), and waits. No reviewer starts until you answer. When you give a limit yourself (`4 at a time`) on a repeat run, it states the counts and goes straight on.
 - **Asks three policy questions on the first run:** whether new nested `AGENTS.md` files are allowed, whether a quirk of one file goes in a comment there or in the nearest `AGENTS.md`, and whether push-down is aggressive (anything that applies to one subdirectory) or conservative (only statements naming specific files or folders).
-- **Records the answers** in a short `AGENTS.md guidelines` section in the root `AGENTS.md`, so later runs and your other agents follow the same rules. It creates a root file for this if none exists.
+- **Records the answers** in a short `AGENTS.md guidelines` section in the root `AGENTS.md`, so later runs and your other agents follow the same rules. The section is proposed in the approval message and written only after you approve. If there is no root file, it offers to create one; if you decline, the answers apply to that run only.
 - **Protects project choices:** "use `uv`, never pip" looks obvious but is a choice between real alternatives, so it is kept or put to you, never deleted in bulk.
 - **Remembers your rulings:** when you keep a statement the reviewers doubted, the ruling goes in `.claude/agents-md-cleanup.md`, so the next run doesn't ask again. If `.claude/` is git-ignored, the approval message shows the exact `.gitignore` change that lets the file be committed and shared. You can decline, and the file then stays on your machine.
-- **One approval:** a single message holds the questions and a table of every proposed edit. Nothing changes before you reply. A file you edit while it waits is skipped.
+- **One approval:** a single message holds the questions and a table of every proposed edit. Nothing changes before you approve. A file you edit while it waits is skipped.
 - **Commits but never pushes:** one commit, holding only its own changes.
 
-On a partial run such as `tests/`, ancestor files (the root one, for example) are reviewed only for statements that belong lower down; their other rules are left alone.
+On a partial run such as `tests/`, only moves and questions touch ancestor files (the root one, for example); their other rules are left alone.
 
 ### Assumption
 

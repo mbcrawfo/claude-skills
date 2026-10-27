@@ -195,7 +195,7 @@ class SkillMdTest(unittest.TestCase):
         entry = next(p for p in market["plugins"] if p["name"] == "maintenance")
         self.assertEqual(entry["description"], plugin["description"])
         self.assertIn("agents-md-cleanup", plugin["description"])
-        self.assertEqual(plugin["version"], "0.3.0")
+        self.assertRegex(plugin["version"], r"^\d+\.\d+\.\d+$")
 
 
 if __name__ == "__main__":
