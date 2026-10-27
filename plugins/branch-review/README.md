@@ -18,7 +18,7 @@ Run `/branch-review:review` from the branch once the whole change is complete:
 ```
 
 - `--full`: force a deep review of the whole change set, even if earlier rounds exist.
-- `--model NAME`: model for the reviewer agents, as an Agent-tool model name (`opus`, `sonnet`, `haiku` or `fable`). Defaults to `opus` for a deep, second-opinion or merge-check round and `sonnet` for a follow-up.
+- `--model NAME`: model for the reviewer agents, as an Agent-tool model name (`opus`, `sonnet`, `haiku` or `fable`). Defaults to `opus` for a deep, second-opinion or merge-check round and `sonnet` for a follow-up, except a follow-up that verifies a claimed fix of a finding the developer decided to fix (`opus`).
 - `--base REF`: the ref the change will merge into, overriding the detected default branch. Later runs reuse the stored base.
 - `--intent TEXT` or `--intent-file PATH`: the PR description, meaning what the change is for, what it does and what it deliberately does not do. Later runs reuse the intent stored with the review.
 - `--paths GLOB...`: limit the review to matching files, useful for a change set too large to review at once. A directory, or a pattern ending in `/`, means everything under it; `.` means the whole repo. Changing `--paths` between runs forces a deep review, so no file in the new scope goes unreviewed.
@@ -38,7 +38,7 @@ The loop:
   - `paths-changed`: `--paths` differs from the earlier round's.
 
   A round whose reviewer never reported is not recorded and never anchors a follow-up, and a round with no changes is never saved. Every run, including one after a merge or a redo, starts from set-up and ends with the summary.
-- **Round.** The branch's working tree is snapshotted, and a fresh `branch-review:reviewer` agent reviews the change set against your intent, or verifies the earlier findings and the new delta in a follow-up. A follow-up whose delta reaches 40 non-generated files or 2,000 changed lines becomes a deep round over the whole change set, with Opus unless `--model` says otherwise. The reviewer writes its report to a file outside the repo, which is recorded as it wrote it.
+- **Round.** The branch's working tree is snapshotted, and a fresh `branch-review:reviewer` agent reviews the change set against your intent, or verifies the earlier findings and the new delta in a follow-up. A follow-up whose delta reaches 40 non-generated files or 2,000 changed lines becomes a deep round over the whole change set, with Opus unless `--model` says otherwise. A follow-up that verifies a claimed fix of a finding the developer resolved with `--decision fix` stays a follow-up but runs on Opus too, unless `--model` says otherwise. The reviewer writes its report to a file outside the repo, which is recorded as it wrote it.
 - **Record and triage.** The reviewer's findings are recorded. For each open one, the orchestrating agent checks the claim against the code and records what it checked, then fixes it with a regression test shown to fail without the fix, disputes it with evidence, or escalates it. A finding whose fix is a choice for the developer is always escalated, unless the intent settles it. Findings outside the change get the status `outside` and stay out of the fix loop, unless the fix is trivial and in changed files or the developer asks for it; when the repo's `AGENTS.md` forbids deferring findings, they are escalated instead.
 - **Second opinion.** Once no finding is open, the state script decides whether a second deep round is due, which it is when a deep round rated the merge risk `moderate` or `high` or the review found a critical or major issue. A fresh reviewer, Opus unless `--model` says otherwise, then reviews the whole change set once more, putting first the steps a first pass most often skips. It runs in place of the follow-up that claimed fixes would otherwise get, and verifies them. It also runs in place of a merge-check: the reviewer then checks each conflict resolution against both sides as well. It waits while a finding is escalated, since the developer's answer may add code, and runs once the decisions are recorded. Each branch gets at most one automatic second opinion; `--second-opinion` asks for one and `--no-second-opinion` skips it.
 - **Repeat.** Each round gets a new reviewer. The loop continues while findings are open, fixes are unverified or a second opinion is due, and stops when the state script reports convergence. It stops after six rounds, counted from the start of the run or the last forced deep review, whichever is later. At the cap, one more follow-up may run to verify claimed fixes, and a due second opinion still runs.
@@ -111,6 +111,13 @@ branch-review:record --repo PATH --commit SHA --reason-file PATH [--base REF]
 ```
 
 `--base` sets the base ref the branch's review state uses from then on, as `/branch-review:review --base` does. It prints the JSON `{"recorded", "round", "commit", "branch", "files", "dir"}`; `recorded: false` means the commit is already the head of the latest round. It refuses a detached HEAD, a missing `origin/<branch>` ref, a commit not on that ref and an empty reason (exit 1, one line on stderr). A recorded round is listed as `recorded` in the summary and the review notes, and never counts as review: it does not count toward the six-round cap and neither satisfies nor triggers a second opinion. The skill is hidden from the `/` menu (`user-invocable: false`), and its description tells the model to use it only on the protocol's instruction, never at a user's request.
+
+## What's new in 0.12
+
+- A follow-up that must verify a claimed fix of a finding the developer resolved with `--decision fix` runs on the deep model (`model_reason: decided-fix`), and checks the fix against every case the decision names, not only the original trigger. A fix that rewrites a user-facing promise is tried against the other inputs that reach it.
+- The reviewer lists a whole family of like settings, paths or entry points in `variants`, and each fix option covers the family by name.
+- An unmentioned-behavior item is never answered with an unchecked new statement in the repo.
+- On a re-emit request the reviewer replies with the JSON block only and leaves the report file alone.
 
 ## What's new in 0.11
 
