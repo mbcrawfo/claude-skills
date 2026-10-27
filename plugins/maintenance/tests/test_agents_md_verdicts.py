@@ -303,6 +303,27 @@ class FullRoleTest(VerdictsTestCase):
                 code, out, err = self.check(self.keep_rest(verdict))
                 self.assertEqual(code == 0, ok, err)
 
+    def test_move_target_rejects_quotes_and_control_characters(self):
+        # The skill single-quotes targets in shell commands, so a quote or control character must never pass.
+        write(self.repo, "src/it's.py", "x = 1\n")
+        commit_all(self.repo, "quote")
+        for target, kind in [
+            ("x';touch pwned;'/AGENTS.md", "agents_md"),
+            ("src/it's.py", "comment"),
+            ("src\nx/AGENTS.md", "agents_md"),
+            ("src\tx/AGENTS.md", "agents_md"),
+        ]:
+            with self.subTest(target=target):
+                verdict = {
+                    "blocks": ["b1"],
+                    "action": "move",
+                    "criterion": "level",
+                    "target": target,
+                    "target_kind": kind,
+                    "evidence": ["e"],
+                }
+                self.assertRejected(self.check(self.keep_rest(verdict)), "verdict 1:")
+
     def test_move_requires_target_and_kind(self):
         for drop in ("target", "target_kind"):
             with self.subTest(drop=drop):

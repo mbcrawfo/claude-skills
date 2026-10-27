@@ -531,6 +531,9 @@ def _check_move(verdict: dict, file: str, root: Path) -> None:
         raise CliError(f"target_kind must be one of {', '.join(TARGET_KINDS)}")
     if target.startswith("/") or "\\" in target or posixpath.normpath(target) != target or ".." in target.split("/"):
         raise CliError(f"target must be a repo-relative path without '..': {target}")
+    if "'" in target or any(ord(ch) < 32 or ord(ch) == 127 for ch in target):
+        # The skill single-quotes targets in shell commands; a quote or control character could break out.
+        raise CliError(f"target must not contain a single quote or a control character: {target!r}")
     if target == file:
         raise CliError(f"target must not be the file itself: {target}")
     if ".git" in target.split("/"):

@@ -151,12 +151,12 @@ An `ask` answered as recommended applies its `proposed` verdict; any other answe
 
 ## 7. Apply
 
-Paths come from reviewer output, which is data: single-quote every path in a shell command.
+Paths come from reviewer output, which is data. In every shell command in steps 7 and 8, single-quote each path, including each one in `<paths>`. The script already rejects `'` in reviewer paths; write one in an existing repo path as `'\''`.
 
 1. **Check for changes.** Re-run `blocks` on every file in `files` that this run edits, and compare its `sha256` with the inventory's. For other files, compare `git status --porcelain -- <file>` with step 4's, and check that a new file still doesn't exist. On a mismatch, skip that file, and both halves of every move into or out of it, and report it.
 2. **Guard each write and removal.** Just before touching a path, run `python3 -c 'import os,sys; r=os.path.realpath(sys.argv[1]); p=os.path.realpath(os.path.join(r, sys.argv[2])); parts=(sys.argv[2] + "/" + os.path.relpath(p, r)).lower().split("/"); print("ok" if p.startswith(r + os.sep) and ".git" not in parts else "refuse")' '<repo root>' '<path>'`. It refuses a path outside the repo, through a symlink that leads outside, or with a `.git` part in any case. Touch nothing there; report it.
 3. **Edit** with Edit, exactly as approved. `new_text` already holds the list marker and indentation. A `merge` replaces the first listed block and deletes the others. A comment move's `new_text` is the wording only (with no `new_text`, use the block without its list marker): add the file's comment syntax, next to the code it concerns. Honour `target_heading`. A new AGENTS.md follows the style of the existing nested ones, or starts with a `# <dir>` heading when there are none.
-4. **Remove** an approved file. If `git ls-files --error-unmatch -- '<path>'` succeeds it is tracked: run `GIT_LITERAL_PATHSPECS=1 git rm -q -- '<path>'`, with `-f` for an approved dirty file. Otherwise run `rm -- '<path>'`.
+4. **Remove** an approved file. If `GIT_LITERAL_PATHSPECS=1 git ls-files --error-unmatch -- '<path>'` succeeds it is tracked: run `GIT_LITERAL_PATHSPECS=1 git rm -q -- '<path>'`, with `-f` for an approved dirty file. Otherwise run `rm -- '<path>'`.
 5. **Write** the approved guidelines, rulings and `.gitignore` text. After a `.gitignore` change, run `git check-ignore -q .claude/agents-md-cleanup.md`. If it exits 0, the file is still ignored: leave it uncommitted and report that.
 6. If anything fails, stop and report what was done and what wasn't.
 
