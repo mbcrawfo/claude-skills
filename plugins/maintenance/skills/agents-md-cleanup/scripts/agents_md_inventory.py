@@ -20,6 +20,7 @@ _LIST_MARKER = re.compile(r"^(?:[-*+]|\d{1,9}[.)])(?:[ \t]+|$)")
 # What may interrupt a paragraph: a bullet, or an ordered item numbered 1, with content.
 _LIST_INTERRUPT = re.compile(r"^(?:[-*+]|1[.)])[ \t]+\S")
 _QUOTE = re.compile(r"^ {0,3}>")
+_YAML_KEY = re.compile(r"^[A-Za-z_][\w-]*:")
 _TABLE_DELIMITER = re.compile(r"^[ \t]*\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$")
 
 
@@ -123,8 +124,11 @@ def _paragraph_end(lines: list[str], start: int) -> tuple[int, int]:
 
 
 def _front_matter_end(lines: list[str]) -> int:
-    """Index of the line after a leading `---` front matter block, or 0 when there is none."""
-    if lines and lines[0].rstrip() == "---":
+    """Index of the line after a leading `---` front matter block, or 0 when there is none.
+
+    The line after the opening `---` must look like a YAML key, so a thematic break is never read as front matter.
+    """
+    if len(lines) > 1 and lines[0].rstrip() == "---" and _YAML_KEY.match(lines[1]):
         for j in range(1, len(lines)):
             if lines[j].rstrip() == "---":
                 return j + 1
@@ -133,7 +137,11 @@ def _front_matter_end(lines: list[str]) -> int:
 
 def split_blocks(text: str) -> list[dict]:
     """Cut markdown into blocks. Headings are context, not blocks: each block records its heading path."""
-    lines = text.splitlines()
+    # Split on "\n" only (not str.splitlines, which also splits on form feed, U+2028 and the like), so line
+    # numbers match an editor's. One trailing "\r" per line is dropped so CRLF files work.
+    lines = [line[:-1] if line.endswith("\r") else line for line in text.split("\n")]
+    if lines and lines[-1] == "":
+        lines.pop()  # the final newline ends the last line; it does not start another
     blocks: list[dict] = []
     path: list[tuple[int, str]] = []
 

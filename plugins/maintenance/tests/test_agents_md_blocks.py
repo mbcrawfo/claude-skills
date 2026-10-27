@@ -99,6 +99,19 @@ class SplitBlocksTest(unittest.TestCase):
         blocks = inv.split_blocks("- a\n  - b\n\n```py\nx\n```\n")
         self.assertEqual([b["text"] for b in blocks], ["- a\n  - b", "```py\nx\n```"])
 
+    def test_only_newline_splits_lines(self):
+        self.assertEqual(kl("a\x0cb\n\nc"), [("paragraph", 1, 1, []), ("paragraph", 3, 3, [])])
+
+    def test_crlf_lines(self):
+        blocks = inv.split_blocks("a\r\n\r\n- b\r\n")
+        self.assertEqual(
+            [(b["kind"], b["start_line"], b["end_line"]) for b in blocks], [("paragraph", 1, 1), ("list_item", 3, 3)]
+        )
+        self.assertEqual(blocks[0]["text"], "a")
+
+    def test_dashes_without_yaml_key_are_not_front_matter(self):
+        self.assertEqual(kl("---\n\nP\n\n---\n\nQ\n"), [("paragraph", 3, 3, []), ("paragraph", 7, 7, [])])
+
 
 if __name__ == "__main__":
     unittest.main()
