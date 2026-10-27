@@ -1076,6 +1076,39 @@ class IntegrationWatcherTests(unittest.TestCase):
             record_synced(state, "int", SHA1)
         self.assertEqual(self.wait(gh), f"READY a 8 {HEAD_B}")  # not a REMIND half an hour on
 
+    def append_request(self, text):
+        with open(self.dir / "requests.log", "a", encoding="utf-8") as f:
+            f.write(text)
+
+    def test_a_syncing_line_holds_unit_merges_until_the_push_request(self):
+        self.make_run(queue_mode="parallel", units=("a",))
+        self.append_request(f"int syncing {SHA1} integration/x\n")
+        gh = FakeGh({"integration/x": [NO_PR], "feat/a": [PR8]}, {8: [make_pr(head=HEAD_B, base="integration/x")]})
+        self.assert_quiet(gh, sleeps=100)
+        self.assertEqual(load(self.dir)["marks"]["int"]["syncing"]["sha"], SHA1)
+        self.append_request(f"int push {SHA2} integration/x\n")
+        self.assertEqual(self.wait(gh), f"REQUEST int {SHA2} integration/x")
+        self.assertNotIn("syncing", load(self.dir)["marks"]["int"])
+        with locked(self.dir) as state:
+            redo(self.dir, state, "int", SHA2, "nothing to push")
+        self.assertEqual(self.wait(gh), f"READY a 8 {HEAD_B}")
+
+    def test_a_syncing_line_from_another_unit_is_a_bad_line(self):
+        self.make_run(units=("a",))
+        self.append_request(f"a syncing {SHA1} feat/a\n")
+        gh = FakeGh({"integration/x": [NO_PR], "feat/a": [NO_PR]})
+        self.assert_quiet(gh)
+        state = load(self.dir)
+        self.assertEqual(state["bad_requests"], [f"a syncing {SHA1} feat/a"])
+        self.assertNotIn("syncing", state["marks"].get("a", {}))
+
+    def test_a_sync_with_no_push_request_is_stuck_once(self):
+        self.append_request(f"int syncing {SHA1} integration/x\n")
+        gh = FakeGh({"integration/x": [NO_PR]})
+        self.assertEqual(self.wait(gh, sleeps=900), "STUCK int - syncing")
+        self.assert_quiet(gh, sleeps=100)
+        self.assertIn("syncing", load(self.dir)["marks"]["int"])  # it still holds unit merges
+
     def test_no_ready_for_a_unit_pr_on_the_wrong_base(self):
         self.make_run(queue_mode="parallel", units=("a",))
         gh = FakeGh({"integration/x": [NO_PR], "feat/a": [PR8]}, {8: [make_pr(head=HEAD_B)]})

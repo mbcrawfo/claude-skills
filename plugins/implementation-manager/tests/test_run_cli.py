@@ -1036,6 +1036,27 @@ class IntegrationCliTests(CliTestCase):
         self.ok("synced", str(self.dir), "int", SHA1)
         self.assertEqual(self.ok("check", str(self.dir), "a"), f"READY 7 {HEAD_A}\n")
 
+    def test_check_blocks_a_unit_on_a_syncing_line_no_wait_has_read(self):
+        self.clean_pr()
+        self.init_integration("owner")
+        self.ok("open-ready", str(self.dir))
+        self.append_request(f"int syncing {SHA1} integration/x\n")
+        self.assertEqual(
+            self.ok("check", str(self.dir), "a"),
+            f"NOT-READY 7 head={HEAD_A[:7]} blocked: integration sync in flight\n",
+        )
+        self.assertIn("- integration sync in flight", self.ok("status", str(self.dir)).splitlines())
+
+    def test_status_says_when_an_announced_sync_began(self):
+        self.fake_gh({"pr_list": [], "graphql": None})
+        self.init_integration("owner")
+        state = self.state()
+        state["marks"]["int"] = {"syncing": {"sha": SHA1, "at": 1000.0}}
+        (self.dir / "run.json").write_text(json.dumps(state))
+        lines = self.ok("status", str(self.dir)).splitlines()
+        prefix = "- integration sync in flight (resolving a conflicted merge of main since "
+        self.assertTrue([line for line in lines if line.startswith(prefix)], lines)
+
     def test_check_leaves_other_answers_alone(self):
         self.fake_gh({"pr_list": [], "graphql": None})
         self.init_integration("owner")

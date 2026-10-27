@@ -1715,6 +1715,50 @@ class IntegrationMergeTests(IntegrationTestCase):
         self.assertIn("go_head", state["marks"]["int"])  # its old final PR head stays unready, as for any unit
         self.assertIsNone(integration_block(state, "a"))
 
+    def announce_sync(self, state, sha=SHA1):
+        state["marks"].setdefault("int", {})["syncing"] = {"sha": sha, "at": NOW}
+
+    def test_an_announced_sync_blocks_unit_merges(self):
+        state = self.setup_run()
+        self.announce_sync(state)
+        self.assertTrue(sync_in_flight(state))
+        self.assertEqual(integration_block(state, "a"), "integration sync in flight")
+        self.assertFalse(reportable(state, "a"))
+        self.assertIsNone(state["slot"])  # it takes no slot
+
+    def test_redo_stop_merged_and_closed_end_an_announced_sync(self):
+        for end in ("redo", "stop", "merged", "closed", "yield"):
+            with self.subTest(end=end):
+                self.dir = Path(tempfile.mkdtemp(dir=self.dir.parent)) / "run"
+                state = self.setup_run(queue_mode="parallel" if end != "yield" else "serial")
+                self.announce_sync(state)
+                if end == "redo":
+                    redo(self.dir, state, "int", SHA1, "stuck")
+                elif end == "stop":
+                    stop_gate(self.dir, state, "int", "dropped")
+                elif end == "merged":
+                    record_merged(state, "int", 9, more=False)
+                elif end == "closed":
+                    record_closed(state, "int", 9)
+                else:
+                    go(self.dir, state, "int", SHA2, NOW)
+                    self.announce_sync(state)
+                    yield_slot(state, "int", "stuck", NOW)
+                self.assertNotIn("syncing", state["marks"]["int"])
+                self.assertFalse(sync_in_flight(state))
+
+    def test_an_unread_line_from_the_integration_unit_counts_with_the_run_dir(self):
+        state = self.setup_run()
+        (self.dir / "requests.log").write_text(f"a push {SHA2} feat/a\n")
+        self.assertFalse(sync_in_flight(state, self.dir))
+        with open(self.dir / "requests.log", "a") as f:
+            f.write(f"int syncing {SHA1} integration/x\n")
+        self.assertFalse(sync_in_flight(state))  # without the run dir only the state counts
+        self.assertTrue(sync_in_flight(state, self.dir))
+        self.assertEqual(integration_block(state, "a", self.dir), "integration sync in flight")
+        state["requests_offset"] = (self.dir / "requests.log").stat().st_size  # a wait read them all
+        self.assertFalse(sync_in_flight(state, self.dir))
+
     def test_merged_spends_the_integration_units_go(self):
         state = self.setup_run(queue_mode="parallel")
         go(self.dir, state, "int", SHA1, NOW)

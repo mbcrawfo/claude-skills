@@ -15,6 +15,7 @@ from runstate import (
     NEXT_MARK,
     REQUESTS,
     SHA_RE,
+    SYNCING_MARK,
     UNIT_RE,
     integration_unit,
     load,
@@ -24,8 +25,9 @@ from runstate import (
     wrong_base,
 )
 
-# The branch is printable non-space characters: no whitespace or control characters.
-REQUEST_RE = rf"^({UNIT_RE}) push ({SHA_RE}) ([^\s\x00-\x1f\x7f]+)$"
+# The branch is printable non-space characters: no whitespace or control characters. `syncing` is the integration
+# unit's notice that it is resolving a conflicted base merge before it asks to push.
+REQUEST_RE = rf"^({UNIT_RE}) (push|syncing) ({SHA_RE}) ([^\s\x00-\x1f\x7f]+)$"
 
 BAD_REQUESTS_KEPT = 20
 
@@ -59,6 +61,10 @@ def take_request(run_dir: Path, state: dict, now: float) -> str | None:
     newline is left for a later call. A request from a done unit is still reported. A request ends the unit's
     outstanding `go`: the child has moved on, and its new request is answered afresh. A request the manager
     answered (`go`, `redo` or `queue`) before any wait read it is consumed without a report.
+
+    A `syncing` line from the integration unit is consumed without a report: it marks a sync in flight, which
+    holds unit merges, until the unit's next push request (or a redo, stop, merge or close) ends it. From any
+    other unit it is a bad line.
     """
     path = run_dir / REQUESTS
     try:
@@ -89,7 +95,14 @@ def take_request(run_dir: Path, state: dict, now: float) -> str | None:
         if not match or match.group(1) not in state["units"]:
             _note_bad(state, line)
             continue
-        unit, sha, branch = match.groups()
+        unit, kind, sha, branch = match.groups()
+        if kind == "syncing":
+            if unit != integration_unit(state):
+                _note_bad(state, line)
+            else:
+                state["marks"].setdefault(unit, {})[SYNCING_MARK] = {"sha": sha, "at": now}
+            continue
+        state["marks"].get(unit, {}).pop(SYNCING_MARK, None)
         if state["marks"].get(unit, {}).get("answered", {}).get(sha, -1) >= offset:
             continue  # answered before this line was read
         state["pending"] = [entry for entry in state["pending"] if entry["unit"] != unit]
@@ -109,6 +122,18 @@ def pending_event(state: dict, now: float, pending_seconds: float) -> str | None
             state["marks"].setdefault(entry["unit"], {})["pending_key"] = key
             return f"PENDING {entry['unit']} {entry['sha']} {entry['branch']}"
     return None
+
+
+def syncing_event(state: dict, now: float, syncing_seconds: float) -> str | None:
+    """Report an announced sync with no push request `syncing_seconds` after it as `STUCK <unit> - syncing`, once
+    per announcement: it holds every unit merge until it ends."""
+    name = integration_unit(state)
+    marks = state["marks"].get(name, {}) if name else {}
+    syncing = marks.get(SYNCING_MARK)
+    if syncing is None or now - syncing["at"] < syncing_seconds or syncing.get("reported"):
+        return None
+    syncing["reported"] = True
+    return f"STUCK {name} - syncing"
 
 
 def next_event(state: dict) -> str | None:
@@ -442,6 +467,7 @@ def wait(
     no_push_seconds: float = 1800.0,
     remind_seconds: float = 1800.0,
     pending_seconds: float = 900.0,
+    syncing_seconds: float = 3600.0,
 ) -> str:
     """Loop until there is one event for the manager and return its line.
 
@@ -449,7 +475,9 @@ def wait(
     state changes the manager makes between steps are kept. PRs are polled on the first pass, then every
     `poll_seconds`, or at a READY candidate's confirm time. After `GH_FAILURES_FOR_ERROR` failed poll rounds
     in a row it returns `ERROR <message>`; requests are still reported first. A request still unanswered
-    `pending_seconds` after it was reported is reported again, once, as `PENDING`.
+    `pending_seconds` after it was reported is reported again, once, as `PENDING`. An integration sync announced
+    with `syncing` and not followed by a push request within `syncing_seconds` is reported, once, as
+    `STUCK <unit> - syncing`.
     """
     timings = Timings(
         confirm_seconds=confirm_seconds,
@@ -462,7 +490,11 @@ def wait(
     failures = 0
     while True:
         with locked(run_dir) as state:
-            line = take_request(run_dir, state, now()) or pending_event(state, now(), pending_seconds)
+            line = (
+                take_request(run_dir, state, now())
+                or pending_event(state, now(), pending_seconds)
+                or syncing_event(state, now(), syncing_seconds)
+            )
         if line:
             return line
         poll = None
