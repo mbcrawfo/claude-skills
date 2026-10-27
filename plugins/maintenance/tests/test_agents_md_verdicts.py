@@ -3,7 +3,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from agents_helpers import call, commit_all, make_repo, run, write
+from agents_helpers import call, commit_all, make_repo, write
 
 AGENTS = "- one\n\n- two\n\n- three\n\n- four\n"
 
@@ -321,6 +321,53 @@ class FullRoleTest(VerdictsTestCase):
         verdict = {"blocks": ["b1"], "action": "delete", "criterion": "brief", "evidence": ["e"], "target": "src/a.py"}
         self.assertRejected(self.check(self.keep_rest(verdict)), "target")
 
+    def test_symlink_loop_file_is_rejected(self):
+        (self.repo / "loop").mkdir()
+        (self.repo / "loop" / "AGENTS.md").symlink_to("AGENTS.md")
+        commit_all(self.repo, "loop")
+        code, stdout, err = self.check([], file="loop/AGENTS.md")
+        self.assertEqual((code, stdout), (1, ""))
+        self.assertEqual(err, "error: no such file in the repo: loop/AGENTS.md\n")
+
+    def test_agents_md_target_must_stay_in_the_repo_as_a_file(self):
+        outside = self.tmp / "outside"
+        outside.mkdir()
+        (outside / "AGENTS.md").write_text("- x\n", encoding="utf-8")
+        (self.repo / "linkdir").symlink_to(outside, target_is_directory=True)
+        (self.repo / "src" / "AGENTS.md").symlink_to(outside / "AGENTS.md")
+        (self.repo / "loopdir").symlink_to("loopdir")
+        (self.repo / "docs").mkdir()
+        for target in [
+            "linkdir/AGENTS.md",
+            ".git/AGENTS.md",
+            "src/a.py/AGENTS.md",
+            "src/a.py/deeper/AGENTS.md",
+            "src/AGENTS.md",
+            "loopdir/AGENTS.md",
+        ]:
+            with self.subTest(target=target):
+                verdict = {
+                    "blocks": ["b1"],
+                    "action": "move",
+                    "criterion": "level",
+                    "target": target,
+                    "target_kind": "agents_md",
+                    "evidence": ["e"],
+                }
+                self.assertRejected(self.check(self.keep_rest(verdict)), "verdict 1: ")
+
+    def test_new_agents_md_target_in_a_new_directory_is_accepted(self):
+        verdict = {
+            "blocks": ["b1"],
+            "action": "move",
+            "criterion": "level",
+            "target": "brand/new/AGENTS.md",
+            "target_kind": "agents_md",
+            "evidence": ["e"],
+        }
+        code, _, err = self.check(self.keep_rest(verdict))
+        self.assertEqual(code, 0, err)
+
     def test_comment_target_symlink_out_of_repo(self):
         outside = self.tmp / "outside.py"
         outside.write_text("x\n", encoding="utf-8")
@@ -411,21 +458,6 @@ class AncestorRoleTest(VerdictsTestCase):
     def test_bad_role_is_a_usage_error(self):
         code, _, _ = self.check([], role="partial")
         self.assertEqual(code, 2)
-
-
-class SymlinkLoopTest(VerdictsTestCase):
-    def test_self_loop_is_omitted_from_inventory_and_rejected_by_blocks(self):
-        (self.repo / "loop").mkdir()
-        (self.repo / "loop" / "AGENTS.md").symlink_to("AGENTS.md")
-        commit_all(self.repo, "loop")
-        out = run("inventory", "--repo", str(self.repo))
-        self.assertEqual([f["path"] for f in out["files"]], ["AGENTS.md"])
-        code, stdout, err = call("blocks", "--repo", str(self.repo), "loop/AGENTS.md")
-        self.assertEqual((code, stdout), (1, ""))
-        self.assertEqual(err, "error: no such file in the repo: loop/AGENTS.md\n")
-        code, stdout, err = self.check([], file="loop/AGENTS.md")
-        self.assertEqual((code, stdout), (1, ""))
-        self.assertEqual(err, "error: no such file in the repo: loop/AGENTS.md\n")
 
 
 if __name__ == "__main__":

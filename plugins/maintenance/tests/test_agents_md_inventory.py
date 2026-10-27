@@ -164,6 +164,22 @@ class InventoryTest(RepoTestCase):
         self.assertEqual(code, 1)
         self.assertTrue(err.startswith("error: scope is not a directory in the repo"), err)
 
+    def test_scope_symlink_loop_is_rejected(self):
+        (self.repo / "loopdir").symlink_to("loopdir")
+        code, out, err = call("inventory", "--repo", str(self.repo), "--scope", "loopdir")
+        self.assertEqual((code, out), (1, ""))
+        self.assertEqual(err, "error: scope is not a directory in the repo: loopdir\n")
+
+    def test_symlink_loop_file_is_omitted_and_rejected(self):
+        write(self.repo, "AGENTS.md", "- a\n")
+        (self.repo / "loop").mkdir()
+        (self.repo / "loop" / "AGENTS.md").symlink_to("AGENTS.md")
+        commit_all(self.repo, "loop")
+        self.assertEqual([f["path"] for f in self.inventory()["files"]], ["AGENTS.md"])
+        code, out, err = call("blocks", "--repo", str(self.repo), "loop/AGENTS.md")
+        self.assertEqual((code, out), (1, ""))
+        self.assertEqual(err, "error: no such file in the repo: loop/AGENTS.md\n")
+
     def test_guidelines_found(self):
         write(self.repo, "AGENTS.md", GUIDELINES_ROOT)
         commit_all(self.repo, "add")

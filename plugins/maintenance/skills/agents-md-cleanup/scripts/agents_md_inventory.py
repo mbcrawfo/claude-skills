@@ -357,7 +357,7 @@ def resolve_scope(root: Path, scope: list[str]) -> list[str]:
             target = (root / arg).resolve()
             rel = target.relative_to(root)
             is_dir = target.is_dir()
-        except (OSError, ValueError):
+        except (OSError, RuntimeError, ValueError):  # RuntimeError: a symlink loop, on Python 3.9-3.12
             is_dir = False
         if not is_dir:
             raise CliError(f"scope is not a directory in the repo: {arg}")
@@ -507,6 +507,23 @@ def _text_field(verdict: dict, name: str) -> str:
     return value
 
 
+def _can_hold_file(root: Path, target: str) -> bool:
+    """Whether `target` could be written as a regular file that stays inside the repo.
+
+    The path need not exist yet, but its nearest existing ancestor must be a directory (the target itself,
+    when it exists, a regular file) once symlinks are resolved.
+    """
+    try:
+        resolved = (root / target).resolve()
+        resolved.relative_to(root)
+        probe = resolved
+        while not probe.exists():
+            probe = probe.parent
+        return probe.is_file() if probe == resolved else probe.is_dir()
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
 def _check_move(verdict: dict, file: str, root: Path) -> None:
     target = _text_field(verdict, "target")
     kind = verdict.get("target_kind")
@@ -516,8 +533,13 @@ def _check_move(verdict: dict, file: str, root: Path) -> None:
         raise CliError(f"target must be a repo-relative path without '..': {target}")
     if target == file:
         raise CliError(f"target must not be the file itself: {target}")
-    if kind == "agents_md" and posixpath.basename(target).lower() != "agents.md":
-        raise CliError(f"target {target} is not an AGENTS.md file")
+    if ".git" in target.split("/"):
+        raise CliError(f"target {target} is inside .git")
+    if kind == "agents_md":
+        if posixpath.basename(target).lower() != "agents.md":
+            raise CliError(f"target {target} is not an AGENTS.md file")
+        if not _can_hold_file(root, target):
+            raise CliError(f"target {target} is not a file path inside the repo")
     if kind == "comment" and not _is_inside(root, root / target):
         raise CliError(f"target {target} is not a file in the repo")
     if "target_heading" in verdict and not isinstance(verdict["target_heading"], str):
