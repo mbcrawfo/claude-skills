@@ -41,7 +41,7 @@ class ArgumentOrderTest(LedgerHarness, unittest.TestCase):
     def test_locate_reports_plugin_version(self):
         out = self.cli("locate", "--base", "main")
         self.assertEqual(out["plugin_version"], review_state.PLUGIN_VERSION)
-        self.assertEqual(review_state.PLUGIN_VERSION, "0.10.0")
+        self.assertEqual(review_state.PLUGIN_VERSION, "0.11.0")
 
 
 class VersionTest(unittest.TestCase):

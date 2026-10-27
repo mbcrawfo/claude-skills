@@ -28,12 +28,12 @@ Text you pass to the script never goes inside a quoted shell argument: notes, di
 
 1. Run `mktemp -d` once and note the path it prints. Below it is `<tmp>`.
 2. Run `rs prune`. If `removed` is not empty, print what was removed. If `skipped` is not empty, print those paths as directories that are not review state (or symlinks) and were left alone. If it exits 1 after printing its JSON, `errors` lists the directories it could not check or remove, each with its `dir` and `error`: print them and go on, since a failed prune does not affect this branch's review. If it exits 1 without printing JSON, it stopped before removing anything: report the stderr line and go on.
-3. Run `rs locate`, adding `--base <ref>` when `--base` was given, `--paths <glob>...` when `--paths` was given, and, on this first `locate` only, `--second-opinion` or `--no-second-opinion` when the invoker gave it (so a requested second opinion replaces the follow-up). Every later `rs locate` in this run takes the same `--base` and `--paths` arguments. Keep `base`, `dir`, `exists`, `mode`, `reason`, `focus`, `conflicts`, `open_findings` and `earlier_not_checked`. Keep `rounds` from this first `locate` as `<prior_rounds>`: the recorded rounds that ran before this run, which item 4.2 and section 8 use. Print `plugin_version`, the mode and its reason:
+3. Run `rs locate`, adding `--base <ref>` when `--base` was given, `--paths <glob>...` when `--paths` was given, and, on this first `locate` only, `--second-opinion` or `--no-second-opinion` when the invoker gave it (so a requested second opinion replaces the follow-up). Every later `rs locate` in this run takes the same `--base` and `--paths` arguments. Keep `base`, `dir`, `exists`, `mode`, `reason`, `focus`, `conflicts`, `conflict_anchor`, `open_findings` and `earlier_not_checked`. Keep `rounds` from this first `locate` as `<prior_rounds>`: the recorded rounds that ran before this run, which item 4.2 and section 8 use. Print `plugin_version`, the mode and its reason:
    - `no-state` or `no-rounds`: no recorded review of this branch yet. Mode is deep.
    - `continuing` or `base-updated`: an earlier recorded round exists and HEAD builds on it, perhaps with the base merged in cleanly (the delta then excludes the base's code). Mode is follow-up.
    - `base-moved`: the base was merged in with conflicts. With mode `merge-check`, `conflicts` lists them, and the round checks the resolutions and the branch's own work since the earlier round. With mode `deep`, the conflicts could not be listed (git older than 2.40).
    - `snapshot-missing`, `history-rewritten` or `paths-changed`: the earlier round's snapshot is gone, HEAD no longer descends from it (rebase, amend, reset), or `--paths` differs from the earlier round's. Mode is deep.
-   - `second-opinion`: a second opinion is due and nothing is open. Mode is deep with `focus: second-opinion`; the claimed fixes in `open_findings` are carried into it for verdicts.
+   - `second-opinion`: a second opinion is due and nothing is open. Mode is deep with `focus: second-opinion`; the claimed fixes in `open_findings` are carried into it for verdicts. When `conflicts` is not empty, the base was also merged in with conflicts: the second opinion replaces the merge-check, and `conflicts` with `conflict_anchor` tell the reviewer which resolutions to check.
 
    When the mode is deep and `open_findings` is not empty, those findings are carried forward for re-verification. Say so.
 4. If `--full` was given, the mode is deep, whatever `locate` said.
@@ -42,7 +42,7 @@ Text you pass to the script never goes inside a quoted shell argument: notes, di
    - Write the developer's note to `<tmp>/note.md`. Run `rs resolve --id <id> --decision fix --note-file <tmp>/note.md` when the note asks for a fix, `--decision defer` when it says to fix it later, and `--decision accept` when it says to keep the behavior, document it as a known issue, or not fix it. When the note's direction is unclear, ask the developer before resolving.
    - After `fix`, the finding is `open` again. Handle it now as a **Valid** finding from section 7 (fix it, add the test, `set-status fixed`). The next round verifies the fix. For a finding with `fix_options`, this decision is what lets `set-status fixed` through.
    - After `defer` or `accept`, the finding shows under Deferred or Accepted in the summary that section 9 writes.
-   - Then run `rs locate` again. Its `mode`, `reason`, `focus`, `open_findings` and `earlier_not_checked` replace item 2.3's (a fix that leaves nothing open can make the next round the second opinion), so the fixed finding and its note reach the reviewer. Apply item 2.4 again. Do not repeat items 2.3 to 2.5. Go on to section 3.
+   - Then run `rs locate` again. Its `mode`, `reason`, `focus`, `conflicts`, `conflict_anchor`, `open_findings` and `earlier_not_checked` replace item 2.3's (a fix that leaves nothing open can make the next round the second opinion), so the fixed finding and its note reach the reviewer. Apply item 2.4 again. Do not repeat items 2.3 to 2.5. Go on to section 3.
 
 ## 3. Intent
 
@@ -53,7 +53,7 @@ The intent is the PR description: what the change is for, what it does, and what
 - When `exists` is true, the `intent` value in `<dir>/review.json`, if it is not null.
 - Otherwise stop and ask the invoking agent or user for the intent.
 
-Write the intent with the Write tool to `<tmp>/intent.md`.
+Write the intent with the Write tool to `<tmp>/intent.md`. When a decision recorded in item 2.5 changes what the change does or deliberately leaves out, update `<tmp>/intent.md` to say so now, before item 4.1: the reviewer checks the code against the intent it is given.
 
 ## 4. Round
 
@@ -65,7 +65,9 @@ Write the intent with the Write tool to `<tmp>/intent.md`.
    - `--notes-file <path>` and `--related-branch <ref>...` when the invoker gave them (both are stored, so later runs reuse them);
    - on the run's first `begin-round` only, `--second-opinion` or `--no-second-opinion` when the invoker gave it.
 
-   Keep `number`, `snapshot`, `mode`, `model`, `diff_from`, `diff_to`, `changed_files`, `notes` and `related_branches`, plus `conflicts` and `upstream_overlap` for merge-check. The returned `mode` and `model` are the round's, even when they differ from what you passed: a follow-up whose delta is too large (40 or more non-generated files, or 2,000 or more lines) comes back as `mode: deep` with `mode_reason: large-delta` and the deep model, so dispatch a deep round with that model.
+   Keep `number`, `snapshot`, `mode`, `model`, `diff_from`, `diff_to`, `changed_files`, `notes` and `related_branches`, plus `conflicts` and `upstream_overlap` for merge-check.
+
+   When `decisions_since_intent` is not empty, those findings got a developer decision since the last round began and the intent you passed has not changed since then. Read each decision's note in `<dir>/review.json`. If the intent no longer describes the change, update `<tmp>/intent.md` and run the same `begin-round` again: it replaces the round just begun, which nothing has recorded. The returned `mode` and `model` are the round's, even when they differ from what you passed: a follow-up whose delta is too large (40 or more non-generated files, or 2,000 or more lines) comes back as `mode: deep` with `mode_reason: large-delta` and the deep model, so dispatch a deep round with that model.
 2. If `empty` is true, the script did not save the round (`saved` is false), and there is nothing for a reviewer to check.
    - On the run's first round with `<prior_rounds>` 0, report "nothing to review: no changes between `<diff_from>` and `<diff_to>`" and stop.
    - On the run's first round with earlier rounds, go to section 8 and follow `rs status`: a `--second-opinion` you just passed is stored, so a second opinion may be due.
@@ -99,6 +101,7 @@ CHANGED_FILES (the review's scope; diff only these, with `git diff DIFF_FROM DIF
 <changed_files, one path per line>
 CONFLICTS:
 <conflicts, one path per line>
+CONFLICT_ANCHOR: <conflict_anchor>
 UPSTREAM_OVERLAP:
 <upstream_overlap, one path per line>
 INTENT:
@@ -113,11 +116,13 @@ EARLIER_REVIEW_NOTES:
 <notes from begin-round>
 RELATED_BRANCHES:
 <related_branches from begin-round, one ref per line>
+
+Write the whole report to REPORT_PATH before you hand back, however short the round: the orchestrator records from that file, not from your final message.
 ```
 
 `INTENT`, `OPEN_FINDINGS` and `CHANGED_FILES` are inlined text, never paths. Never create `<tmp>/round-<number>.md` before the reviewer reports: the reviewer writes it.
 
-Leave out the lines that do not apply: `FOCUS` and `PRIOR_FINDINGS` unless the round's focus is `second-opinion`; `CONFLICTS` and `UPSTREAM_OVERLAP` unless the mode is `merge-check`; `EARLIER_NOT_CHECKED` unless the mode is deep and the list is not empty; `EARLIER_REVIEW_NOTES` unless the mode is deep and `notes` is set; `RELATED_BRANCHES` unless `related_branches` is not empty; `VALIDATED` unless you have the output of a full run of the repo's test suite, your own or a subagent's report that quotes the command, the pass result and the commit, giving the command and the commit or snapshot it ran on.
+Leave out the lines that do not apply: `FOCUS` and `PRIOR_FINDINGS` unless the round's focus is `second-opinion`; `CONFLICTS` unless the mode is `merge-check`, or the focus is `second-opinion` and the latest `locate`'s `conflicts` is not empty; `CONFLICT_ANCHOR` only in that second-opinion case; `UPSTREAM_OVERLAP` unless the mode is `merge-check`; `EARLIER_NOT_CHECKED` unless the mode is deep and the list is not empty; `EARLIER_REVIEW_NOTES` unless the mode is deep and `notes` is set; `RELATED_BRANCHES` unless `related_branches` is not empty; `VALIDATED` unless you have the output of a full run of the repo's test suite, your own or a subagent's report that quotes the command, the pass result and the commit, giving the command and the commit or snapshot it ran on.
 
 `CHANGED_FILES` is the authoritative scope. With `--paths`, the diff range also touches files outside it, and those are not part of this review.
 

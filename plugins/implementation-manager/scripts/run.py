@@ -134,7 +134,7 @@ def _needs(run_dir: Path, state: dict) -> list[str]:
         if (
             ready
             and runstate.mergeable(state, name)  # not held, and every --after unit merged or stopped
-            and not runstate.integration_block(state, name)
+            and not runstate.integration_block(state, name, run_dir)
             and not _wrong_base(state, name)
             and not owner_final
         ):
@@ -176,7 +176,7 @@ def _needs(run_dir: Path, state: dict) -> list[str]:
     return needs
 
 
-def _integration_lines(state: dict) -> list[str]:
+def _integration_lines(run_dir: Path, state: dict) -> list[str]:
     """The status lines of the integration mode; none in a default run."""
     block = state.get("integration")
     if not block:
@@ -185,9 +185,11 @@ def _integration_lines(state: dict) -> list[str]:
         f"- integration: {block['branch']} into {state['base']}"
         f" · final merge: {block['final_merge']} · feature review: {'yes' if block['feature_review'] else 'no'}"
     ]
-    if runstate.sync_in_flight(state):
-        lines.append("- integration sync in flight")
     name = runstate.integration_unit(state)
+    if runstate.sync_in_flight(state, run_dir):
+        syncing = state["marks"].get(name, {}).get(runstate.SYNCING_MARK)
+        detail = f" (resolving a conflicted merge of {state['base']} since {_clock(syncing['at'])})" if syncing else ""
+        lines.append(f"- integration sync in flight{detail}")
     record = state["units"].get(name) if name else None
     open_prs = [pr for pr, status in record["prs"].items() if status == "OPEN"] if record else []
     if open_prs:
@@ -249,7 +251,7 @@ def _status(run_dir: Path, state: dict) -> str:
                 gated.append(f"{label} may open" if name in openable else f"{label} on WIP")
     lines.append(f"- open: {', '.join(open_units) or 'none'}")
     lines.append(f"- gated: {', '.join(gated) or 'none'}")
-    lines += _integration_lines(state)
+    lines += _integration_lines(run_dir, state)
     needs = _needs(run_dir, state)
     if needs:
         lines.append("- needs the manager:")
@@ -392,12 +394,12 @@ def _integration_choice(args: argparse.Namespace) -> dict | None:
     }
 
 
-def _integration_verdict(state: dict, unit: str, line: str) -> str:
+def _integration_verdict(run_dir: Path, state: dict, unit: str, line: str) -> str:
     """Turn a READY line into NOT-READY when the integration branch blocks the unit, or FINAL-READY for the owner."""
     verb, _, rest = line.partition(" ")
     if verb != "READY":
         return line
-    reason = runstate.integration_block(state, unit)
+    reason = runstate.integration_block(state, unit, run_dir)
     if reason:
         pr, _, sha = rest.partition(" ")
         return f"NOT-READY {pr} head={sha[:7]} blocked: {reason}"
@@ -433,7 +435,7 @@ def _run(args: argparse.Namespace) -> str | None:
         # In the integration mode a PR on the wrong base is never READY.
         base = runstate.pr_base(state, args.unit)
         line = check_once(state["repo"], record["branch"], gh=run_gh, sleep=time.sleep, base=base)
-        return _integration_verdict(state, args.unit, line)
+        return _integration_verdict(run_dir, state, args.unit, line)
     with locked(run_dir) as state:
         if command == "unit":
             if args.after and "none" in args.after and len(args.after) > 1:

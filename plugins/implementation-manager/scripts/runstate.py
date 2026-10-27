@@ -22,6 +22,9 @@ FREED_MARK = "freed_for_after"
 # The watcher's mark for the last NEXT it reported; not a unit name, since unit names start with a letter or digit.
 NEXT_MARK = "_next"
 
+# The integration unit's mark while it resolves a conflicted base merge it has not asked to push yet.
+SYNCING_MARK = "syncing"
+
 # No '.': children match their unit name in `grep -E` patterns, where it would be a wildcard.
 UNIT_RE = r"[A-Za-z0-9][A-Za-z0-9_-]*"
 SHA_RE = r"[0-9a-f]{40}"
@@ -528,7 +531,7 @@ def stop_gate(run_dir: Path, state: dict, unit: str, reason: str) -> None:
         state["slot"] = None
     _drop_entries(state, unit, "pending", "queue")
     _forget_freed(state, unit)
-    for key in ("go_head", "go_sha"):  # a stopped unit is not pushing
+    for key in ("go_head", "go_sha", SYNCING_MARK):  # a stopped unit is not pushing
         state["marks"].get(unit, {}).pop(key, None)
 
 
@@ -642,7 +645,8 @@ def go(run_dir: Path, state: dict, unit: str, sha: str, now: float) -> None:
 def redo(run_dir: Path, state: dict, unit: str, sha: str, reasons: str) -> None:
     """Answer a push request with `redo` and one line of reasons; the unit gives up the slot.
 
-    Any earlier `go` is spent: the child asks again, so the watcher stops holding READY for a push.
+    Any earlier `go` is spent: the child asks again, so the watcher stops holding READY for a push. A sync the
+    integration unit announced (`syncing`) is spent too, so a dead one stops blocking unit merges.
     """
     _unit(state, unit)
     _check_sha(sha)
@@ -652,7 +656,7 @@ def redo(run_dir: Path, state: dict, unit: str, sha: str, reasons: str) -> None:
     _note_answered(run_dir, state, unit, sha)
     _drop_entries(state, unit, "pending", "queue")
     _forget_freed(state, unit)
-    for key in ("go_head", "go_sha"):
+    for key in ("go_head", "go_sha", SYNCING_MARK):
         state["marks"].get(unit, {}).pop(key, None)
     if _holds_slot(state, unit):
         state["slot"] = None
@@ -708,8 +712,9 @@ def yield_slot(state: dict, unit: str, reason: str, now: float) -> None:
 
 
 def _spend_sync(state: dict, unit: str) -> None:
-    """The integration unit's go no longer blocks unit merges, and a new go of the same sha is reported again."""
-    for key in ("go_sha", "synced_sha"):
+    """The integration unit's go or announced sync no longer blocks unit merges, and a new go of the same sha is
+    reported again."""
+    for key in ("go_sha", "synced_sha", SYNCING_MARK):
         state["marks"].get(unit, {}).pop(key, None)
 
 
@@ -779,30 +784,47 @@ def record_closed(state: dict, unit: str, pr: int) -> None:
         _spend_sync(state, unit)
 
 
-def sync_in_flight(state: dict) -> bool:
-    """True when the integration unit has an unanswered request or a `go` not yet recorded as synced.
+def unread_lines(run_dir: Path, state: dict) -> list[str]:
+    """The whole requests.log lines no wait has read yet, without consuming them; [] when there are none."""
+    try:
+        with open(run_dir / REQUESTS, "rb") as f:
+            f.seek(state["requests_offset"])
+            data = f.read()
+    except FileNotFoundError:
+        return []
+    return [raw.decode("utf-8", errors="replace") for raw in data.split(b"\n")[:-1]]
+
+
+def sync_in_flight(state: dict, run_dir: Path | None = None) -> bool:
+    """True when the integration unit has an unanswered request, a `go` not yet recorded as synced, or a
+    conflicted base merge it announced (`syncing`) and has not asked to push yet.
 
     A request that is only queued does not count: it waits behind the slot holder, and blocking that holder's
-    merge would deadlock serial mode, since the holder must merge to free the slot.
+    merge would deadlock serial mode, since the holder must merge to free the slot. With `run_dir`, a line from
+    the integration unit that no wait has read yet counts too: the manager may check between waits.
     """
     name = integration_unit(state)
     if name is None:
         return False
     if any(entry["unit"] == name for entry in state["pending"]):
         return True
-    return "go_sha" in state["marks"].get(name, {})
+    marks = state["marks"].get(name, {})
+    if "go_sha" in marks or SYNCING_MARK in marks:
+        return True
+    return run_dir is not None and any(line.startswith(f"{name} ") for line in unread_lines(run_dir, state))
 
 
-def integration_block(state: dict, unit: str) -> str | None:
+def integration_block(state: dict, unit: str, run_dir: Path | None = None) -> str | None:
     """Why the unit may not merge for the integration branch's sake, or None.
 
-    Units wait while an integration sync is in flight; the integration unit waits for every other unit.
+    Units wait while an integration sync is in flight (`run_dir` as for `sync_in_flight`); the integration unit
+    waits for every other unit.
     """
     name = integration_unit(state)
     if name is None:
         return None
     if unit != name:
-        return "integration sync in flight" if sync_in_flight(state) else None
+        return "integration sync in flight" if sync_in_flight(state, run_dir) else None
     late = late_units(state)
     return f"waits on {', '.join(late)}" if late else None
 
