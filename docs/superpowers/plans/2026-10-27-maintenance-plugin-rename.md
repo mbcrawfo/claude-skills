@@ -59,18 +59,19 @@ git mv plugins/superpowers-cleanup plugins/maintenance
 Set `SKILL = Path(__file__).resolve().parent.parent / "skills" / "superpowers-cleanup" / "SKILL.md"`, change the frontmatter assertion to `self.assertEqual(meta["name"], "superpowers-cleanup")`, and change `NothingChangedGraderTest.GRADER` to use `"superpowers-cleanup-run"`. Add to `SkillMdTest`:
 
 ```python
-    def test_names_the_new_command(self):
-        meta = parse_frontmatter(SKILL)
-        self.assertIn("/maintenance:superpowers-cleanup", meta["description"])
+def test_names_the_new_command(self):
+    meta = parse_frontmatter(SKILL)
+    self.assertIn("/maintenance:superpowers-cleanup", meta["description"])
 
-    def test_script_lives_in_skill(self):
-        self.assertTrue((SKILL.parent / "scripts" / "docs_inventory.py").is_file())
-        self.assertFalse((SKILL.parent.parent.parent / "scripts").exists())
-        text = SKILL.read_text(encoding="utf-8")
-        calls = re.findall(r'"([^"]*docs_inventory\.py)"', text)
-        self.assertTrue(calls)
-        for call in calls:
-            self.assertEqual(call, "${CLAUDE_SKILL_DIR}/scripts/docs_inventory.py")
+
+def test_script_lives_in_skill(self):
+    self.assertTrue((SKILL.parent / "scripts" / "docs_inventory.py").is_file())
+    self.assertFalse((SKILL.parent.parent.parent / "scripts").exists())
+    text = SKILL.read_text(encoding="utf-8")
+    calls = re.findall(r'"([^"]*docs_inventory\.py)"', text)
+    self.assertTrue(calls)
+    for call in calls:
+        self.assertEqual(call, "${CLAUDE_SKILL_DIR}/scripts/docs_inventory.py")
 ```
 
 - [ ] **Step 3: Run the tests to confirm they fail**

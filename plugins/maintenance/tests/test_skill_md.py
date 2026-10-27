@@ -88,7 +88,9 @@ class SkillMdTest(unittest.TestCase):
 
 
 class NothingChangedGraderTest(unittest.TestCase):
-    GRADER = Path(__file__).resolve().parent.parent / "evals" / "superpowers-cleanup-run" / "graders" / "nothing-changed.md"
+    GRADER = (
+        Path(__file__).resolve().parent.parent / "evals" / "superpowers-cleanup-run" / "graders" / "nothing-changed.md"
+    )
 
     def pattern(self):
         line = next(x for x in self.GRADER.read_text().splitlines() if x.startswith("input_match:"))
