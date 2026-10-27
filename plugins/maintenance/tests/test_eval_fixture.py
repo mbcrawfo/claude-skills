@@ -6,7 +6,7 @@ import unittest
 
 from helpers import by_path, by_suffix, git, run
 
-SCAFFOLD = Path(__file__).resolve().parent.parent / "evals" / "cleanup-run" / "scaffold.sh"
+SCAFFOLD = Path(__file__).resolve().parent.parent / "evals" / "superpowers-cleanup-run" / "scaffold.sh"
 
 
 class EvalFixtureTest(unittest.TestCase):
