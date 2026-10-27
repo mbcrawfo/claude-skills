@@ -1,5 +1,5 @@
 schema_version: "1.1"
-name: cleanup-run
+name: superpowers-cleanup-run
 plugins: ["../.."]
 context:
   # Builds the fixture repo in the run's workspace. Runs only with --scaffold.
