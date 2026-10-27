@@ -1103,9 +1103,13 @@ class IntegrationWatcherTests(unittest.TestCase):
         self.assertNotIn("syncing", state["marks"].get("a", {}))
 
     def test_a_sync_with_no_push_request_is_stuck_once(self):
-        self.append_request(f"int syncing {SHA1} integration/x\n")
         gh = FakeGh({"integration/x": [NO_PR]})
+        self.assert_quiet(gh, sleeps=1)
+        self.append_request(f"int syncing {SHA1} integration/x\n")
+        read_at = self.clock.now()  # the next wait step reads the line at this time
         self.assertEqual(self.wait(gh, sleeps=900), "STUCK int - syncing")
+        self.assertGreaterEqual(self.clock.now() - read_at, 3600)
+        self.assertLess(self.clock.now() - read_at, 3600 + 10)
         self.assert_quiet(gh, sleeps=100)
         self.assertIn("syncing", load(self.dir)["marks"]["int"])  # it still holds unit merges
 

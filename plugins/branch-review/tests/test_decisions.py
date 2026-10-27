@@ -43,6 +43,14 @@ class DecisionTest(LedgerHarness, unittest.TestCase):
         result = self.begin("followup", "--intent-file", self.write("intent2.md", updated))
         self.assertEqual(result["decisions_since_intent"], [])
 
+    def test_a_whitespace_only_change_to_the_intent_keeps_the_flag(self):
+        self.seed()
+        self.escalate()
+        self.cli("resolve", "--id", "R1-F1", "--decision", "fix", "--note", "do it the owner's way")
+        respaced = "  " + INTENT.replace(" ", "   ").replace("\n", "\n\n") + "\n\n"
+        result = self.begin("followup", "--intent-file", self.write("intent.md", respaced))
+        self.assertEqual(result["decisions_since_intent"], ["R1-F1"])
+
     def test_no_flag_without_a_decision_since_the_last_round(self):
         self.seed()
         self.escalate()

@@ -1047,6 +1047,16 @@ class IntegrationCliTests(CliTestCase):
         )
         self.assertIn("- integration sync in flight", self.ok("status", str(self.dir)).splitlines())
 
+    def test_status_lists_no_ready_unit_while_a_syncing_line_is_unread(self):
+        self.fake_gh({"pr_list": [], "graphql": None})
+        self.init_integration("owner")
+        self.ok("open-ready", str(self.dir))
+        self.open_pr("a", 7, ready_sha=HEAD_A)
+        ready = "  - a PR #7 ready since "
+        self.assertTrue([line for line in self.status() if line.startswith(ready)])
+        self.append_request(f"int syncing {SHA1} integration/x\n")
+        self.assertFalse([line for line in self.status() if line.startswith(ready)])
+
     def test_status_says_when_an_announced_sync_began(self):
         self.fake_gh({"pr_list": [], "graphql": None})
         self.init_integration("owner")
