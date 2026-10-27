@@ -139,7 +139,8 @@ class GraderTest(unittest.TestCase):
             self.assertIn("min: 0", lines)
             self.assertIn("max: 0", lines)
             line = next(x for x in lines if x.startswith("input_match:"))
-            pattern = re.compile(line.split(":", 1)[1].strip().strip("'"))
+            # A YAML single-quoted scalar writes a literal ' as ''.
+            pattern = re.compile(line.split(":", 1)[1].strip()[1:-1].replace("''", "'"))
             for cmd in [
                 "git rm -r -q -- AGENTS.md",
                 "git commit -m x",
@@ -152,6 +153,8 @@ class GraderTest(unittest.TestCase):
                 "git clean -fd",
                 "rm -r src",
                 "rm -r -- AGENTS.md",
+                "rm -- 'AGENTS.md'",
+                'rm -r -- "src"',
                 "git -C . add x",
                 "git -C /tmp/x commit -m x",
                 "mv a b",
@@ -168,7 +171,13 @@ class GraderTest(unittest.TestCase):
             ]:
                 self.assertIsNone(pattern.search(cmd), cmd)
             # The review run ends with the skill removing its own mktemp -d directory; the first-run case stays strict.
-            for cmd in ["rm -r -- /var/folders/ab/T/tmp.XYZ", "rm -r -- /tmp/tmp.XYZ", "rm -rf /tmp/tmp.XYZ"]:
+            for cmd in [
+                "rm -r -- /var/folders/ab/T/tmp.XYZ",
+                "rm -r -- /tmp/tmp.XYZ",
+                "rm -rf /tmp/tmp.XYZ",
+                "rm -r -- '/var/folders/x/tmp.A'",
+                'rm -r -- "/tmp/x"',
+            ]:
                 if case == REVIEW:
                     self.assertIsNone(pattern.search(cmd), cmd)
                 else:
