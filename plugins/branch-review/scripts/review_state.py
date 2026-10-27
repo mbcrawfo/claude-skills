@@ -744,6 +744,11 @@ def cmd_begin_round(args: argparse.Namespace) -> dict:
         mode, model, mode_reason = "deep", args.deep_model or args.model, "large-delta"
         diff_from = merge_base
         changed, lines, generated, counted_files, counted_lines = measure(diff_from)
+    model_reason = None
+    if mode == "followup" and args.deep_model and _claims_decided_fix(state["findings"]):
+        # A claimed fix of a developer-decided finding is checked against the decision's words, which a
+        # lighter model has passed with a gap left open; verify it with the deep model.
+        model, model_reason = args.deep_model, "decided-fix"
     files = len(changed)
     if args.focus == SECOND_OPINION_FOCUS and mode != "deep":
         # Any round with this focus counts as the second opinion, so it must be
@@ -767,6 +772,7 @@ def cmd_begin_round(args: argparse.Namespace) -> dict:
         "merge_risk": None,
         "focus": args.focus,
         "mode_reason": mode_reason,
+        "model_reason": model_reason,
         "plugin_version": PLUGIN_VERSION,
         "intent": state.get("intent"),
     }
@@ -808,6 +814,17 @@ def cmd_begin_round(args: argparse.Namespace) -> dict:
     if mode == "merge-check":
         result["upstream_overlap"] = upstream_overlap
     return result
+
+
+def _claims_decided_fix(findings: list) -> bool:
+    """Whether a claimed fix (`fixed`) awaits verification for a finding the developer decided to fix."""
+    return any(
+        isinstance(f, dict)
+        and f.get("status") == "fixed"
+        and isinstance(f.get("decision"), dict)
+        and f["decision"].get("decision") == "fix"
+        for f in findings
+    )
 
 
 def cmd_record(args: argparse.Namespace) -> dict:
@@ -2226,7 +2243,10 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     begin.add_argument(
         "--deep-model",
-        help="model for a follow-up promoted to a deep round (default: the --model value)",
+        help=(
+            "model for a follow-up promoted to a deep round (default: the --model value), and for a follow-up "
+            "that verifies a claimed fix of a developer-decided finding (only when given)"
+        ),
     )
     opinion = begin.add_mutually_exclusive_group()
     opinion.add_argument(
