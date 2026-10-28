@@ -15,7 +15,7 @@ Commands:
   check-verdicts
              validate a reviewer's verdicts for one file against that file's blocks; a deletion that may
              drop a project choice comes back as an `ask`; with `--rule-words`, so does a `keep` of a rule over
-             that many words without a saved ruling, and any text over it is rejected
+             that many words whose ruling lacks `(whole)`, and any text over it is rejected
 
 `split_blocks` cuts a markdown file into the addressable blocks the skill's verdicts refer to.
 """
@@ -36,6 +36,7 @@ from typing import NoReturn
 import agents_md_limits
 
 RULINGS_PATH = ".claude/agents-md-cleanup.md"
+WHOLE_TOKEN = "(whole)"
 UNCOMMITTED_SHOWN = 10  # paths listed in `uncommitted`; `count` has them all
 DOCS_FOLDERS = ("docs", "doc", "documentation")  # in order of preference
 DOCS_PAGES_SHOWN = 200  # pages listed in `docs`
@@ -887,16 +888,22 @@ def _check_split(verdict: dict, file: str, root: Path) -> None:
             raise CliError(f"part {number}: {exc}") from exc
 
 
-def _check_text_limits(verdict: dict, rule_words: int) -> None:
+def _check_text_limits(verdict: dict, rule_words: int, texts: list[str]) -> None:
     """Refuse text bound for an AGENTS.md that holds a rule over the word limit.
 
-    Measured: a `fix`, `trim` or `merge`'s `new_text`, a move's `new_text` when it targets an AGENTS.md, every
-    `pointer`, and a part's `text` when it stays or targets an AGENTS.md. Text that goes to a doc or a code
-    comment is prose, not a rule, and is not capped.
+    Measured: a `fix`, `trim` or `merge`'s `new_text`, a move's `new_text` when it targets an AGENTS.md (or, with
+    no `new_text`, the moved blocks' own `texts`, which it carries verbatim), every `pointer`, and a part's `text`
+    when it stays or targets an AGENTS.md. Text that goes to a doc or a code comment is prose, not a rule, and is
+    not capped.
     """
     fields = {}
     if "new_text" in verdict and (verdict["action"] != "move" or verdict.get("target_kind") == "agents_md"):
         fields["new_text"] = verdict.get("new_text")
+    elif verdict["action"] == "move" and verdict.get("target_kind") == "agents_md":
+        for text in texts:
+            for rule in agents_md_limits.measure_rules(text):
+                if rule["words"] > rule_words:
+                    raise CliError(f"blocks hold a rule of {rule['words']} words, over the limit of {rule_words}")
     if "pointer" in verdict:
         fields["pointer"] = verdict["pointer"]
     for number, part in enumerate(verdict.get("parts", []), start=1):
@@ -932,7 +939,10 @@ def _check_stageable(root: Path, target: str) -> None:
             raise CliError(f"target {target} is inside another git repository: {parent.as_posix()}")
 
 
-def _check_verdict(verdict: dict, file: str, root: Path, rule_words: int | None = None) -> None:
+def _check_verdict(
+    verdict: dict, file: str, root: Path, rule_words: int | None = None, texts: list[str] | None = None
+) -> None:
+    """Check one verdict's shape and text; `texts` are its blocks' texts, measured when a move carries them."""
     action = verdict.get("action")
     if action not in ACTIONS:
         raise CliError(f"unknown action {action!r}; expected one of {', '.join(ACTIONS)}")
@@ -958,7 +968,7 @@ def _check_verdict(verdict: dict, file: str, root: Path, rule_words: int | None 
     if action == "split":
         _check_split(verdict, file, root)
     if rule_words is not None:
-        _check_text_limits(verdict, rule_words)
+        _check_text_limits(verdict, rule_words, texts or [])
     if action == "ask":
         _text_field(verdict, "question")
         _text_field(verdict, "recommendation")
@@ -966,7 +976,7 @@ def _check_verdict(verdict: dict, file: str, root: Path, rule_words: int | None 
             if not isinstance(verdict["proposed"], dict):
                 raise CliError("proposed must be an object")
             try:
-                _check_proposed(verdict, file, root, rule_words)
+                _check_proposed(verdict, file, root, rule_words, texts)
             except CliError as exc:
                 raise CliError(f"proposed: {exc}") from exc
     if "ruling" in verdict and not isinstance(verdict["ruling"], str):
@@ -978,14 +988,16 @@ def _proposed(ask: dict) -> dict:
     return {**{key: ask[key] for key in PROPOSED_INHERITS if key in ask}, **ask["proposed"]}
 
 
-def _check_proposed(ask: dict, file: str, root: Path, rule_words: int | None = None) -> None:
+def _check_proposed(
+    ask: dict, file: str, root: Path, rule_words: int | None = None, texts: list[str] | None = None
+) -> None:
     """Check an ask's `proposed` like a top-level verdict, since answering as recommended applies it as it is."""
     proposed = ask["proposed"]
     if proposed.get("action") not in PROPOSED_ACTIONS:
         raise CliError(f"action must be one of {', '.join(PROPOSED_ACTIONS)}")
     if "blocks" in proposed and proposed["blocks"] != ask["blocks"]:
         raise CliError("blocks must be the ask's blocks")
-    _check_verdict(_proposed(ask), file, root, rule_words)
+    _check_verdict(_proposed(ask), file, root, rule_words, texts)
 
 
 def _cites_other_file(evidence: list[str], file: str, root: Path) -> bool:
@@ -1017,11 +1029,12 @@ def _guard_choice(verdict: dict, blocks: list[dict], file: str, root: Path) -> d
 
 
 def _guard_length(verdict: dict, blocks: list[dict], file: str, rule_words: int | None) -> dict:
-    """Turn a `keep` of a rule over the word limit, with no saved ruling, into an `ask`.
+    """Turn a `keep` of a rule over the word limit into an `ask`, unless its ruling keeps it whole.
 
-    Keeping such a rule whole needs the user's say, and an entry in the test's exception list.
+    Keeping such a rule whole needs the user's say, and an entry in the test's exception list. Only a ruling holding
+    the token `(whole)` records that say; a pattern ruling does not.
     """
-    if rule_words is None or verdict["action"] != "keep" or str(verdict.get("ruling", "")).strip():
+    if rule_words is None or verdict["action"] != "keep" or WHOLE_TOKEN in str(verdict.get("ruling", "")):
         return verdict
     evidence = [
         f"{file}:{block['start_line'] + rule['line'] - 1}: {rule['words']} words"
@@ -1062,7 +1075,7 @@ def validate_verdicts(
     """Check a reviewer's verdicts against `file`'s blocks; return the report, or raise CliError.
 
     The report's verdicts are the reviewer's, except that a deletion that may drop a project choice is an `ask`,
-    and so is a `keep` of a rule over `rule_words` words (when given) with no saved ruling.
+    and so is a `keep` of a rule over `rule_words` words (when given) whose ruling does not hold `(whole)`.
 
     `guidelines` is the root file's guidelines section ({start_line, end_line}): its blocks take only keep or ask.
     """
@@ -1090,7 +1103,7 @@ def validate_verdicts(
                 if block in seen:
                     raise CliError(f"block {block} is in more than one verdict")
                 seen.add(block)
-            _check_verdict(verdict, file, root, rule_words)
+            _check_verdict(verdict, file, root, rule_words, [by_id[b]["text"] for b in listed])
             if guidelines and verdict["action"] not in ("keep", "ask"):
                 for block in listed:
                     found = by_id[block]
