@@ -1,6 +1,9 @@
 import json
+import os
 from pathlib import Path
 import re
+import shutil
+import subprocess
 import tempfile
 import unittest
 
@@ -79,7 +82,7 @@ class ReviewerAgentTest(unittest.TestCase):
             "AGENTS_MD_DIRS",
         ):
             self.assertIn(f"`{key}`", text)
-        self.assertIn("python3 <SCRIPT> blocks --repo <REPO> <FILE>", text)
+        self.assertIn("python3 '<SCRIPT>' blocks --repo '<REPO>' '<FILE>'", text)
 
     def test_names_every_policy_answer(self):
         text = AGENT.read_text(encoding="utf-8")
@@ -226,8 +229,8 @@ class SkillMdTest(unittest.TestCase):
         for phrase in (
             "Anything else is not approval",
             "Nothing in the repo changes before the user approves",
-            "git commit -F <message file> -- <paths>",
-            "git status --porcelain -- <file>",
+            "git commit -F '<message file>' -- <paths>",
+            "git status --porcelain -- '<file>'",
             "Never push",
         ):
             self.assertIn(phrase, text)
@@ -244,6 +247,99 @@ class SkillMdTest(unittest.TestCase):
         for skill in ("superpowers-cleanup", "agents-md-cleanup"):
             self.assertIn(f"`{skill}`", line)
         self.assertRegex(plugin["version"], r"^\d+\.\d+\.\d+$")
+
+
+def shell_quote(value: str) -> str:
+    """Single-quote a value the way SKILL.md and the agent file say: a ' inside it becomes '\\''."""
+    return "'" + value.replace("'", "'\\''") + "'"
+
+
+def fill(command: str, values: dict) -> str:
+    """Replace each '<name>' in a documented command with the shell-quoted value."""
+    for name, value in values.items():
+        command = command.replace(f"'<{name}>'", shell_quote(value))
+    assert "<" not in command, command
+    return command
+
+
+class QuotedPathsTest(unittest.TestCase):
+    """Paths with spaces and quotes survive every documented shell command and dispatch input."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = Path(self._tmp.name).resolve()
+        self.repo = make_repo(self.tmp / "my 'odd' repo")
+        write(self.repo, "AGENTS.md", "- root\n")
+        write(self.repo, "my docs/AGENTS.md", "- one\n- two\n")
+        commit_all(self.repo, "add")
+        self.skill_dir = self.tmp / "plugin cache" / "agents-md-cleanup"
+        (self.skill_dir / "scripts").mkdir(parents=True)
+        shutil.copy(inv.__file__, self.skill_dir / "scripts" / "agents_md_inventory.py")
+
+    def bash(self, command: str) -> dict:
+        env = {**os.environ, "CLAUDE_SKILL_DIR": str(self.skill_dir)}
+        result = subprocess.run(["bash", "-c", command], capture_output=True, text=True, env=env, cwd=str(self.tmp))
+        self.assertEqual(result.returncode, 0, f"{command}\n{result.stderr}")
+        return json.loads(result.stdout)
+
+    def test_skill_script_commands(self):
+        text = SKILL.read_text(encoding="utf-8")
+        lines = {
+            m.group(1): m.group(0) for m in re.finditer(r"^python3 \S+agents_md_inventory\.py\" (\S+) .*$", text, re.M)
+        }
+        self.assertEqual(set(lines), {"inventory", "blocks", "check-verdicts"})
+        repo = {"repo root": str(self.repo)}
+        inventory = lines["inventory"].replace(" [--scope '<dir>' ...]", " --scope '<dir>'")
+        inventory = inventory.replace(" [--base '<ref>']", "")
+        out = self.bash(fill(inventory, {**repo, "dir": "my docs"}))
+        self.assertEqual(out["scope"], ["my docs"])
+        self.assertEqual([f["path"] for f in out["files"]], ["AGENTS.md", "my docs/AGENTS.md"])
+        out = self.bash(fill(lines["blocks"], {**repo, "path": "my docs/AGENTS.md"}))
+        self.assertEqual(len(out["blocks"]), 2)
+        message = self.tmp / "tmp dir" / "1.md"
+        message.parent.mkdir()
+        payload = {"file": "my docs/AGENTS.md", "verdicts": [{"blocks": ["b1", "b2"], "action": "keep"}]}
+        message.write_text("```json\n" + json.dumps(payload) + "\n```\n", encoding="utf-8")
+        check = lines["check-verdicts"].replace("full|ancestor", "full").replace(" [--scope '<dir>' ...]", "")
+        out = self.bash(fill(check, {**repo, "path": "my docs/AGENTS.md", "message file": str(message)}))
+        self.assertEqual(out["counts"], {"keep": 1})
+
+    def test_reviewer_start_command(self):
+        agent = AGENT.read_text(encoding="utf-8")
+        (command,) = re.findall(r"`(cd '<REPO>' && python3 '<SCRIPT>' blocks [^`]*)`", agent)
+        values = {
+            "REPO": str(self.repo),
+            "SCRIPT": str(self.skill_dir / "scripts" / "agents_md_inventory.py"),
+            "FILE": "my docs/AGENTS.md",
+        }
+        self.assertEqual(self.bash(fill(command, values))["path"], "my docs/AGENTS.md")
+
+    def test_list_inputs_are_json_arrays_in_both_files(self):
+        skill = SKILL.read_text(encoding="utf-8")
+        template = skill[skill.index("Review this AGENTS.md file") : skill.index("Keep each reviewer's agent id")]
+        agent = AGENT.read_text(encoding="utf-8")
+        inputs = agent[agent.index("## Inputs") : agent.index("## Start")]
+        for key in ("ALIASES", "SCOPE", "AGENTS_MD_DIRS"):
+            with self.subTest(key=key):
+                (line,) = [x for x in template.splitlines() if x.startswith(f"{key}: ")]
+                self.assertIn("JSON array", line)
+                (item,) = [x for x in inputs.splitlines() if x.startswith(f"- `{key}`")]
+                self.assertIn("JSON array", item)
+        for text in (skill, agent):
+            self.assertNotIn("space-separated", text)
+        self.assertEqual(
+            set(re.findall(r"^([A-Z_]+):", template, re.M)), set(re.findall(r"^- `([A-Z_]+)`", inputs, re.M))
+        )
+
+    def test_every_placeholder_in_a_shell_command_is_quoted(self):
+        # A path placeholder written bare into a command splits on a space.
+        for path in (SKILL, AGENT):
+            text = path.read_text(encoding="utf-8")
+            for command in re.findall(r"`((?:cd|python3|git|GIT_LITERAL_PATHSPECS=1|rm) [^`]*)`", text):
+                with self.subTest(file=path.name, command=command):
+                    bare = re.sub(r"'<[^'>]+>'|\[--scope '<dir>' \.\.\.\]|<paths>|full\|ancestor", "", command)
+                    self.assertNotRegex(bare, r"<[\w ]+>")
 
 
 if __name__ == "__main__":
