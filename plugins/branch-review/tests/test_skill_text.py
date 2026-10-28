@@ -54,8 +54,15 @@ class ReviewSkillTextTest(unittest.TestCase):
         lines = [line for line in self.text.splitlines() if "rs snapshot" in line or RS + " snapshot" in line]
         self.assertEqual(lines, [])
 
-    def test_review_skill_pastes_review_notes(self):
-        self.assertIn("review_notes", self.text)
+    def test_review_notes_go_in_the_pr_not_to_the_developer(self):
+        line = next(line for line in self.text.splitlines() if "`review_notes`" in line)
+        self.assertIn("Do not print `review_notes`", line)
+        self.assertIn("review_notes_path", line)
+        self.assertIn("never offer it to the developer", line)
+        self.assertIn("never retyping, trimming or summarizing it", line)
+        # Any mention of pasting must be a prohibition, so no wording hands the block to someone to paste.
+        for paste_line in (line for line in self.text.splitlines() if "paste" in line.lower()):
+            self.assertIn("never", paste_line)
 
     def test_resolve_run_keeps_the_rerun_locate_mode(self):
         line = next(line for line in self.text.splitlines() if line.strip().startswith("- Then run `rs locate` again"))
