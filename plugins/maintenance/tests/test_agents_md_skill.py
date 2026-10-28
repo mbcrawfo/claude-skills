@@ -55,8 +55,10 @@ class ReviewerAgentTest(unittest.TestCase):
             "`merge`",
             "`move`",
             "`ask`",
+            "`split`",
             "`accurate`",
             "`valuable`",
+            "`placement`",
             "`brief`",
             "`level`",
             "`rename_only`",
@@ -80,6 +82,9 @@ class ReviewerAgentTest(unittest.TestCase):
             "POLICY",
             "RULINGS",
             "AGENTS_MD_DIRS",
+            "DOCS",
+            "BYTES",
+            "OVER",
         ):
             self.assertIn(f"`{key}`", text)
         self.assertIn("python3 '<SCRIPT>' blocks --repo '<REPO>' '<FILE>'", text)
@@ -107,8 +112,9 @@ class ReviewerAgentTest(unittest.TestCase):
                 self.assertIn(verdict["action"], inv.ACTIONS)
                 if "criterion" in verdict:
                     self.assertIn(verdict["criterion"], inv.CRITERIA)
-                if "target_kind" in verdict:
-                    self.assertIn(verdict["target_kind"], inv.TARGET_KINDS)
+                for item in (verdict, *verdict.get("parts", [])):
+                    if "target_kind" in item:
+                        self.assertIn(item["target_kind"], inv.TARGET_KINDS)
                 actions.add(verdict["action"])
         self.assertEqual(actions, set(inv.ACTIONS))
 
@@ -135,8 +141,11 @@ class ReviewerAgentTest(unittest.TestCase):
             repo = make_repo(Path(tmp))
             write(repo, data["file"], sample + "\n")
             for verdict in data["verdicts"]:
-                if verdict.get("target_kind") == "comment":
-                    write(repo, verdict["target"], "// placeholder\n")
+                for item in (verdict, *verdict.get("parts", [])):
+                    if item.get("target_kind") == "comment":
+                        write(repo, item["target"], "// placeholder\n")
+                    if item.get("target_kind") == "doc":
+                        write(repo, item["target"], "# Placeholder\n")
             commit_all(repo, "add")
             message = Path(tmp) / "message.txt"
             message.write_text("Summary.\n\n```json\n" + example + "\n```\n", encoding="utf-8")
@@ -153,6 +162,30 @@ class ReviewerAgentTest(unittest.TestCase):
             )
         self.assertEqual(code, 0, err)
         self.assertEqual(json.loads(out)["verdicts"], data["verdicts"])
+
+    def test_placement_criterion_and_order(self):
+        text = AGENT.read_text(encoding="utf-8")
+        order = [text.index(h) for h in ("### Accurate", "### Valuable", "### Placement", "### Brief", "### Level")]
+        self.assertEqual(order, sorted(order))
+        placement = text[text.index("### Placement") : text.index("### Brief")]
+        for phrase in (
+            "describes the project rather than directs the agent",
+            "only for some tasks",
+            "`target_kind: doc`",
+            "`pointer`",
+            "never a second copy",
+            "`docs/<name>.md`",
+            "every clause",
+        ):
+            self.assertIn(phrase, placement)
+
+    def test_split_and_limits_are_described(self):
+        text = AGENT.read_text(encoding="utf-8")
+        brief = text[text.index("### Brief") : text.index("### Level")]
+        for phrase in ("`split`", "`parts`", "one rule each"):
+            self.assertIn(phrase, brief)
+        for phrase in ("size limits:", "90%", "never drop a clause", "`whole`", "`BYTES`", "`OVER`", "`DOCS`"):
+            self.assertIn(phrase, text)
 
 
 class SkillMdTest(unittest.TestCase):

@@ -29,9 +29,12 @@ The dispatch prompt gives one `KEY: value` per line:
 - `ROLE`: `full` (judge every block) or `ancestor` (see *Ancestor role*).
 - `SCOPE`: ancestor role only. A JSON array of the directories, relative to `REPO`, that this run reviews.
 - `GUIDELINES`: the text of the root AGENTS.md's guidelines section, or `none`.
-- `POLICY`: the user's three policy answers for this run (see *Right level*).
+- `POLICY`: the user's three policy answers for this run (see *Right level*), then a last line `size limits: <n> words per rule, <n> KB per file (root <n> KB)` or `size limits: none` (see *Limits*).
 - `RULINGS`: the text of `.claude/agents-md-cleanup.md`, or `none`.
 - `AGENTS_MD_DIRS`: a JSON array of the directories that hold an AGENTS.md (`.` is the root).
+- `DOCS`: the inventory's `docs` object as JSON: `{"folder": <the docs folder or null>, "pages": [{"path", "headings"}], "readmes": [<paths>]}`. The pages are the doc pages already in the repo, each with its headings (see *Placement*).
+- `BYTES`: the size of `FILE` in bytes, as the size limit counts it.
+- `OVER`: the `over` object for `FILE` as JSON: `{"rules": [<the rules over the word limit, each with its line and word count>], "file": <true when the file is over its byte limit>, "limit": <the byte limit>, "headroom": <true when the file is over 90% of it>}`.
 
 In every shell command, single-quote each path, these values included, writing a `'` inside one as `'\''`.
 
@@ -43,7 +46,7 @@ In every shell command, single-quote each path, these values included, writing a
 
 ## Judging a block
 
-Check each block against the four criteria in order: `accurate`, `valuable`, `brief`, `level`. The first one that fails decides the verdict, and `criterion` names it. A block that passes all four is `keep`, with no other field needed.
+Check each block against the five criteria in order: `accurate`, `valuable`, `placement`, `brief`, `level`. The first one that fails decides the verdict, and `criterion` names it. A block that passes all five is `keep`, with no other field needed.
 
 Judge the meaning, not the markdown. Several blocks can be one rule (`merge`). A heading is context, not a block.
 
@@ -69,6 +72,23 @@ It fails when it duplicates a code comment, a README, the config or another AGEN
 
 When you can't tell whether a statement is valuable, the verdict is `ask`, never `delete`.
 
+### Placement: documentation, not instruction
+
+An AGENTS.md directs the agent. A statement that describes the project rather than directs the agent is documentation, and it fails here, even when it is true and worth knowing. So does one that explains at length why a rule holds, or how something works, when the agent needs it only for some tasks. How a reader treats a missing key, the seven steps of a describe, the brand colour of a primary button: documentation. "Use `uv`, never `pip`", "run `scripts/test.sh` before a PR", "never put user text into a statement the tool sends": rules, kept.
+
+Find the destination in this order, and stop at the first that fits:
+
+1. A page the statement links to or names.
+2. A `DOCS` page whose headings cover the topic.
+3. The README beside the code it is about (`DOCS.readmes`).
+4. Otherwise a new file under `DOCS.folder`, or `docs/<name>.md` when `folder` is null. Give the reason for the name in `evidence`.
+
+Read the candidate page first. A statement the page already states is the duplicate case: `delete` it, or `trim` it to a pointer when it also directs the agent, never a second copy.
+
+The verdict is a `move` with `target_kind: doc`, the page as `target`, `target_heading` if it belongs under one, and `new_text` the text for the page (documentation, not a rule). Add `pointer`, the one-line rule that stays in this file, such as a line telling the agent to read the page before the task; leave it out for pure description that no task needs. A doc `target` ends in `.md`, is never an AGENTS.md, and may be a new file in an existing directory. Always `criterion: placement`.
+
+`evidence` accounts for every clause of the original: where each one went (the page and heading, the staying rule, the `pointer`), or `dropped: <path:line> already states it`. A clause with no place is not dropped; the verdict is `ask`.
+
 ### Brief: as few words as the meaning allows
 
 Cut filler, hedging, politeness, restated headings and intros that add nothing ("This file holds guidance for agents" in a file that is obviously that). Keep the meaning exactly: every condition, exception and example that carries meaning, and the force of a hard rule ("never", "no exceptions"). Rewording for taste is not a trim; trim only when it cuts a clause or more.
@@ -77,6 +97,7 @@ Cut filler, hedging, politeness, restated headings and intros that add nothing (
 - **`delete`** with `brief`: a block that says nothing, such as an empty intro.
 - **`merge`**: two or more blocks in this file state one rule. `new_text` is the single rule, and it replaces the first block listed, so list first the block whose place it belongs in.
 - **`ask`**: the only shorter version you can find changes the meaning. Put your wording in `proposed`.
+- **`split`**: one block holds several independent statements. `parts` lists one rule each, in order; each part either stays (`text` only) or leaves with `target_kind` (`agents_md`, `comment`, `doc`) and `target`, as a `move` does. Explanation beyond one sentence of reason inside a rule is a doc part (see *Placement*). Account for every clause in `evidence`, as *Placement* says. Two statements that need different actions among keep, move and doc move are a `split`; any other mix still gets `ask`, with your split in `question`.
 
 ### Level: in the deepest place that covers everything it applies to
 
@@ -95,6 +116,14 @@ A statement belongs in the deepest AGENTS.md whose directory covers everything i
 - **File-specific quirks:** `comment in that file` moves a single-file statement into that file as a comment. `nearest AGENTS.md` moves it to the nearest existing AGENTS.md at or above the file's directory, and keeps it where it is when that is `FILE`.
 - **Push-down:** `aggressive` moves any statement that applies to only part of the tree, including one that applies there only by inference (a language or tool used in one folder alone). `conservative` moves only statements that name specific files or folders; the rest are `keep`.
 
+### Limits
+
+When `POLICY` gives size limits, aim for every rule under the word limit and the file under 90% of its byte limit (`OVER.headroom` false). `OVER` shows what is over now. Work toward the limits in this order of preference: doc moves, comment moves, moves to nested AGENTS.md files (when `POLICY` allows them), splits, trims. Meaning is not negotiable: never drop a clause to fit. When a rule or file cannot get under without dropping one, return `ask` with the clause and your best proposal.
+
+A `split` makes rules of one bullet; a part that stays or goes to an AGENTS.md, and any `pointer`, must itself be under the word limit. Doc and comment text is not capped.
+
+With `size limits: none`, still split and push out as above, and mention the size in your summary only when `OVER` is not empty.
+
 ### Guidelines section
 
 In the root file, the blocks under a heading containing `AGENTS.md guidelines` change only through `ask`. Judge them like any other block, but the verdict is `keep` or `ask`, never `fix`, `trim`, `delete`, `merge` or `move`.
@@ -106,6 +135,7 @@ In the root file, the blocks under a heading containing `AGENTS.md guidelines` c
 - A block that matches a keep (same file, and the quote still says the same thing) is `keep` unless its facts fail (below), with `ruling` set to the quote. The user already chose to keep it there.
 - A block that matches a pattern is `keep`, with `ruling` set to the pattern. A pattern settles only that the statement is not obvious. It never shields a duplicate of another AGENTS.md or a code comment, and the other criteria still apply, so a matching block that needs a `fix`, `trim` or `move` gets that verdict, with `ruling` still set.
 - A ruling never vouches for facts. A ruled block whose path or command the evidence shows is gone gets `fix` or `ask` under `accurate`, with `ruling` set.
+- A keep whose quote is marked `whole` keeps that rule as one bullet even over the word limit: `keep`, with `ruling` set to the quote. Without that mark, a rule over the limit is not kept as it is.
 
 ## Ancestor role
 
@@ -115,7 +145,7 @@ With `ROLE: ancestor`, this run reviews only `SCOPE`, and `FILE` sits above it. 
 - Unsure: `ask`.
 - Otherwise, and for every block not about `SCOPE`: leave it out. No `keep` verdicts.
 
-Return only `move` and `ask`, even when a block looks stale or wordy: the rest of the file is not under review. An empty `verdicts` list is a valid answer.
+Return only `move` and `ask`, even when a block looks stale, wordy or like documentation: no placement or split verdicts, and the rest of the file is not under review. An empty `verdicts` list is a valid answer.
 
 ## Evidence
 
@@ -130,25 +160,27 @@ The block is `{"file": <FILE exactly as given>, "verdicts": [...]}`, with no oth
 | field | rule |
 |---|---|
 | `blocks` | non-empty list of block ids from this file; `merge` needs at least two |
-| `action` | `keep`, `fix`, `trim`, `delete`, `merge`, `move` or `ask` |
-| `criterion` | `accurate`, `valuable`, `brief` or `level`; required unless `keep` |
-| `evidence` | non-empty list of strings; required unless `keep` |
-| `new_text` | required for `fix`, `trim` and `merge`; optional for `move`; nothing else |
+| `action` | `keep`, `fix`, `trim`, `delete`, `merge`, `move`, `split` or `ask` |
+| `criterion` | `accurate`, `valuable`, `placement`, `brief` or `level`; required unless `keep` |
+| `evidence` | non-empty list of strings; required unless `keep`; for a doc move or a `split`, every clause of the original accounted for |
+| `new_text` | required for `fix`, `trim` and `merge`, and for a `move` with `target_kind: doc`; optional for any other `move`; nothing else |
 | `rename_only` | `fix` only, optional: `true` when the evidence shows a rename |
 | `target` | `move` only, required: a repo-relative path, normalised, with no `..` part and no `.git` part in any case or through a symlink, never `FILE` or one of `ALIASES`. Git must be able to commit it: not ignored, and not inside a submodule, a nested repo or a symlinked directory |
-| `target_kind` | `move` only, required: `agents_md` (the target is named AGENTS.md) or `comment` (an existing file) |
+| `target_kind` | `move` only, required: `agents_md` (the target is named AGENTS.md), `comment` (an existing file) or `doc` (a `.md` page that is not an AGENTS.md, possibly new) |
 | `target_heading` | `move` only, optional: the heading in the target to place it under |
+| `pointer` | `move` with `target_kind: doc` only, optional: the one-line rule that stays in this file |
+| `parts` | `split` only, required: at least two objects in order, each `{"text": ...}` plus, for a part that leaves, `target`, `target_kind` and optionally `target_heading` and `pointer` (a doc part only), checked as a `move` is. A part without `target` stays |
 | `question`, `recommendation` | `ask` only, required: one plain question for the user, and the answer you recommend |
 | `proposed` | `ask` only, optional: the verdict your recommendation would apply, such as `{"action": "trim", "new_text": "..."}`. Any action but `ask`, with the fields that action takes, checked by the same rules. It applies to the ask's `blocks`, `criterion` and `evidence` unless it gives its own (`blocks`, if given, must be the same list). With `ROLE: ancestor`, only a `move` into `SCOPE` |
 | `ruling` | optional: the keep quote or pattern that decided the verdict |
 
 `new_text` is the block's replacement markdown, list marker and indentation included, except for a comment move (wording only). Leave out any field the action doesn't take: the skill rejects them.
 
-When one block holds two statements that need different actions, return `ask`, and say in `question` how you would split it.
+When one block holds statements that need different actions and the actions are not among keep, move and doc move, return `ask`, and say in `question` how you would split it.
 
 ## Example
 
-Inputs: `FILE: AGENTS.md`, `ROLE: full`, `AGENTS_MD_DIRS: ["."]`, `RULINGS` holds the pattern "Tool choices (package managers, linters, test runners) are never obvious.", and `POLICY` is new nested AGENTS.md `allowed`, quirks `comment in that file`, push-down `aggressive`. The file:
+Inputs: `FILE: AGENTS.md`, `ROLE: full`, `AGENTS_MD_DIRS: ["."]`, `RULINGS` holds the pattern "Tool choices (package managers, linters, test runners) are never obvious.", `POLICY` is new nested AGENTS.md `allowed`, quirks `comment in that file`, push-down `aggressive`, and `size limits: 60 words per rule, 8 KB per file (root 12 KB)`, `BYTES` is 2400, `OVER` is `{"rules": [{"line": 22, "end_line": 22, "words": 90, "first_words": "The retry loop in `billing/client.py` makes at"}], "file": false, "limit": 12288, "headroom": false}`, and `DOCS` is `{"folder": "docs", "pages": [{"path": "docs/architecture.md", "headings": ["Overview", "Billing"]}], "readmes": []}`. The file:
 
 ```markdown
 # Example app
@@ -169,6 +201,10 @@ This file holds guidance for agents working in this repo.
 - Components live in `web/src/components/`, one component per file, and use CSS modules.
 - In `web/src/legacy/grid.js`, keep the polyfill import first; the grid fails to render without it.
 - Call the billing API only through `BillingClient`.
+
+## Reliability
+
+- The retry loop in `billing/client.py` makes at most three attempts and never retries a 4xx response. Each wait starts at one second and doubles, unless the response carries a `Retry-After` header, which then sets the wait. Up to a quarter of each wait is added as random jitter, so that many workers failing together do not all retry at the same moment. After the third failure the loop stops sleeping and raises the last error to the caller unchanged, so callers see the real cause of the failure at once.
 ```
 
 The verdicts:
@@ -234,6 +270,27 @@ The verdicts:
         "git grep -n BillingClient -> no matches",
         "git log -S BillingClient --oneline -> 3f2a1c9 remove BillingClient",
         "billing/api.py:12 def post_charge(...)"
+      ]
+    },
+    {
+      "blocks": ["b11"],
+      "action": "split",
+      "criterion": "placement",
+      "parts": [
+        {"text": "- Retry a billing call at most three times, and never after a 4xx response."},
+        {
+          "text": "Each wait starts at one second and doubles, unless the response carries a `Retry-After` header, which then sets the wait. Up to a quarter of each wait is added as random jitter, so that many workers failing together do not all retry at the same moment. After the third failure the loop raises the last error to the caller unchanged, so callers see the real cause of the failure at once.",
+          "target": "docs/architecture.md",
+          "target_kind": "doc",
+          "target_heading": "Billing",
+          "pointer": "- Before changing how billing calls retry, read the *Billing* section of `docs/architecture.md`."
+        }
+      ],
+      "evidence": [
+        "AGENTS.md:22 is 90 words: one rule plus how the loop works; the limit is 60",
+        "'at most three attempts', 'never retries a 4xx' -> part 1, the rule that stays",
+        "'wait starts at one second and doubles', 'Retry-After', 'jitter', 'raises the last error' -> part 2, docs/architecture.md under Billing",
+        "docs/architecture.md has a Billing heading (DOCS) and no statement of retry timing; 'the loop stops sleeping' -> dropped: restates the wait described in part 2"
       ]
     }
   ]
