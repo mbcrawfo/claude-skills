@@ -112,11 +112,17 @@ class LimitsLineTest(unittest.TestCase):
         self.assertEqual(lim.parse_limits_line("- Push-down: aggressive.\n- Size limits: none.\n"), {"none": True})
 
     def test_checked_by_a_test(self):
-        got = lim.parse_limits_line("13. Size limits: 80 words per rule, 8 KB per file, 16 KB for the root; checked by `tests/docs/test_agents_md.py`.")
-        self.assertEqual(got, {"rule_words": 80, "file_bytes": 8192, "root_bytes": 16384, "test": "tests/docs/test_agents_md.py"})
+        got = lim.parse_limits_line(
+            "13. Size limits: 80 words per rule, 8 KB per file, 16 KB for the root; checked by `tests/docs/test_agents_md.py`."
+        )
+        self.assertEqual(
+            got, {"rule_words": 80, "file_bytes": 8192, "root_bytes": 16384, "test": "tests/docs/test_agents_md.py"}
+        )
 
     def test_not_checked(self):
-        got = lim.parse_limits_line("Size limits: 100 words per rule, 10 KB per file, 20 KB for the root; not checked by a test.")
+        got = lim.parse_limits_line(
+            "Size limits: 100 words per rule, 10 KB per file, 20 KB for the root; not checked by a test."
+        )
         self.assertEqual(got["test"], None)
         self.assertEqual((got["rule_words"], got["file_bytes"], got["root_bytes"]), (100, 10240, 20480))
 
@@ -129,7 +135,9 @@ class LimitsLineTest(unittest.TestCase):
 
     def test_format_round_trips(self):
         line = lim.format_limits_line(80, 8192, 16384, "t/test_a.py")
-        self.assertEqual(line, "Size limits: 80 words per rule, 8 KB per file, 16 KB for the root; checked by `t/test_a.py`.")
+        self.assertEqual(
+            line, "Size limits: 80 words per rule, 8 KB per file, 16 KB for the root; checked by `t/test_a.py`."
+        )
         self.assertEqual(lim.parse_limits_line(line)["test"], "t/test_a.py")
         self.assertEqual(lim.format_limits_line(80, 8192, 16384, None).split("; ")[1], "not checked by a test.")
 
@@ -147,7 +155,10 @@ class InForceTest(unittest.TestCase):
 
     def test_over_limits(self):
         limits = lim.limits_in_force(None, {})
-        rules = [{"line": 1, "end_line": 1, "words": 81, "first_words": "x"}, {"line": 2, "end_line": 2, "words": 80, "first_words": "y"}]
+        rules = [
+            {"line": 1, "end_line": 1, "words": 81, "first_words": "x"},
+            {"line": 2, "end_line": 2, "words": 80, "first_words": "y"},
+        ]
         got = lim.over_limits(rules, 8193, False, limits)
         self.assertEqual([r["line"] for r in got["rules"]], [1])
         self.assertEqual((got["file"], got["limit"], got["headroom"]), (True, 8192, True))
@@ -218,7 +229,17 @@ class SizeTest(RepoTestCase):
         self.assertEqual(out["totals"]["rules"], 3)
         self.assertEqual(out["totals"]["rules_over"], 1)
         self.assertEqual(out["totals"]["files_over"], 0)
-        self.assertEqual(out["limits"], {"source": "default", "rule_words": 80, "file_bytes": 8192, "root_bytes": 16384, "test": None, "malformed": None})
+        self.assertEqual(
+            out["limits"],
+            {
+                "source": "default",
+                "rule_words": 80,
+                "file_bytes": 8192,
+                "root_bytes": 16384,
+                "test": None,
+                "malformed": None,
+            },
+        )
 
     def test_crlf_file_normalised(self):
         write(self.repo, "AGENTS.md", b"- a\r\n- b\r\n")
@@ -237,7 +258,12 @@ class SizeTest(RepoTestCase):
         self.assertEqual(out["totals"]["files_over"], 1)
 
     def test_limits_from_the_guidelines_line(self):
-        write(self.repo, "AGENTS.md", "## AGENTS.md guidelines\n\n- Size limits: 100 words per rule, 1 KB per file, 2 KB for the root; not checked by a test.\n" + "- a\n" * 600)
+        write(
+            self.repo,
+            "AGENTS.md",
+            "## AGENTS.md guidelines\n\n- Size limits: 100 words per rule, 1 KB per file, 2 KB for the root; not checked by a test.\n"
+            + "- a\n" * 600,
+        )
         commit_all(self.repo, "add")
         out = self.inventory()
         self.assertEqual(out["limits"]["source"], "guidelines")
@@ -354,7 +380,9 @@ class DocsAndReferencesTest(RepoTestCase):
         commit_all(self.repo, "add")
         out = self.inventory()
         src = by_path(out, "src/AGENTS.md")
-        self.assertEqual([(h["path"], h["line"]) for h in src["references"]["hits"]], [("docs/td.md", 1), ("src/x.py", 1)])
+        self.assertEqual(
+            [(h["path"], h["line"]) for h in src["references"]["hits"]], [("docs/td.md", 1), ("src/x.py", 1)]
+        )
         self.assertEqual(src["references"]["hits"][1]["text"], "# see src/AGENTS.md for the rule")
         self.assertFalse(src["references"]["truncated"])
 
@@ -428,12 +456,22 @@ class SplitAndDocTest(VerdictsTestCase):
         commit_all(self.repo, "docs")
 
     def doc_move(self, **extra):
-        return {"blocks": ["b1"], "action": "move", "criterion": "placement", "evidence": ["AGENTS.md:1 explains"],
-                "target": "docs/architecture.md", "target_kind": "doc", "target_heading": "Retry",
-                "new_text": "The retry loop backs off twice.", **extra}
+        return {
+            "blocks": ["b1"],
+            "action": "move",
+            "criterion": "placement",
+            "evidence": ["AGENTS.md:1 explains"],
+            "target": "docs/architecture.md",
+            "target_kind": "doc",
+            "target_heading": "Retry",
+            "new_text": "The retry loop backs off twice.",
+            **extra,
+        }
 
     def test_doc_move_with_pointer_is_accepted(self):
-        code, out, err = self.check(self.keep_rest(self.doc_move(pointer="- Retry behaviour: see `docs/architecture.md#retry`.")))
+        code, out, err = self.check(
+            self.keep_rest(self.doc_move(pointer="- Retry behaviour: see `docs/architecture.md#retry`."))
+        )
         self.assertEqual(code, 0, err)
         self.assertEqual(json.loads(out)["counts"], {"move": 1, "keep": 3})
 
@@ -461,19 +499,37 @@ class SplitAndDocTest(VerdictsTestCase):
             self.assertRejected(self.check(self.keep_rest(self.doc_move(target=target))), expected)
 
     def test_placement_is_a_criterion(self):
-        v = {"blocks": ["b1"], "action": "delete", "criterion": "placement", "evidence": ["docs/architecture.md:3 already says it"]}
+        v = {
+            "blocks": ["b1"],
+            "action": "delete",
+            "criterion": "placement",
+            "evidence": ["docs/architecture.md:3 already says it"],
+        }
         self.assertEqual(self.check(self.keep_rest(v))[0], 0)
 
     def split(self, parts):
-        return {"blocks": ["b1"], "action": "split", "criterion": "brief", "evidence": ["AGENTS.md:1 holds two rules"], "parts": parts}
+        return {
+            "blocks": ["b1"],
+            "action": "split",
+            "criterion": "brief",
+            "evidence": ["AGENTS.md:1 holds two rules"],
+            "parts": parts,
+        }
 
     def test_split_is_accepted_with_staying_and_leaving_parts(self):
-        v = self.split([
-            {"text": "- First rule."},
-            {"text": "- Second rule: see `docs/architecture.md#retry`.", "target": "docs/architecture.md", "target_kind": "doc",
-             "target_heading": "Retry", "pointer": "- Retry: see `docs/architecture.md#retry`."},
-            {"text": "Keep MAX at 3.", "target": "src/a.py", "target_kind": "comment"},
-        ])
+        v = self.split(
+            [
+                {"text": "- First rule."},
+                {
+                    "text": "- Second rule: see `docs/architecture.md#retry`.",
+                    "target": "docs/architecture.md",
+                    "target_kind": "doc",
+                    "target_heading": "Retry",
+                    "pointer": "- Retry: see `docs/architecture.md#retry`.",
+                },
+                {"text": "Keep MAX at 3.", "target": "src/a.py", "target_kind": "comment"},
+            ]
+        )
         code, out, err = self.check(self.keep_rest(v))
         self.assertEqual(code, 0, err)
         self.assertEqual(json.loads(out)["counts"]["split"], 1)
@@ -481,27 +537,42 @@ class SplitAndDocTest(VerdictsTestCase):
     def test_split_needs_two_parts_with_text(self):
         self.assertRejected(self.check(self.keep_rest(self.split([{"text": "- one"}]))), "parts")
         self.assertRejected(self.check(self.keep_rest(self.split([{"text": "- one"}, {"text": ""}]))), "text")
-        self.assertRejected(self.check(self.keep_rest(self.split([{"text": "- one"}, {"text": "- two", "extra": 1}]))), "extra")
+        self.assertRejected(
+            self.check(self.keep_rest(self.split([{"text": "- one"}, {"text": "- two", "extra": 1}]))), "extra"
+        )
 
     def test_split_part_targets_are_checked_like_moves(self):
         bad = self.split([{"text": "- one"}, {"text": "- two", "target": "docs/AGENTS.md", "target_kind": "doc"}])
         self.assertRejected(self.check(self.keep_rest(bad)), "AGENTS.md")
         missing = self.split([{"text": "- one"}, {"text": "- two", "target": "docs/architecture.md"}])
         self.assertRejected(self.check(self.keep_rest(missing)), "target_kind")
-        pointer = self.split([{"text": "- one"}, {"text": "- two", "target": "src/a.py", "target_kind": "comment", "pointer": "x"}])
+        pointer = self.split(
+            [{"text": "- one"}, {"text": "- two", "target": "src/a.py", "target_kind": "comment", "pointer": "x"}]
+        )
         self.assertRejected(self.check(self.keep_rest(pointer)), "pointer")
 
     def test_split_takes_no_new_text(self):
-        self.assertRejected(self.check(self.keep_rest({**self.split([{"text": "- a"}, {"text": "- b"}]), "new_text": "x"})), "new_text")
+        self.assertRejected(
+            self.check(self.keep_rest({**self.split([{"text": "- a"}, {"text": "- b"}]), "new_text": "x"})), "new_text"
+        )
 
     def test_split_is_not_allowed_on_an_ancestor(self):
         write(self.repo, "src/AGENTS.md", "- s\n")
         commit_all(self.repo, "src")
-        self.assertRejected(self.check([self.split([{"text": "- a"}, {"text": "- b"}])], role="ancestor", scope=["src"]), "not allowed")
+        self.assertRejected(
+            self.check([self.split([{"text": "- a"}, {"text": "- b"}])], role="ancestor", scope=["src"]), "not allowed"
+        )
 
     def test_proposed_may_be_a_split_or_a_doc_move(self):
-        ask = {"blocks": ["b1"], "action": "ask", "criterion": "brief", "evidence": ["e"], "question": "q", "recommendation": "r",
-               "proposed": {"action": "split", "parts": [{"text": "- a"}, {"text": "- b"}]}}
+        ask = {
+            "blocks": ["b1"],
+            "action": "ask",
+            "criterion": "brief",
+            "evidence": ["e"],
+            "question": "q",
+            "recommendation": "r",
+            "proposed": {"action": "split", "parts": [{"text": "- a"}, {"text": "- b"}]},
+        }
         self.assertEqual(self.check(self.keep_rest(ask))[0], 0)
         ask["proposed"] = {"action": "move", "target": "docs/architecture.md", "target_kind": "doc", "new_text": "t"}
         self.assertEqual(self.check(self.keep_rest(ask))[0], 0)
@@ -512,8 +583,22 @@ class WordLimitGuardTest(VerdictsTestCase):
 
     def check_limited(self, verdicts, **kw):
         path = self.tmp / "verdicts.txt"
-        path.write_text("Report\n```json\n" + json.dumps({"file": "AGENTS.md", "verdicts": verdicts}) + "\n```\n", encoding="utf-8")
-        return call("check-verdicts", "--repo", str(self.repo), "--file", "AGENTS.md", "--role", "full", "--input", str(path), "--rule-words", "80")
+        path.write_text(
+            "Report\n```json\n" + json.dumps({"file": "AGENTS.md", "verdicts": verdicts}) + "\n```\n", encoding="utf-8"
+        )
+        return call(
+            "check-verdicts",
+            "--repo",
+            str(self.repo),
+            "--file",
+            "AGENTS.md",
+            "--role",
+            "full",
+            "--input",
+            str(path),
+            "--rule-words",
+            "80",
+        )
 
     def test_keep_over_the_word_limit_becomes_an_ask(self):
         write(self.repo, "AGENTS.md", self.LONG + "\n\n- two\n\n- three\n\n- four\n")
@@ -536,9 +621,21 @@ class WordLimitGuardTest(VerdictsTestCase):
         long = "- " + " ".join(["x"] * 81)
         trim = {"blocks": ["b1"], "action": "trim", "criterion": "brief", "evidence": ["e"], "new_text": long}
         self.assertRejected(self.check_limited(self.keep_rest(trim)), "81 words, over the limit of 80")
-        split = {"blocks": ["b1"], "action": "split", "criterion": "brief", "evidence": ["e"], "parts": [{"text": "- a"}, {"text": long}]}
+        split = {
+            "blocks": ["b1"],
+            "action": "split",
+            "criterion": "brief",
+            "evidence": ["e"],
+            "parts": [{"text": "- a"}, {"text": long}],
+        }
         self.assertRejected(self.check_limited(self.keep_rest(split)), "parts")
-        exact = {"blocks": ["b1"], "action": "trim", "criterion": "brief", "evidence": ["e"], "new_text": "- " + " ".join(["x"] * 80)}
+        exact = {
+            "blocks": ["b1"],
+            "action": "trim",
+            "criterion": "brief",
+            "evidence": ["e"],
+            "new_text": "- " + " ".join(["x"] * 80),
+        }
         self.assertEqual(self.check_limited(self.keep_rest(exact))[0], 0)
 
     def test_without_the_flag_nothing_is_guarded(self):
@@ -604,9 +701,17 @@ def test_placement_criterion_and_order(self):
     order = [text.index(h) for h in ("### Accurate", "### Valuable", "### Placement", "### Brief", "### Level")]
     self.assertEqual(order, sorted(order))
     placement = text[text.index("### Placement") : text.index("### Brief")]
-    for phrase in ("describes the project rather than directs the agent", "only for some tasks", "`target_kind: doc`", "`pointer`",
-                   "never a second copy", "`docs/<name>.md`", "every clause"):
+    for phrase in (
+        "describes the project rather than directs the agent",
+        "only for some tasks",
+        "`target_kind: doc`",
+        "`pointer`",
+        "never a second copy",
+        "`docs/<name>.md`",
+        "every clause",
+    ):
         self.assertIn(phrase, placement)
+
 
 def test_split_and_limits_are_described(self):
     text = AGENT.read_text(encoding="utf-8")
@@ -673,21 +778,32 @@ def _section(self, start, end=None):
     text = SKILL.read_text(encoding="utf-8")
     return text[text.index(start) : text.index(end)] if end else text[text.index(start) :]
 
+
 def test_size_question_in_confirm_step(self):
     confirm = self._section("## 2. Confirm before dispatch", "## 3. Dispatch")
-    for phrase in ("no size question is due", "`limits.source`", "`rules_over`", "`files_over`", "Adopt size limits?",
-                   "80 words per rule, 8 KB per file, 16 KB for the root", "answer none"):
+    for phrase in (
+        "no size question is due",
+        "`limits.source`",
+        "`rules_over`",
+        "`files_over`",
+        "Adopt size limits?",
+        "80 words per rule, 8 KB per file, 16 KB for the root",
+        "answer none",
+    ):
         self.assertIn(phrase, confirm)
+
 
 def test_limits_line_grammar_in_skill(self):
     text = SKILL.read_text(encoding="utf-8")
     for line in ("Size limits: none.", "; checked by ", "; not checked by a test."):
         self.assertIn(line, text)
 
+
 def test_dispatch_carries_docs_bytes_over_and_limits(self):
     dispatch = self._section("## 3. Dispatch", "## 4. Merge")
     for phrase in ("DOCS:", "BYTES:", "OVER:", "size limits:", "--rule-words"):
         self.assertIn(phrase, dispatch)
+
 
 def test_merge_reconciles_repoints_and_backstops(self):
     merge = self._section("## 4. Merge", "## 5. Sort")
@@ -700,18 +816,37 @@ def test_merge_reconciles_repoints_and_backstops(self):
     for phrase in ("`references`", "backticked", "`truncated`"):
         self.assertIn(phrase, refs)
 
+
 def test_approval_message_sections(self):
     approval = self._section("## 6. Approval message", "## 7. Apply")
-    for phrase in ("**Documentation moves", "**Splits", "**Size", "**The limits line", "**The test question", "**Test maintenance",
-                   "boundary cases", "exception list", "not checked by a test"):
+    for phrase in (
+        "**Documentation moves",
+        "**Splits",
+        "**Size",
+        "**The limits line",
+        "**The test question",
+        "**Test maintenance",
+        "boundary cases",
+        "exception list",
+        "not checked by a test",
+    ):
         self.assertIn(phrase, approval)
+
 
 def test_apply_writes_docs_and_runs_only_the_new_test(self):
     apply = self._section("## 7. Apply", "## 8. Commit")
-    for phrase in ("`# <title>`", "`pointer`", "`parts`", "never the whole suite", "`dotnet test --filter`",
-                   "nothing is committed", "uncommitted"):
+    for phrase in (
+        "`# <title>`",
+        "`pointer`",
+        "`parts`",
+        "never the whole suite",
+        "`dotnet test --filter`",
+        "nothing is committed",
+        "uncommitted",
+    ):
         self.assertIn(phrase, apply)
     self.assertIn("could not be run", self._section("## 8. Commit"))
+
 
 def test_script_calls_accept_size_flags(self):
     text = SKILL.read_text(encoding="utf-8")
@@ -767,6 +902,7 @@ git commit -m "feat(maintenance): agents-md-cleanup asks about size limits, move
 SIZE_ASK = EVALS / "agents-md-cleanup-size-ask"
 SIZE_REVIEW = EVALS / "agents-md-cleanup-size-review"
 
+
 # in FixtureTest
 def test_size_fixtures_are_identical_and_measure_one_long_rule(self):
     ask = self.scaffold_ok(SIZE_ASK, "ask")
@@ -785,16 +921,22 @@ def test_size_fixtures_are_identical_and_measure_one_long_rule(self):
     self.assertIn("def log_retry", (ask / "src" / "payments" / "retry.py").read_text())
     self.assertEqual(git(review, "status", "--porcelain"), "")
 
+
 # in GraderTest
 def test_size_case_files(self):
-    for case, graders in ((SIZE_ASK, {"skill-ran", "no-dispatch", "nothing-changed", "size-question"}),
-                          (SIZE_REVIEW, {"skill-ran", "nothing-changed", "no-repo-write", "table"})):
+    for case, graders in (
+        (SIZE_ASK, {"skill-ran", "no-dispatch", "nothing-changed", "size-question"}),
+        (SIZE_REVIEW, {"skill-ran", "nothing-changed", "no-repo-write", "table"}),
+    ):
         self.assertEqual({p.stem for p in (case / "graders").iterdir()}, graders)
         self.assertIn("scaffold_script: scaffold.sh", (case / "case.yaml").read_text())
     self.assertIn("no size limits", (SIZE_REVIEW / "prompt.md").read_text())
     self.assertNotIn("size", (SIZE_ASK / "prompt.md").read_text().lower())
     for name in ("no-dispatch", "nothing-changed", "skill-ran"):
-        self.assertEqual((SIZE_ASK / "graders" / f"{name}.md").read_bytes(), ((FIRST if name == "no-dispatch" else REVIEW) / "graders" / f"{name}.md").read_bytes())
+        self.assertEqual(
+            (SIZE_ASK / "graders" / f"{name}.md").read_bytes(),
+            ((FIRST if name == "no-dispatch" else REVIEW) / "graders" / f"{name}.md").read_bytes(),
+        )
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
