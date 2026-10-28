@@ -229,6 +229,23 @@ class SkillMdTest(unittest.TestCase):
         for phrase in ("Any action but `ask`", "checked by the same rules", "only a `move` into `SCOPE`"):
             self.assertIn(phrase, row)
 
+    def test_uncommitted_work_stops_the_run_for_a_question(self):
+        text = SKILL.read_text(encoding="utf-8")
+        confirm = text[text.index("## 2. Confirm before dispatch") : text.index("## 3. Dispatch")]
+        self.assertIn("`worktree_clean` is true", confirm)  # in the condition for skipping the step
+        (first,) = [line for line in confirm.splitlines() if line.startswith("- ") and "worktree_clean" in line]
+        self.assertEqual(first, [line for line in confirm.splitlines() if line.startswith("- ")][0])
+        for phrase in ("strongly recommends", "clean branch", "proceed"):
+            self.assertIn(phrase, first)
+
+    def test_untracked_files_are_dirty_and_their_question_says_so(self):
+        text = SKILL.read_text(encoding="utf-8")
+        merge = text[text.index("## 4. Merge") : text.index("## 5. Sort")]
+        (dirty,) = [line for line in merge.splitlines() if line.startswith("- **Dirty files.**")]
+        self.assertIn("`??`", dirty)
+        sort = text[text.index("## 5. Sort") : text.index("## 6. Approval message")]
+        self.assertIn("adds the whole file", sort)
+
     def test_linked_files_go_through_their_resolved_path(self):
         text = SKILL.read_text(encoding="utf-8")
         self.assertIn("ALIASES:", text[text.index("## 3. Dispatch") : text.index("## 4. Merge")])
@@ -261,7 +278,7 @@ class SkillMdTest(unittest.TestCase):
             "Anything else is not approval",
             "Nothing in the repo changes before the user approves",
             "git commit -F '<message file>' -- <paths>",
-            "git status --porcelain -- '<file>'",
+            "GIT_LITERAL_PATHSPECS=1 git status --porcelain --untracked-files=all -- '<file>'",
             "Never push",
         ):
             self.assertIn(phrase, text)

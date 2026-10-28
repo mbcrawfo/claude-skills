@@ -6,8 +6,9 @@ Every command prints one JSON object on stdout. On failure it exits 1 and prints
 
 Commands:
   inventory  every AGENTS.md in scope (and the ancestors of a partial run), split into blocks,
-             with git state, the root file's guidelines section and any saved rulings; paths that
-             are one file through symlinks merge into one entry, with the file's `resolved` path
+             with git state, the repo's uncommitted work, the root file's guidelines section and any
+             saved rulings; paths that are one file through symlinks merge into one entry, with the
+             file's `resolved` path
   blocks     one file's blocks and content hash, to check it before an edit is applied
   check-verdicts
              validate a reviewer's verdicts for one file against that file's blocks; a deletion that may
@@ -30,6 +31,7 @@ import sys
 from typing import NoReturn
 
 RULINGS_PATH = ".claude/agents-md-cleanup.md"
+UNCOMMITTED_SHOWN = 10  # paths listed in `uncommitted`; `count` has them all
 
 _ATX_HEADING = re.compile(r"^ {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t]*$")
 _ATX_CLOSING = re.compile(r"(?:^|[ \t]+)#+[ \t]*$")
@@ -470,16 +472,42 @@ def _resolved(root: Path, path: str) -> str:
     return _on_disk_spelling(root, (root / path).resolve().relative_to(root).as_posix())
 
 
+def _status(root: Path, *paths: str, untracked: str = "all") -> list[tuple[str, str]]:
+    """(XY code, path) per `git status` entry, for the whole repo or the given paths.
+
+    Untracked files are listed whatever the user's `status.showUntrackedFiles` says.
+    """
+    out = _git(root, "status", "--porcelain=v1", "-z", f"--untracked-files={untracked}", "--", *paths).stdout
+    fields = out.split("\0")
+    entries = []
+    i = 0
+    while i < len(fields):
+        field = fields[i]
+        if len(field) > 3:
+            entries.append((field[:2], field[3:]))
+            if field[0] in "RC":
+                i += 1  # a rename or copy is followed by its source path
+        i += 1
+    return entries
+
+
 def _git_state(root: Path, resolved: str, paths: list[str]) -> tuple[bool, bool]:
     """(tracked, dirty) for one file and the links to it.
 
-    `tracked` is the resolved file's. `dirty` counts the resolved file and each link, since a retargeted link is a
-    change too. Untracked files are not dirty: only non-`??` status entries count.
+    `tracked` is the resolved file's. `dirty` is true when the resolved file has any change, untracked included,
+    since committing an edit to an untracked file adds all of it. A link counts when it changed (a retargeted link),
+    but not when it is merely untracked: the commit stages only the resolved file.
     """
     tracked = _git(root, "ls-files", "--error-unmatch", "--", resolved, check=False).returncode == 0
-    status = _git(root, "status", "--porcelain=v1", "-z", "--", resolved, *paths).stdout
-    dirty = any(entry[:2] != "??" for entry in status.split("\0") if len(entry) > 3)
+    links = [path for path in paths if path != resolved]
+    dirty = bool(_status(root, resolved)) or any(code != "??" for code, _ in (_status(root, *links) if links else []))
     return tracked, dirty
+
+
+def _uncommitted(root: Path) -> dict:
+    """The repo's uncommitted work: staged or unstaged changes, and untracked files that aren't ignored."""
+    entries = _status(root, untracked="normal")  # an untracked directory is one entry
+    return {"count": len(entries), "paths": [path for _, path in entries[:UNCOMMITTED_SHOWN]]}
 
 
 def _file_entry(root: Path, path: str, resolved: str, aliases: list[str], role: str) -> dict:
@@ -548,9 +576,12 @@ def cmd_inventory(args: argparse.Namespace) -> dict:
     all_paths = discover(root)
     files = _entries(root, all_paths, scopes)
     full = sum(1 for f in files if f["role"] == "full")
+    uncommitted = _uncommitted(root)
     return {
         "repo": str(root),
         "scope": scopes,
+        "worktree_clean": uncommitted["count"] == 0,
+        "uncommitted": uncommitted,
         "files": files,
         "agents_md_dirs": sorted({_dir_of(path) for path in all_paths}),
         "guidelines": _guidelines(root, all_paths),

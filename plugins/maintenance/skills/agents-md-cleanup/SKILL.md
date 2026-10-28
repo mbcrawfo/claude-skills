@@ -37,8 +37,9 @@ Split the arguments into directory paths and options. Pass each path as its own 
 
 ## 2. Confirm before dispatch
 
-The guidelines section records each policy answer as one exact line: `New nested AGENTS.md files: allowed.` or `New nested AGENTS.md files: ask each time.`, `File-specific quirks: comment in that file.` or `File-specific quirks: nearest AGENTS.md.`, and `Push-down: aggressive.` or `Push-down: conservative.` It is a first run when `guidelines` is null or lacks any of the three lines. Skip this step only when the arguments gave a limit and it isn't a first run; then state the counts in one line and go on. Otherwise send one message holding:
+The guidelines section records each policy answer as one exact line: `New nested AGENTS.md files: allowed.` or `New nested AGENTS.md files: ask each time.`, `File-specific quirks: comment in that file.` or `File-specific quirks: nearest AGENTS.md.`, and `Push-down: aggressive.` or `Push-down: conservative.` It is a first run when `guidelines` is null or lacks any of the three lines. Skip this step only when the arguments gave a limit, it isn't a first run, and `worktree_clean` is true; then state the counts in one line and go on. Otherwise send one message holding:
 
+- when `worktree_clean` is false, first: the uncommitted work (`uncommitted.count`, and its `paths`), that the skill strongly recommends running on a clean branch, so its commit holds only its own changes, and whether to proceed anyway. If the user doesn't proceed, stop;
 - the counts from `totals`: files (full and ancestor), blocks, and agents needed;
 - the concurrency limit: the arguments' limit, else **4**, and a request to confirm or change it;
 - on a first run, each policy question whose line is missing, with its recommended answer:
@@ -100,7 +101,7 @@ Combine the verdicts across files:
 - **Empty sections.** When the removals would leave a heading with nothing under it, or a file with no statements, add a row removing that heading or file.
 - **Linked files.** An entry's `path` and `aliases` are its `resolved` file or symlinks to it, so its edits go to `resolved`, once. A move target that is one of an entry's paths means that entry.
 - **Other files.** For every other existing file to edit (a move target, a `proposed` one included, `.gitignore`, the rulings file), run `blocks` on it and keep its `sha256` and its `resolved` path, used from here on.
-- **Dirty files.** Use `dirty` for files in `files`. For every other file to edit, including each source file that a comment move would edit, run `git status --porcelain -- '<file>'` on its resolved path. Flag each dirty one.
+- **Dirty files.** Use `dirty` for files in `files`. For every other file to edit, including each source file that a comment move would edit, run `GIT_LITERAL_PATHSPECS=1 git status --porcelain --untracked-files=all -- '<file>'` on its resolved path. Any output makes it dirty, an untracked (`??`) file included. Flag each dirty one.
 - **Guidelines section.** On a first run, draft it for the root AGENTS.md (a new file if the user accepted one). If the file has equivalent guidelines under another heading, edit those and give them a heading containing `AGENTS.md guidelines`. Keep it under about 10 lines, in this shape:
 
   ```
@@ -134,7 +135,7 @@ Combine the verdicts across files:
 - any other fix;
 - a move into a new AGENTS.md or a code comment that the policy doesn't pre-approve;
 - deleting a whole AGENTS.md file;
-- any edit to a dirty file.
+- any edit to a dirty file. For an untracked file (`??`, or `tracked` false), the question says the commit adds the whole file, not only this edit.
 
 ## 6. Approval message
 

@@ -71,7 +71,22 @@ class InventoryTest(RepoTestCase):
         self.assertNotIn("build", out["agents_md_dirs"])
         untracked = next(f for f in out["files"] if f["path"] == "new/AGENTS.md")
         self.assertFalse(untracked["tracked"])
-        self.assertFalse(untracked["dirty"])
+        # Committing an edit to an untracked file adds the whole file, so it is asked like any dirty one.
+        self.assertTrue(untracked["dirty"])
+        root = next(f for f in out["files"] if f["path"] == "AGENTS.md")
+        self.assertFalse(root["dirty"])
+        self.assertFalse(out["worktree_clean"])
+        self.assertEqual(out["uncommitted"], {"count": 1, "paths": ["new/"]})
+
+    def test_untracked_counts_as_dirty_whatever_the_user_config(self):
+        write(self.repo, "AGENTS.md", "- a\n")
+        commit_all(self.repo, "add")
+        write(self.repo, "new/AGENTS.md", "- fresh\n")
+        git(self.repo, "config", "status.showUntrackedFiles", "no")
+        out = self.inventory()
+        self.assertTrue(next(f for f in out["files"] if f["path"] == "new/AGENTS.md")["dirty"])
+        self.assertFalse(out["worktree_clean"])
+        self.assertEqual(out["uncommitted"]["count"], 1)
 
     def test_deleted_tracked_file_is_skipped(self):
         write(self.repo, "AGENTS.md", "- a\n")
@@ -305,6 +320,64 @@ class InventoryTest(RepoTestCase):
         self.assertTrue(out["files"][0]["tracked"])
         self.assertEqual((out["base"], out["base_branch"], out["current_branch"]), ("main", "main", "feature"))
 
+    def test_a_clean_worktree(self):
+        write(self.repo, ".gitignore", "build/\n")
+        write(self.repo, "AGENTS.md", "- a\n")
+        commit_all(self.repo, "add")
+        write(self.repo, "build/out.txt", "ignored\n")  # ignored files are not uncommitted work
+        out = self.inventory()
+        self.assertTrue(out["worktree_clean"])
+        self.assertEqual(out["uncommitted"], {"count": 0, "paths": []})
+
+    def test_every_kind_of_uncommitted_work_is_reported(self):
+        def staged_new(repo):
+            write(repo, "docs/new.md", "x\n")
+            git(repo, "add", "docs/new.md")
+
+        def staged_edit(repo):
+            write(repo, "src/a.py", "x = 2\n")
+            git(repo, "add", "src/a.py")
+
+        def staged_rename(repo):
+            git(repo, "mv", "src/a.py", "src/b.py")
+
+        for name, change, paths in [
+            ("unstaged edit", lambda repo: write(repo, "src/a.py", "x = 2\n"), ["src/a.py"]),
+            ("staged edit", staged_edit, ["src/a.py"]),
+            ("staged new file", staged_new, ["docs/new.md"]),
+            ("deletion", lambda repo: (repo / "src" / "a.py").unlink(), ["src/a.py"]),
+            ("untracked file", lambda repo: write(repo, "notes.txt", "x\n"), ["notes.txt"]),
+            ("staged rename", staged_rename, ["src/b.py"]),  # one entry, though porcelain -z gives two paths
+        ]:
+            with self.subTest(name=name):
+                with tempfile.TemporaryDirectory() as tmp:
+                    repo = make_repo(Path(tmp))
+                    write(repo, "AGENTS.md", "- a\n")
+                    write(repo, "src/a.py", "x = 1\n")
+                    commit_all(repo, "add")
+                    change(repo)
+                    out = run("inventory", "--repo", str(repo), "--scope", ".")
+                    self.assertFalse(out["worktree_clean"])
+                    self.assertEqual(out["uncommitted"], {"count": 1, "paths": paths})
+
+    def test_uncommitted_work_counts_across_the_repo_on_a_partial_run(self):
+        write(self.repo, "AGENTS.md", "- a\n")
+        write(self.repo, "tests/AGENTS.md", "- t\n")
+        commit_all(self.repo, "add")
+        write(self.repo, "docs/draft.md", "x\n")
+        out = self.inventory("--scope", "tests")
+        self.assertFalse(out["worktree_clean"])
+        self.assertEqual(out["uncommitted"]["paths"], ["docs/"])
+
+    def test_uncommitted_paths_are_capped(self):
+        write(self.repo, "AGENTS.md", "- a\n")
+        commit_all(self.repo, "add")
+        for n in range(25):
+            write(self.repo, f"f{n:02}.txt", "x\n")
+        out = self.inventory()
+        self.assertEqual(out["uncommitted"]["count"], 25)
+        self.assertEqual(out["uncommitted"]["paths"], [f"f{n:02}.txt" for n in range(10)])
+
     def test_base_override_and_unknown_base(self):
         git(self.repo, "branch", "other")
         out = self.inventory("--base", "other")
@@ -449,6 +522,14 @@ class LinkedFileTest(RepoTestCase):
         (item,) = self.inventory()["files"]
         self.assertTrue(item["tracked"])
         self.assertFalse(item["dirty"])
+
+    def test_an_untracked_resolved_file_is_dirty(self):
+        write(self.repo, "README.md", "# r\n")
+        commit_all(self.repo, "add")
+        write(self.repo, "CLAUDE.md", "- one\n")  # untracked, so a commit would add all of it
+        (self.repo / "AGENTS.md").symlink_to("CLAUDE.md")
+        (item,) = self.inventory()["files"]
+        self.assertEqual((item["resolved"], item["tracked"], item["dirty"]), ("CLAUDE.md", False, True))
 
     def test_a_retargeted_link_is_dirty(self):
         write(self.repo, "CLAUDE.md", "- one\n")
