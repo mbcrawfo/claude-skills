@@ -18,14 +18,24 @@ class VerdictsTestCase(unittest.TestCase):
         write(self.repo, "src/a.py", "x = 1\n")
         commit_all(self.repo, "add")
 
-    def check(self, verdicts, role="full", scope=(), file="AGENTS.md", message=None, payload=None):
+    def check(self, verdicts, role="full", scope=(), file="AGENTS.md", message=None, payload=None, repo=None):
         if payload is None:
             payload = {"file": file, "verdicts": verdicts}
         if message is None:
             message = "Report...\n```json\n" + json.dumps(payload) + "\n```\n"
         path = self.tmp / "verdicts.txt"
         path.write_text(message, encoding="utf-8")
-        argv = ["check-verdicts", "--repo", str(self.repo), "--file", file, "--role", role, "--input", str(path)]
+        argv = [
+            "check-verdicts",
+            "--repo",
+            str(repo or self.repo),
+            "--file",
+            file,
+            "--role",
+            role,
+            "--input",
+            str(path),
+        ]
         for entry in scope:
             argv += ["--scope", entry]
         return call(*argv)
@@ -312,6 +322,9 @@ class FullRoleTest(VerdictsTestCase):
             ("src/it's.py", "comment"),
             ("src\nx/AGENTS.md", "agents_md"),
             ("src\tx/AGENTS.md", "agents_md"),
+            ("src\x1fx/AGENTS.md", "agents_md"),
+            ("src\x7fx/AGENTS.md", "agents_md"),
+            ("src/a\x7f.py", "comment"),
         ]:
             with self.subTest(target=target):
                 verdict = {
@@ -342,6 +355,128 @@ class FullRoleTest(VerdictsTestCase):
         verdict = {"blocks": ["b1"], "action": "delete", "criterion": "brief", "evidence": ["e"], "target": "src/a.py"}
         self.assertRejected(self.check(self.keep_rest(verdict)), "target")
 
+    def test_target_heading_must_be_a_string(self):
+        for heading in (3, None, ["Rules"]):
+            with self.subTest(heading=heading):
+                verdict = {
+                    "blocks": ["b1"],
+                    "action": "move",
+                    "criterion": "level",
+                    "target": "src/AGENTS.md",
+                    "target_kind": "agents_md",
+                    "target_heading": heading,
+                    "evidence": ["e"],
+                }
+                self.assertRejected(self.check(self.keep_rest(verdict)), "target_heading must be a string")
+
+    # The fields each action takes, from the reviewer agent's schema table.
+    ALWAYS = {"blocks", "action", "criterion", "evidence", "ruling"}
+    TAKES = {
+        "keep": set(),
+        "fix": {"new_text", "rename_only"},
+        "trim": {"new_text"},
+        "delete": set(),
+        "merge": {"new_text"},
+        "move": {"new_text", "target", "target_kind", "target_heading"},
+        "ask": {"question", "recommendation", "proposed"},
+    }
+    # A valid verdict per action holding only its required fields, and a valid value for every known field.
+    BASE = {
+        "keep": {"blocks": ["b1"], "action": "keep"},
+        "fix": {"blocks": ["b1"], "action": "fix", "criterion": "accurate", "new_text": "n", "evidence": ["e"]},
+        "trim": {"blocks": ["b1"], "action": "trim", "criterion": "brief", "new_text": "n", "evidence": ["e"]},
+        "delete": {"blocks": ["b1"], "action": "delete", "criterion": "valuable", "evidence": ["e"]},
+        "merge": {"blocks": ["b1", "b2"], "action": "merge", "criterion": "brief", "new_text": "n", "evidence": ["e"]},
+        "move": {
+            "blocks": ["b1"],
+            "action": "move",
+            "criterion": "level",
+            "target": "src/AGENTS.md",
+            "target_kind": "agents_md",
+            "evidence": ["e"],
+        },
+        "ask": {
+            "blocks": ["b1"],
+            "action": "ask",
+            "criterion": "valuable",
+            "question": "q?",
+            "recommendation": "r",
+            "evidence": ["e"],
+        },
+    }
+    VALUES = {
+        "criterion": "brief",
+        "evidence": ["e"],
+        "ruling": "a pattern",
+        "new_text": "- shorter",
+        "rename_only": True,
+        "target": "src/AGENTS.md",
+        "target_kind": "agents_md",
+        "target_heading": "Rules",
+        "question": "q?",
+        "recommendation": "r",
+        "proposed": {"action": "keep"},
+    }
+    # Misspelled and unknown keys, which the validator must never pass through as if absent.
+    UNKNOWN = {"new_txt": "- reworded", "bogus": 1, "Question": "q?", "targets": "src/AGENTS.md"}
+
+    def test_every_field_an_action_takes_is_accepted(self):
+        for action, base in self.BASE.items():
+            with self.subTest(action=action):
+                verdict = {**base, **{k: self.VALUES[k] for k in self.ALWAYS | self.TAKES[action] if k in self.VALUES}}
+                code, _, err = self.check(self.keep_rest(verdict))
+                self.assertEqual(code, 0, err)
+
+    def test_fields_an_action_does_not_take_are_rejected(self):
+        for action, base in self.BASE.items():
+            stray = {k: v for k, v in self.VALUES.items() if k not in self.ALWAYS | self.TAKES[action]}
+            for field, value in {**stray, **self.UNKNOWN}.items():
+                with self.subTest(action=action, field=field):
+                    result = self.check(self.keep_rest({**base, field: value}))
+                    self.assertRejected(result, "verdict 1: ")
+                    self.assertIn(field, result[2])
+
+    def test_unknown_top_level_keys_are_rejected(self):
+        verdicts = [{"blocks": [b], "action": "keep"} for b in ("b1", "b2", "b3", "b4")]
+        for key in ("summary", "Verdicts", "files"):
+            with self.subTest(key=key):
+                payload = {"file": "AGENTS.md", "verdicts": verdicts, key: []}
+                self.assertRejected(self.check(None, payload=payload), key)
+
+    def test_move_target_git_parts_in_any_case_or_through_symlinks(self):
+        # On a case-insensitive filesystem `.GIT` is `.git`; a symlink can lead into `.git` under another name.
+        (self.repo / "gitlink").symlink_to(".git", target_is_directory=True)
+        (self.repo / "caselink").symlink_to(".GIT", target_is_directory=True)
+        (self.repo / "src" / "cfg").symlink_to("../.git/config")
+        outside = self.tmp / "outside"
+        (outside / ".git").mkdir(parents=True)
+        (outside / ".git" / "config").write_text("x\n", encoding="utf-8")
+        (self.repo / "outlink").symlink_to(outside, target_is_directory=True)
+        for target, kind in [
+            (".git/AGENTS.md", "agents_md"),
+            (".GIT/config", "comment"),
+            (".Git/AGENTS.md", "agents_md"),
+            ("src/.gIt/AGENTS.md", "agents_md"),
+            ("gitlink/config", "comment"),
+            ("gitlink/AGENTS.md", "agents_md"),
+            ("gitlink/hooks/AGENTS.md", "agents_md"),
+            ("src/cfg", "comment"),
+            ("caselink/config", "comment"),
+            ("caselink/AGENTS.md", "agents_md"),
+            ("outlink/.git/config", "comment"),
+            ("outlink/.Git/AGENTS.md", "agents_md"),
+        ]:
+            with self.subTest(target=target):
+                verdict = {
+                    "blocks": ["b1"],
+                    "action": "move",
+                    "criterion": "level",
+                    "target": target,
+                    "target_kind": kind,
+                    "evidence": ["e"],
+                }
+                self.assertRejected(self.check(self.keep_rest(verdict)), "is inside .git")
+
     def test_symlink_loop_file_is_rejected(self):
         (self.repo / "loop").mkdir()
         (self.repo / "loop" / "AGENTS.md").symlink_to("AGENTS.md")
@@ -357,7 +492,9 @@ class FullRoleTest(VerdictsTestCase):
         (self.repo / "linkdir").symlink_to(outside, target_is_directory=True)
         (self.repo / "src" / "AGENTS.md").symlink_to(outside / "AGENTS.md")
         (self.repo / "loopdir").symlink_to("loopdir")
+        (self.repo / "gone").symlink_to("nowhere", target_is_directory=True)
         (self.repo / "docs").mkdir()
+        (self.repo / "docs" / "AGENTS.md").symlink_to("missing.md")
         for target in [
             "linkdir/AGENTS.md",
             ".git/AGENTS.md",
@@ -365,6 +502,9 @@ class FullRoleTest(VerdictsTestCase):
             "src/a.py/deeper/AGENTS.md",
             "src/AGENTS.md",
             "loopdir/AGENTS.md",
+            "loopdir/sub/AGENTS.md",
+            "gone/AGENTS.md",
+            "docs/AGENTS.md",
         ]:
             with self.subTest(target=target):
                 verdict = {
@@ -402,6 +542,68 @@ class FullRoleTest(VerdictsTestCase):
             "evidence": ["e"],
         }
         self.assertRejected(self.check(self.keep_rest(verdict)), "target")
+
+
+GUIDED = "- one\n\n## AGENTS.md guidelines\n\n- Push-down: aggressive.\n- Brief.\n\n## Other\n\n- two\n"
+
+
+class GuidelinesSectionTest(VerdictsTestCase):
+    """In the root AGENTS.md, blocks under the guidelines heading change only through `ask`."""
+
+    def setUp(self):
+        super().setUp()
+        write(self.repo, "AGENTS.md", GUIDED)  # b1 before the section, b2 and b3 in it, b4 after it
+        write(self.repo, "src/AGENTS.md", GUIDED)
+        commit_all(self.repo, "guidelines")
+
+    def verdict(self, action, blocks=("b2",)):
+        verdict = {**FullRoleTest.BASE[action], "blocks": list(blocks)}
+        if action == "merge" and len(blocks) < 2:
+            verdict["blocks"] = ["b2", "b3"]
+        return verdict
+
+    def test_only_keep_or_ask_on_a_guidelines_block(self):
+        for action in ("fix", "trim", "delete", "move"):
+            with self.subTest(action=action):
+                self.assertRejected(self.check(self.keep_rest(self.verdict(action))), "guidelines")
+        for blocks in (["b2", "b3"], ["b1", "b2"], ["b3", "b4"]):
+            with self.subTest(merge=blocks):
+                self.assertRejected(self.check(self.keep_rest(self.verdict("merge", blocks))), "guidelines")
+        for action in ("keep", "ask"):
+            with self.subTest(action=action):
+                code, _, err = self.check(self.keep_rest(self.verdict(action)))
+                self.assertEqual(code, 0, err)
+
+    def test_blocks_outside_the_section_are_unaffected(self):
+        for blocks in (["b1"], ["b4"]):
+            with self.subTest(blocks=blocks):
+                code, _, err = self.check(self.keep_rest(self.verdict("trim", blocks)))
+                self.assertEqual(code, 0, err)
+
+    def test_root_file_named_any_way(self):
+        verdicts = self.keep_rest(self.verdict("trim"))
+        self.assertRejected(
+            self.check(verdicts, file="./AGENTS.md", payload={"file": "AGENTS.md", "verdicts": verdicts}), "guidelines"
+        )
+        for number, name in enumerate(("agents.md", "Agents.MD")):
+            with self.subTest(name=name):
+                repo = make_repo(self.tmp / f"other{number}")
+                write(repo, name, GUIDED)
+                commit_all(repo, "add")
+                payload = {"file": name, "verdicts": verdicts}
+                self.assertRejected(self.check(None, file=name, payload=payload, repo=repo), "guidelines")
+
+    def test_nested_file_is_not_the_root(self):
+        payload = {"file": "src/AGENTS.md", "verdicts": self.keep_rest(self.verdict("trim"))}
+        code, _, err = self.check(None, file="src/AGENTS.md", payload=payload)
+        self.assertEqual(code, 0, err)
+
+    def test_ancestor_root_cannot_move_a_guidelines_block(self):
+        verdict = self.verdict("move")
+        verdict["target"] = "src/deep/AGENTS.md"
+        self.assertRejected(self.check([verdict], role="ancestor", scope=["src"]), "guidelines")
+        code, _, err = self.check([{**verdict, "blocks": ["b4"]}], role="ancestor", scope=["src"])
+        self.assertEqual(code, 0, err)
 
 
 class AncestorRoleTest(VerdictsTestCase):

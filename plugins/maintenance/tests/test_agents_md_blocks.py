@@ -109,6 +109,21 @@ class SplitBlocksTest(unittest.TestCase):
         )
         self.assertEqual(blocks[0]["text"], "a")
 
+    def test_inline_code_with_backticks_is_not_a_fence(self):
+        # Three backticks with a backtick later on the line are an inline code span; as a fence they would
+        # swallow the rest of the file into one code block.
+        self.assertEqual(kl("```foo``` is inline\n\nP\n"), [("paragraph", 1, 1, []), ("paragraph", 3, 3, [])])
+
+    def test_only_an_item_numbered_one_interrupts_a_paragraph(self):
+        self.assertEqual(kl("Steps:\n2. second\n"), [("paragraph", 1, 2, [])])
+        self.assertEqual(kl("Steps:\n1) first\n"), [("paragraph", 1, 1, []), ("list_item", 2, 2, [])])
+
+    def test_block_start_after_a_table_row_ends_the_table(self):
+        self.assertEqual(
+            kl("| a | b |\n|---|---|\n| 1 | 2 |\n> quote | x\n"),
+            [("table_header", 1, 2, []), ("table_row", 3, 3, []), ("quote", 4, 4, [])],
+        )
+
     def test_dashes_without_yaml_key_are_not_front_matter(self):
         self.assertEqual(kl("---\n\nP\n\n---\n\nQ\n"), [("paragraph", 3, 3, []), ("paragraph", 7, 7, [])])
 

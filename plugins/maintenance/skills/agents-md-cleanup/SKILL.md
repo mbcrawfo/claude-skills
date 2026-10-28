@@ -109,7 +109,9 @@ Combine the verdicts across files:
   ```
 
 - **Rulings file,** always `.claude/agents-md-cleanup.md`, created only when the first ruling exists. It holds patterns (one line each) and keeps (the file, a short quote of the statement, and the reason). Record keeps only, never deletions. Two keeps that share a reason become one pattern, replacing them. A pattern every agent should know moves to the guidelines section. Drop keeps whose quoted statement no longer exists or has changed meaningfully, and judge the file's lines by the four criteria. Draft the new text, assuming the recommended answers.
-- **Rulings in git.** When `rulings.ignored` is true and the run would write the rulings file, run `git check-ignore -v .claude/agents-md-cleanup.md` and draft the `.gitignore` change: a `!.claude/agents-md-cleanup.md` line after the matching rule, and, when that rule excludes the `.claude/` directory itself, `.claude/*` in its place (`**/.claude/*` if the rule is unanchored, so nested `.claude` folders stay ignored), since git can't re-include a file inside an excluded directory.
+- **Rulings in git.** When `rulings.ignored` is true and the run would write the rulings file, run `git check-ignore -v .claude/agents-md-cleanup.md` and draft the `.gitignore` change. Git can't re-include a file inside an excluded directory, so:
+  - When the matching rule is in a `.gitignore` in the work tree: a `!.claude/agents-md-cleanup.md` line after it, and, when it excludes the `.claude/` directory itself, `.claude/*` in its place (`**/.claude/*` if the rule is unanchored, so nested `.claude` folders stay ignored).
+  - When it is in any other file (a global excludes file, `.git/info/exclude`): never edit that file. Add to the root `.gitignore` the line `!/.claude/agents-md-cleanup.md`, preceded by `!/.claude/` and `/.claude/*` when the rule excludes the `.claude/` directory itself.
 
 ## 5. Sort
 

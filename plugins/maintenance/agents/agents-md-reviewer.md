@@ -122,7 +122,7 @@ Every verdict except `keep` carries `evidence`: a list of short strings, each on
 
 Write a summary of two to four lines: the counts by action, and anything the user should look at first. Then write one ```` ```json ```` block, and nothing after it. The skill reads the last json block of your message and rejects the whole file if it is malformed, so the JSON must be strict: no comments, no trailing commas, newlines inside strings written as `\n`.
 
-The block is `{"file": <FILE exactly as given>, "verdicts": [...]}`. With `ROLE: full`, every block id appears in exactly one verdict, `keep` included; list verdicts in file order. Each verdict has:
+The block is `{"file": <FILE exactly as given>, "verdicts": [...]}`, with no other keys. With `ROLE: full`, every block id appears in exactly one verdict, `keep` included; list verdicts in file order. Each verdict has:
 
 | field | rule |
 |---|---|
@@ -132,7 +132,7 @@ The block is `{"file": <FILE exactly as given>, "verdicts": [...]}`. With `ROLE:
 | `evidence` | non-empty list of strings; required unless `keep` |
 | `new_text` | required for `fix`, `trim` and `merge`; optional for `move`; nothing else |
 | `rename_only` | `fix` only, optional: `true` when the evidence shows a rename |
-| `target` | `move` only, required: a repo-relative path, normalised, with no `..` or `.git` part, never `FILE` |
+| `target` | `move` only, required: a repo-relative path, normalised, with no `..` part and no `.git` part in any case or through a symlink, never `FILE` |
 | `target_kind` | `move` only, required: `agents_md` (the target is named AGENTS.md) or `comment` (an existing file) |
 | `target_heading` | `move` only, optional: the heading in the target to place it under |
 | `question`, `recommendation` | `ask` only, required: one plain question for the user, and the answer you recommend |

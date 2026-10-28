@@ -98,6 +98,20 @@ class ReviewerAgentTest(unittest.TestCase):
                 actions.add(verdict["action"])
         self.assertEqual(actions, set(inv.ACTIONS))
 
+    def test_schema_table_lists_the_fields_the_validator_allows(self):
+        # The agent is told the skill rejects any field an action doesn't take, so its table and the script agree.
+        text = AGENT.read_text(encoding="utf-8")
+        self.assertIn("Leave out any field the action doesn't take: the skill rejects them", text)
+        section = text[text.index("| field | rule |") :]
+        fields = set()
+        for row in section.splitlines()[2:]:
+            if not row.startswith("|"):
+                break
+            fields.update(re.findall(r"`(\w+)`", row.split("|")[1]))
+        allowed = set().union(inv.ALWAYS_KEYS, *inv.ACTION_KEYS.values())
+        self.assertEqual(fields, allowed)
+        self.assertEqual(set(inv.ACTION_KEYS), set(inv.ACTIONS))
+
     def test_example_passes_the_validator(self):
         # The worked example's file and verdicts pass check-verdicts, so the example can't teach a bad shape.
         (sample,) = fences("markdown")
@@ -173,6 +187,15 @@ class SkillMdTest(unittest.TestCase):
     def test_rulings_path_fixed(self):
         self.assertIn(".claude/agents-md-cleanup.md", SKILL.read_text(encoding="utf-8"))
 
+    def test_rulings_gitignore_draft_handles_rules_outside_the_repo(self):
+        # A rule in a global excludes file or .git/info/exclude can't be edited from the repo, and a bare
+        # negation can't re-include a file under a directory it excludes.
+        text = SKILL.read_text(encoding="utf-8")
+        bullet = text[text.index("- **Rulings in git.**") : text.index("## 5. Sort")]
+        self.assertIn("never edit that file", bullet)
+        for line in ("`!/.claude/`", "`/.claude/*`", "`!/.claude/agents-md-cleanup.md`"):
+            self.assertIn(line, bullet)
+
     def test_apply_checks_sha(self):
         text = SKILL.read_text(encoding="utf-8")
         self.assertIn("sha256", text[text.index("## 7. Apply") :])
@@ -195,6 +218,10 @@ class SkillMdTest(unittest.TestCase):
         entry = next(p for p in market["plugins"] if p["name"] == "maintenance")
         self.assertEqual(entry["description"], plugin["description"])
         self.assertIn("agents-md-cleanup", plugin["description"])
+        readme = (repo / "README.md").read_text(encoding="utf-8")
+        line = next(x for x in readme.splitlines() if x.startswith("- [`maintenance`]"))
+        for skill in ("superpowers-cleanup", "agents-md-cleanup"):
+            self.assertIn(f"`{skill}`", line)
         self.assertRegex(plugin["version"], r"^\d+\.\d+\.\d+$")
 
 

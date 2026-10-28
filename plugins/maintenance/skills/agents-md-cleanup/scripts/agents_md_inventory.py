@@ -497,6 +497,18 @@ def cmd_blocks(args: argparse.Namespace) -> dict:
 ACTIONS = ("keep", "fix", "trim", "delete", "merge", "move", "ask")
 CRITERIA = ("accurate", "valuable", "brief", "level")
 TARGET_KINDS = ("agents_md", "comment")
+# The fields a verdict may hold: these on every action, plus those its action takes. Anything else is rejected.
+ALWAYS_KEYS = ("blocks", "action", "criterion", "evidence", "ruling")
+ACTION_KEYS = {
+    "keep": (),
+    "fix": ("new_text", "rename_only"),
+    "trim": ("new_text",),
+    "delete": (),
+    "merge": ("new_text",),
+    "move": ("new_text", "target", "target_kind", "target_heading"),
+    "ask": ("question", "recommendation", "proposed"),
+}
+TOP_LEVEL_KEYS = ("file", "verdicts")
 _JSON_FENCE = re.compile(r"```json\s*\n(.*?)\n```", re.S)
 
 
@@ -511,17 +523,34 @@ def _can_hold_file(root: Path, target: str) -> bool:
     """Whether `target` could be written as a regular file that stays inside the repo.
 
     The path need not exist yet, but its nearest existing ancestor must be a directory (the target itself,
-    when it exists, a regular file) once symlinks are resolved.
+    when it exists, a regular file) once symlinks are resolved. A symlink that leads nowhere, dangling or
+    in a loop, refuses the target.
     """
+    path = root / target
     try:
-        resolved = (root / target).resolve()
-        resolved.relative_to(root)
-        probe = resolved
+        path.resolve().relative_to(root)  # RuntimeError: a symlink loop, on Python 3.9-3.12
+        probe = path
+        # Walk the unresolved path: from Python 3.13, resolve() returns a looping path instead of raising.
         while not probe.exists():
+            if probe.is_symlink():
+                return False
             probe = probe.parent
-        return probe.is_file() if probe == resolved else probe.is_dir()
+        return probe.is_file() if probe == path else probe.is_dir()
     except (OSError, RuntimeError, ValueError):
         return False
+
+
+def _in_git_dir(root: Path, target: str) -> bool:
+    """Whether `target` has a `.git` part in any case, as written or once its symlinks are resolved.
+
+    Case is ignored, since on a case-insensitive filesystem `.GIT` is `.git`. This mirrors the skill's write guard.
+    """
+    parts = target.split("/")
+    try:
+        parts += (root / target).resolve().relative_to(root).parts
+    except (OSError, RuntimeError, ValueError):
+        pass  # outside the repo or a symlink loop: the containment checks refuse it
+    return ".git" in (part.lower() for part in parts)
 
 
 def _check_move(verdict: dict, file: str, root: Path) -> None:
@@ -536,7 +565,7 @@ def _check_move(verdict: dict, file: str, root: Path) -> None:
         raise CliError(f"target must not contain a single quote or a control character: {target!r}")
     if target == file:
         raise CliError(f"target must not be the file itself: {target}")
-    if ".git" in target.split("/"):
+    if _in_git_dir(root, target):
         raise CliError(f"target {target} is inside .git")
     if kind == "agents_md":
         if posixpath.basename(target).lower() != "agents.md":
@@ -553,6 +582,9 @@ def _check_verdict(verdict: dict, file: str, root: Path) -> None:
     action = verdict.get("action")
     if action not in ACTIONS:
         raise CliError(f"unknown action {action!r}; expected one of {', '.join(ACTIONS)}")
+    extra = sorted(set(verdict) - set(ALWAYS_KEYS) - set(ACTION_KEYS[action]))
+    if extra:
+        raise CliError(f"{action} does not take {', '.join(extra)}")
     if action != "keep" or "criterion" in verdict:
         if verdict.get("criterion") not in CRITERIA:
             raise CliError(f"criterion must be one of {', '.join(CRITERIA)}")
@@ -562,32 +594,44 @@ def _check_verdict(verdict: dict, file: str, root: Path) -> None:
             raise CliError("evidence must be a non-empty list of non-empty strings")
     if action in ("fix", "trim", "merge") or (action == "move" and "new_text" in verdict):
         _text_field(verdict, "new_text")
-    if "rename_only" in verdict and (action != "fix" or not isinstance(verdict["rename_only"], bool)):
-        raise CliError("rename_only is an optional boolean allowed only on fix")
+    if "rename_only" in verdict and not isinstance(verdict["rename_only"], bool):
+        raise CliError("rename_only must be a boolean")
     if action == "merge" and len(verdict["blocks"]) < 2:
         raise CliError("merge needs at least 2 blocks")
     if action == "move":
         _check_move(verdict, file, root)
-    elif any(name in verdict for name in ("target", "target_kind", "target_heading")):
-        raise CliError("target, target_kind and target_heading are allowed only on move")
     if action == "ask":
         _text_field(verdict, "question")
         _text_field(verdict, "recommendation")
-    if "proposed" in verdict and (action != "ask" or not isinstance(verdict["proposed"], dict)):
-        raise CliError("proposed is an optional object allowed only on ask")
+    if "proposed" in verdict and not isinstance(verdict["proposed"], dict):
+        raise CliError("proposed must be an object")
     if "ruling" in verdict and not isinstance(verdict["ruling"], str):
         raise CliError("ruling must be a string")
 
 
-def validate_verdicts(blocks: list[dict], data: dict, role: str, scope: list[str], file: str, root: Path) -> dict:
-    """Check a reviewer's verdicts against `file`'s blocks; return the report, or raise CliError."""
+def validate_verdicts(
+    blocks: list[dict],
+    data: dict,
+    role: str,
+    scope: list[str],
+    file: str,
+    root: Path,
+    guidelines: dict | None = None,
+) -> dict:
+    """Check a reviewer's verdicts against `file`'s blocks; return the report, or raise CliError.
+
+    `guidelines` is the root file's guidelines section ({start_line, end_line}): its blocks take only keep or ask.
+    """
     got = data.get("file")
     if got != file:
         raise CliError(f"verdicts are for {got if isinstance(got, str) else 'no file'}, expected {file}")
+    extra = sorted(set(data) - set(TOP_LEVEL_KEYS))
+    if extra:
+        raise CliError(f"unknown top-level key {', '.join(extra)}; expected only {', '.join(TOP_LEVEL_KEYS)}")
     verdicts = data.get("verdicts")
     if not isinstance(verdicts, list):
         raise CliError("verdicts must be a list")
-    ids = {block["id"] for block in blocks}
+    by_id = {block["id"]: block for block in blocks}
     seen: set[str] = set()
     for number, verdict in enumerate(verdicts, start=1):
         try:
@@ -597,12 +641,19 @@ def validate_verdicts(blocks: list[dict], data: dict, role: str, scope: list[str
             if not (isinstance(listed, list) and listed and all(isinstance(b, str) for b in listed)):
                 raise CliError("blocks must be a non-empty list of block ids")
             for block in listed:
-                if block not in ids:
+                if block not in by_id:
                     raise CliError(f"unknown block {block}")
                 if block in seen:
                     raise CliError(f"block {block} is in more than one verdict")
                 seen.add(block)
             _check_verdict(verdict, file, root)
+            if guidelines and verdict["action"] not in ("keep", "ask"):
+                for block in listed:
+                    found = by_id[block]
+                    if found["start_line"] <= guidelines["end_line"] and found["end_line"] >= guidelines["start_line"]:
+                        raise CliError(
+                            f"block {block} is in the guidelines section, whose blocks take only keep or ask"
+                        )
             if role == "ancestor":
                 if verdict["action"] not in ("move", "ask"):
                     raise CliError(f"action {verdict['action']} is not allowed on an ancestor file; use move or ask")
@@ -639,7 +690,10 @@ def cmd_check_verdicts(args: argparse.Namespace) -> dict:
         raise CliError(f"invalid json: {exc}") from exc
     if not isinstance(data, dict):
         raise CliError("invalid json: the top level must be an object")
-    return validate_verdicts(split_blocks(_decode(raw)), data, args.role, scope, file, root)
+    text = _decode(raw)
+    # The root AGENTS.md (any case) holds the guidelines section; a nested file's matching heading is ordinary.
+    guidelines = find_guidelines(text) if file.lower() == "agents.md" else None
+    return validate_verdicts(split_blocks(text), data, args.role, scope, file, root, guidelines)
 
 
 def _parser() -> argparse.ArgumentParser:

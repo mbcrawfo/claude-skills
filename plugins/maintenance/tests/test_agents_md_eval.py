@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 import re
@@ -182,6 +183,46 @@ class GraderTest(unittest.TestCase):
                     self.assertIsNone(pattern.search(cmd), cmd)
                 else:
                     self.assertIsNotNone(pattern.search(cmd), cmd)
+
+    def test_no_repo_write_regex(self):
+        # tool_used matches input_match against the JSON-encoded tool input.
+        lines = front_matter(REVIEW / "graders" / "no-repo-write.md")
+        self.assertIn("tool: Write", lines)
+        self.assertIn("min: 0", lines)
+        self.assertIn("max: 0", lines)
+        line = next(x for x in lines if x.startswith("input_match:"))
+        pattern = re.compile(line.split(":", 1)[1].strip()[1:-1].replace("''", "'"))
+        for path in [
+            "/x/ws/AGENTS.md",
+            "/x/ws/src/AGENTS.md",
+            "/x/ws/src/payments/AGENTS.md",
+            "/x/ws/src/agents.md",
+            "/x/ws/src/payments/retry.py",
+            "/x/ws/src/handlers.py",
+            "/x/ws/.gitignore",
+            "/x/ws/.claude/agents-md-cleanup.md",
+            "/x/ws/pyproject.toml",
+            "/x/ws/uv.lock",
+            "/x/ws/.github/workflows/ci.yml",
+            "/private/tmp/e-AbC123/home/cwd/AGENTS.md",
+        ]:
+            for encoded in (
+                json.dumps({"file_path": path, "content": "x"}, separators=(",", ":")),
+                json.dumps({"file_path": path, "content": "x"}),
+            ):
+                self.assertIsNotNone(pattern.search(encoded), encoded)
+        for path in [
+            "/var/folders/ab/T/tmp.X/round.md",
+            "/tmp/tmp.X/msg.md",
+            "/var/folders/ab/T/tmp.Q1w2E3r4/1.md",
+            "/tmp/tmp.X/2-retry.md",
+            "/tmp/tmp.X/AGENTS.md",
+            "/var/folders/ab/T/tmp.X/src/payments/retry.py",
+        ]:
+            # Saved reviewer messages quote repo paths, so the content must never decide the match.
+            content = 'Moves to src/payments/retry.py; {"file_path":"/x/ws/AGENTS.md"} in AGENTS.md'
+            encoded = json.dumps({"file_path": path, "content": content}, separators=(",", ":"))
+            self.assertIsNone(pattern.search(encoded), encoded)
 
     def test_skill_ran_matches_inventory_command(self):
         for case in (FIRST, REVIEW):
