@@ -608,6 +608,9 @@ ACTION_KEYS = {
     "ask": ("question", "recommendation", "proposed"),
 }
 TOP_LEVEL_KEYS = ("file", "verdicts")
+# An ask's `proposed` verdict: what it may be, and what it takes from the ask unless it gives its own.
+PROPOSED_ACTIONS = tuple(action for action in ACTIONS if action != "ask")
+PROPOSED_INHERITS = ("blocks", "criterion", "evidence")
 _JSON_FENCE = re.compile(r"```json\s*\n(.*?)\n```", re.S)
 # What marks a statement as a possible project choice: a tool, command or path (an inline code span), or an
 # alternative weighed against it.
@@ -695,8 +698,30 @@ def _check_move(verdict: dict, file: str, root: Path) -> None:
             raise CliError(f"target {target} is not a file path inside the repo")
     if kind == "comment" and not _is_inside(root, root / target):
         raise CliError(f"target {target} is not a file in the repo")
+    _check_stageable(root, target)
     if "target_heading" in verdict and not isinstance(verdict["target_heading"], str):
         raise CliError("target_heading must be a string")
+
+
+def _check_stageable(root: Path, target: str) -> None:
+    """Refuse a target the skill's commit can't stage: ignored, in a submodule or nested repo, or past a symlink.
+
+    `target` is already known to be a normalised path inside the repo.
+    """
+    # `check-ignore` rejects --literal-pathspecs, so a `./` prefix keeps a leading `:` from reading as pathspec
+    # magic; it never globs. It answers for a path that doesn't exist yet, and fails on one in a submodule or
+    # past a symlinked directory, which `git add` refuses too.
+    result = _git(root, "check-ignore", "-q", "--", f"./{target}", literal=False, check=False)
+    if result.returncode == 0:
+        raise CliError(f"target {target} is ignored by git, so it can't be committed")
+    if result.returncode != 1:
+        first = (result.stderr.strip().splitlines() or ["git check-ignore failed"])[0]
+        raise CliError(f"target {target} can't be staged: {first}")
+    # A nested repo that isn't a submodule passes check-ignore, and `git add` skips it without an error. Any
+    # directory below the root with a `.git` entry (a repo's directory, a submodule's or worktree's file) is one.
+    for parent in Path(target).parents:
+        if parent != Path(".") and os.path.lexists(root / parent / ".git"):
+            raise CliError(f"target {target} is inside another git repository: {parent.as_posix()}")
 
 
 def _check_verdict(verdict: dict, file: str, root: Path) -> None:
@@ -724,10 +749,30 @@ def _check_verdict(verdict: dict, file: str, root: Path) -> None:
     if action == "ask":
         _text_field(verdict, "question")
         _text_field(verdict, "recommendation")
-    if "proposed" in verdict and not isinstance(verdict["proposed"], dict):
-        raise CliError("proposed must be an object")
+        if "proposed" in verdict:
+            if not isinstance(verdict["proposed"], dict):
+                raise CliError("proposed must be an object")
+            try:
+                _check_proposed(verdict, file, root)
+            except CliError as exc:
+                raise CliError(f"proposed: {exc}") from exc
     if "ruling" in verdict and not isinstance(verdict["ruling"], str):
         raise CliError("ruling must be a string")
+
+
+def _proposed(ask: dict) -> dict:
+    """The verdict an ask's `proposed` stands for: it inherits the ask's blocks, criterion and evidence."""
+    return {**{key: ask[key] for key in PROPOSED_INHERITS if key in ask}, **ask["proposed"]}
+
+
+def _check_proposed(ask: dict, file: str, root: Path) -> None:
+    """Check an ask's `proposed` like a top-level verdict, since answering as recommended applies it as it is."""
+    proposed = ask["proposed"]
+    if proposed.get("action") not in PROPOSED_ACTIONS:
+        raise CliError(f"action must be one of {', '.join(PROPOSED_ACTIONS)}")
+    if "blocks" in proposed and proposed["blocks"] != ask["blocks"]:
+        raise CliError("blocks must be the ask's blocks")
+    _check_verdict(_proposed(ask), file, root)
 
 
 def _cites_other_file(evidence: list[str], file: str, root: Path) -> bool:
@@ -756,6 +801,14 @@ def _guard_choice(verdict: dict, blocks: list[dict], file: str, root: Path) -> d
         "recommendation": "Delete it, as the reviewer proposes, unless it records a choice the project made.",
         "proposed": {"action": "delete"},
     }
+
+
+def _check_ancestor(verdict: dict, scope: list[str], allowed: tuple[str, ...]) -> None:
+    """An ancestor file's blocks change only by moving down into the scope."""
+    if verdict["action"] not in allowed:
+        raise CliError(f"action {verdict['action']} is not allowed on an ancestor file; use {' or '.join(allowed)}")
+    if verdict["action"] == "move" and not any(_within(_dir_of(verdict["target"]), s) for s in scope):
+        raise CliError(f"target {verdict['target']} is outside the scope")
 
 
 def validate_verdicts(
@@ -806,10 +859,12 @@ def validate_verdicts(
                             f"block {block} is in the guidelines section, whose blocks take only keep or ask"
                         )
             if role == "ancestor":
-                if verdict["action"] not in ("move", "ask"):
-                    raise CliError(f"action {verdict['action']} is not allowed on an ancestor file; use move or ask")
-                if verdict["action"] == "move" and not any(_within(_dir_of(verdict["target"]), s) for s in scope):
-                    raise CliError(f"target {verdict['target']} is outside the scope")
+                _check_ancestor(verdict, scope, ("move", "ask"))
+                if "proposed" in verdict:
+                    try:
+                        _check_ancestor(_proposed(verdict), scope, ("move",))
+                    except CliError as exc:
+                        raise CliError(f"proposed: {exc}") from exc
         except CliError as exc:
             raise CliError(f"verdict {number}: {exc}") from exc
     if role == "full":

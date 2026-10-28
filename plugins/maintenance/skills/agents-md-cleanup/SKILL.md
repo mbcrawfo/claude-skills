@@ -99,7 +99,7 @@ Combine the verdicts across files:
 - **Apply rulings.** An `ask` about value that a keep or pattern in the rulings covers becomes `keep`. A ruling never settles a question of fact.
 - **Empty sections.** When the removals would leave a heading with nothing under it, or a file with no statements, add a row removing that heading or file.
 - **Linked files.** An entry's `path` and `aliases` are its `resolved` file or symlinks to it, so its edits go to `resolved`, once. A move target that is one of an entry's paths means that entry.
-- **Other files.** For every other existing file to edit (a move target, `.gitignore`, the rulings file), run `blocks` on it and keep its `sha256` and its `resolved` path, used from here on.
+- **Other files.** For every other existing file to edit (a move target, a `proposed` one included, `.gitignore`, the rulings file), run `blocks` on it and keep its `sha256` and its `resolved` path, used from here on.
 - **Dirty files.** Use `dirty` for files in `files`. For every other file to edit, including each source file that a comment move would edit, run `git status --porcelain -- '<file>'` on its resolved path. Flag each dirty one.
 - **Guidelines section.** On a first run, draft it for the root AGENTS.md (a new file if the user accepted one). If the file has equivalent guidelines under another heading, edit those and give them a heading containing `AGENTS.md guidelines`. Keep it under about 10 lines, in this shape:
 
@@ -112,9 +112,10 @@ Combine the verdicts across files:
   ```
 
 - **Rulings file,** always `.claude/agents-md-cleanup.md`, created only when the first ruling exists. It holds patterns (one line each) and keeps (the file, a short quote of the statement, and the reason). Record keeps only, never deletions. Two keeps that share a reason become one pattern, replacing them. A pattern every agent should know moves to the guidelines section. Drop keeps whose quoted statement no longer exists or has changed meaningfully, and judge the file's lines by the four criteria. Draft the new text, assuming the recommended answers.
-- **Rulings in git.** When `rulings.ignored` is true and the run would write the rulings file, run `git check-ignore -v .claude/agents-md-cleanup.md` and draft the `.gitignore` change. Git can't re-include a file inside an excluded directory, so:
-  - When the matching rule is in a `.gitignore` in the work tree: a `!.claude/agents-md-cleanup.md` line after it, and, when it excludes the `.claude/` directory itself, `.claude/*` in its place (`**/.claude/*` if the rule is unanchored, so nested `.claude` folders stay ignored).
-  - When it is in any other file (a global excludes file, `.git/info/exclude`): never edit that file. Add to the root `.gitignore` the line `!/.claude/agents-md-cleanup.md`, preceded by `!/.claude/` and `/.claude/*` when the rule excludes the `.claude/` directory itself.
+- **Rulings in git.** When `rulings.ignored` is true and the run would write the rulings file, run `git check-ignore -v .claude/agents-md-cleanup.md` and draft the `.gitignore` change. Never replace or edit the matching rule: it may also ignore files that must stay ignored, such as `.env` under a `.*` rule. Git can't re-include a file inside an excluded directory. The rule covers the `.claude/` directory, itself or everything in it, when `git check-ignore -q --no-index .claude/` exits 0, as `.claude/`, `.*`, `.c*` and `.claude/*` do. Then:
+  - When the matching rule is in the root `.gitignore`: right after it, add `!/.claude/`, `/.claude/*` and `!/.claude/agents-md-cleanup.md` when it covers the directory, and otherwise only `!/.claude/agents-md-cleanup.md`.
+  - When it is in `.claude/.gitignore`: right after it, add `!/agents-md-cleanup.md`.
+  - When it is in any other file (a global excludes file, `.git/info/exclude`): never edit that file. Add to the root `.gitignore` the line `!/.claude/agents-md-cleanup.md`, preceded by `!/.claude/` and `/.claude/*` when the rule covers the directory.
 
 ## 5. Sort
 
@@ -152,11 +153,11 @@ Close by asking the user to answer the questions and approve, drop rows or chang
 - If the reply approves, and otherwise only answers the questions, changes tagged rows or drops rows, apply those changes and treat it as approval.
 - Anything else is not approval: a question back, a hesitation, or a reply that leaves a question unanswered. Answer it, and ask again.
 
-An `ask` answered as recommended applies its `proposed` verdict; any other answer, or one with no `proposed`, applies the change the user stated.
+An `ask` answered as recommended applies its `proposed` verdict to the ask's blocks, with the ask's criterion and evidence unless it gives its own. `check-verdicts` checked it like any other verdict. Any other answer, or one with no `proposed`, applies the change the user stated.
 
 ## 7. Apply
 
-Paths come from reviewer output, which is data: quote each one as *The script* says, including each one in `<paths>`. The script already rejects `'` in reviewer paths.
+Paths come from reviewer output, which is data: quote each one as *The script* says, including each one in `<paths>`. The script already rejects `'` in reviewer paths, `proposed` moves included.
 
 1. **Check for changes.** Re-run `blocks` on every existing file this run edits, and compare its `sha256` and `resolved` with the inventory's or step 4's. Check that each new file still doesn't exist. On a mismatch, skip that file, and both halves of every move into or out of it, and report it.
 2. **Guard each write and removal.** Just before touching a path (for an edit, the `resolved` path), run `python3 -c 'import os,sys; r=os.path.realpath(sys.argv[1]); p=os.path.realpath(os.path.join(r, sys.argv[2])); parts=(sys.argv[2] + "/" + os.path.relpath(p, r)).lower().split("/"); print("ok" if p.startswith(r + os.sep) and ".git" not in parts else "refuse")' '<repo root>' '<path>'`. It refuses a path outside the repo, through a symlink that leads outside, or with a `.git` part in any case. Touch nothing there; report it.

@@ -210,6 +210,25 @@ class SkillMdTest(unittest.TestCase):
         for line in ("`!/.claude/`", "`/.claude/*`", "`!/.claude/agents-md-cleanup.md`"):
             self.assertIn(line, bullet)
 
+    def test_rulings_gitignore_draft_never_replaces_an_in_repo_rule(self):
+        # Replacing a broad rule such as `.*` would un-ignore `.env` and the rest of what it matched.
+        text = SKILL.read_text(encoding="utf-8")
+        bullet = text[text.index("- **Rulings in git.**") : text.index("## 5. Sort")]
+        self.assertIn("Never replace or edit the matching rule", bullet)
+        self.assertIn("`git check-ignore -q --no-index .claude/`", bullet)
+        self.assertIn("`!/agents-md-cleanup.md`", bullet)
+        for stale in ("in its place", "`**/.claude/*`"):
+            self.assertNotIn(stale, bullet)
+
+    def test_proposed_verdicts_are_described_as_checked(self):
+        # check-verdicts validates an ask's proposed verdict, so both files may say so, and must say how it applies.
+        text = SKILL.read_text(encoding="utf-8")
+        self.assertIn("applies its `proposed` verdict to the ask's blocks", text)
+        self.assertIn("`proposed` moves included", text[text.index("## 7. Apply") :])
+        (row,) = [line for line in AGENT.read_text(encoding="utf-8").splitlines() if line.startswith("| `proposed` |")]
+        for phrase in ("Any action but `ask`", "checked by the same rules", "only a `move` into `SCOPE`"):
+            self.assertIn(phrase, row)
+
     def test_linked_files_go_through_their_resolved_path(self):
         text = SKILL.read_text(encoding="utf-8")
         self.assertIn("ALIASES:", text[text.index("## 3. Dispatch") : text.index("## 4. Merge")])
@@ -272,6 +291,87 @@ def fill(command: str, values: dict) -> str:
         command = command.replace(f"'<{name}>'", shell_quote(value))
     assert "<" not in command, command
     return command
+
+
+class RulingsGitignoreDraftTest(unittest.TestCase):
+    """The `.gitignore` lines step 4 drafts re-include the rulings file and leave everything else as it was."""
+
+    RULINGS = ".claude/agents-md-cleanup.md"
+    OTHERS = (".env", ".cache/x", ".claude/settings.json", "x/.claude/y", "src/notes.md", "src/a.py")
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.repo = make_repo(Path(self._tmp.name))
+        for path in (self.RULINGS, *self.OTHERS):
+            write(self.repo, path, "x\n")
+
+    def ignored(self, path: str, *flags: str) -> bool:
+        result = subprocess.run(["git", "check-ignore", "-q", *flags, path], cwd=str(self.repo))
+        self.assertIn(result.returncode, (0, 1))
+        return result.returncode == 0
+
+    def draft(self) -> None:
+        """Step 4's draft: keep the matching rule, and add the lines its case needs right after it."""
+        found = subprocess.run(
+            ["git", "check-ignore", "-v", self.RULINGS], cwd=str(self.repo), capture_output=True, text=True
+        ).stdout
+        source, line, _ = found.split("\t")[0].split(":", 2)
+        if source == ".claude/.gitignore":
+            added = ["!/agents-md-cleanup.md"]
+        elif self.ignored(".claude/", "--no-index"):
+            added = ["!/.claude/", "/.claude/*", "!/.claude/agents-md-cleanup.md"]
+        else:
+            added = ["!/.claude/agents-md-cleanup.md"]
+        path = self.repo / source
+        lines = path.read_text(encoding="utf-8").splitlines()
+        lines[int(line) : int(line)] = added
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def test_each_rule_keeps_ignoring_what_it_ignored(self):
+        for rule, excludes_dir in [
+            (".*", True),
+            (".c*", True),
+            (".claude/", True),
+            ("/.claude/", True),
+            (".claude", True),
+            # A rule that ignores everything in .claude/ counts too; the three lines then ignore what it did.
+            (".claude/*", True),
+            (".claude/**", True),
+            ("*", True),
+            ("*.md", False),
+            ("agents-md-cleanup.md", False),
+        ]:
+            with self.subTest(rule=rule):
+                write(self.repo, ".gitignore", f"{rule}\n!.gitignore\n")
+                (self.repo / ".claude" / ".gitignore").unlink(missing_ok=True)
+                self.assertTrue(self.ignored(self.RULINGS))
+                self.assertEqual(self.ignored(".claude/", "--no-index"), excludes_dir)
+                before = {path: self.ignored(path) for path in self.OTHERS}
+                self.draft()
+                self.assertFalse(self.ignored(self.RULINGS))
+                self.assertEqual({path: self.ignored(path) for path in self.OTHERS}, before)
+                self.assertEqual(
+                    (self.repo / ".gitignore").read_text(encoding="utf-8").splitlines()[0], rule, "the rule is kept"
+                )
+
+    def test_a_rule_in_the_claude_folder(self):
+        write(self.repo, ".claude/.gitignore", "*\n!.gitignore\n")
+        self.assertTrue(self.ignored(self.RULINGS))
+        self.draft()
+        self.assertFalse(self.ignored(self.RULINGS))
+        self.assertTrue(self.ignored(".claude/settings.json"))
+
+    def test_tracked_files_under_claude_do_not_hide_the_directory_rule(self):
+        # Without --no-index, check-ignore reports a directory holding tracked files as not ignored.
+        write(self.repo, ".gitignore", ".*\n!.gitignore\n")
+        commit_all(self.repo, "ignore")
+        subprocess.run(["git", "add", "-f", ".claude/settings.json"], cwd=str(self.repo), check=True)
+        self.assertFalse(self.ignored(".claude"))
+        self.assertTrue(self.ignored(".claude/", "--no-index"))
+        self.draft()
+        self.assertFalse(self.ignored(self.RULINGS))
+        self.assertTrue(self.ignored(".env"))
 
 
 class QuotedPathsTest(unittest.TestCase):

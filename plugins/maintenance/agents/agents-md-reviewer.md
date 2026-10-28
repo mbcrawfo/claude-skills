@@ -135,11 +135,11 @@ The block is `{"file": <FILE exactly as given>, "verdicts": [...]}`, with no oth
 | `evidence` | non-empty list of strings; required unless `keep` |
 | `new_text` | required for `fix`, `trim` and `merge`; optional for `move`; nothing else |
 | `rename_only` | `fix` only, optional: `true` when the evidence shows a rename |
-| `target` | `move` only, required: a repo-relative path, normalised, with no `..` part and no `.git` part in any case or through a symlink, never `FILE` or one of `ALIASES` |
+| `target` | `move` only, required: a repo-relative path, normalised, with no `..` part and no `.git` part in any case or through a symlink, never `FILE` or one of `ALIASES`. Git must be able to commit it: not ignored, and not inside a submodule, a nested repo or a symlinked directory |
 | `target_kind` | `move` only, required: `agents_md` (the target is named AGENTS.md) or `comment` (an existing file) |
 | `target_heading` | `move` only, optional: the heading in the target to place it under |
 | `question`, `recommendation` | `ask` only, required: one plain question for the user, and the answer you recommend |
-| `proposed` | `ask` only, optional: the verdict your recommendation would apply, such as `{"action": "trim", "new_text": "..."}` |
+| `proposed` | `ask` only, optional: the verdict your recommendation would apply, such as `{"action": "trim", "new_text": "..."}`. Any action but `ask`, with the fields that action takes, checked by the same rules. It applies to the ask's `blocks`, `criterion` and `evidence` unless it gives its own (`blocks`, if given, must be the same list). With `ROLE: ancestor`, only a `move` into `SCOPE` |
 | `ruling` | optional: the keep quote or pattern that decided the verdict |
 
 `new_text` is the block's replacement markdown, list marker and indentation included, except for a comment move (wording only). Leave out any field the action doesn't take: the skill rejects them.

@@ -1,9 +1,10 @@
 import json
 from pathlib import Path
+import shutil
 import tempfile
 import unittest
 
-from agents_helpers import call, commit_all, make_repo, write
+from agents_helpers import call, commit_all, git, make_repo, write
 
 AGENTS = "- one\n\n- two\n\n- three\n\n- four\n"
 
@@ -571,6 +572,106 @@ class FullRoleTest(VerdictsTestCase):
         self.assertRejected(self.check(self.keep_rest(verdict)), "target")
 
 
+class UnstageableTargetTest(VerdictsTestCase):
+    """A move target git can't stage would leave the moved text uncommitted, so check-verdicts rejects it."""
+
+    def setUp(self):
+        super().setUp()
+        write(self.repo, ".gitignore", "build/\ndist/\n*.gen.js\n/:gen/\n")
+        write(self.repo, "build/out.js", "x = 1\n")
+        write(self.repo, "src/b.gen.js", "x = 1\n")
+        write(self.repo, "src/tracked.gen.js", "x = 1\n")
+        commit_all(self.repo, "ignore")
+        git(self.repo, "add", "-f", "src/tracked.gen.js")
+        git(self.repo, "commit", "-m", "tracked")
+
+    def move(self, target, kind="agents_md"):
+        verdict = {
+            "blocks": ["b1"],
+            "action": "move",
+            "criterion": "level",
+            "target": target,
+            "target_kind": kind,
+            "evidence": ["e"],
+        }
+        return self.check(self.keep_rest(verdict))
+
+    def test_ignored_targets_are_rejected(self):
+        for target, kind in [
+            ("build/AGENTS.md", "agents_md"),  # a new file in an ignored directory that exists
+            ("dist/AGENTS.md", "agents_md"),  # and in one that doesn't
+            ("dist/deep/AGENTS.md", "agents_md"),
+            ("build/out.js", "comment"),  # an existing ignored file
+            ("src/b.gen.js", "comment"),
+        ]:
+            with self.subTest(target=target):
+                self.assertRejected(self.move(target, kind), f"verdict 1: target {target} is ignored by git")
+        write(self.repo, "build/AGENTS.md", "- b\n")
+        self.assertRejected(self.move("build/AGENTS.md"), "is ignored by git")
+
+    def test_tracked_and_unignored_targets_are_accepted(self):
+        for target, kind in [
+            ("src/AGENTS.md", "agents_md"),
+            ("src/a.py", "comment"),
+            ("src/tracked.gen.js", "comment"),  # tracked, so git stages it although a rule matches it
+            ("buil*/AGENTS.md", "agents_md"),  # the path is read literally, never as a glob
+            (":build/AGENTS.md", "agents_md"),  # nor as pathspec magic
+        ]:
+            with self.subTest(target=target):
+                code, _, err = self.move(target, kind)
+                self.assertEqual(code, 0, err)
+
+    def test_a_leading_colon_is_not_pathspec_magic(self):
+        # Read as magic, `:gen/AGENTS.md` would be checked as `gen/AGENTS.md`, which no rule ignores.
+        self.assertRejected(self.move(":gen/AGENTS.md"), "verdict 1: target :gen/AGENTS.md is ignored by git")
+
+    def test_targets_in_a_submodule_are_rejected(self):
+        sub = make_repo(self.tmp / "sub-src")
+        write(sub, "f.py", "x = 1\n")
+        commit_all(sub, "sub")
+        sha = git(sub, "rev-parse", "HEAD").strip()
+        # An initialised submodule: a nested repo, recorded in the index as a gitlink.
+        shutil.copytree(sub, self.repo / "vendor" / "lib", symlinks=True)
+        git(self.repo, "add", "vendor/lib")
+        # Uninitialised ones: a gitlink in the index, with an empty directory or none.
+        git(self.repo, "update-index", "--add", "--cacheinfo", f"160000,{sha},vendor/empty")
+        (self.repo / "vendor" / "empty").mkdir()
+        git(self.repo, "update-index", "--add", "--cacheinfo", f"160000,{sha},vendor/gone")
+        git(self.repo, "commit", "-m", "submodules")
+        self.assertEqual(git(self.repo, "ls-files", "-s", "vendor").count("160000"), 3)
+        for target, kind in [
+            ("vendor/lib/AGENTS.md", "agents_md"),
+            ("vendor/lib/deep/AGENTS.md", "agents_md"),
+            ("vendor/lib/f.py", "comment"),
+            ("vendor/empty/AGENTS.md", "agents_md"),
+            ("vendor/gone/AGENTS.md", "agents_md"),
+        ]:
+            with self.subTest(target=target):
+                self.assertRejected(self.move(target, kind), f"verdict 1: target {target} ")
+        self.assertIn("submodule", self.move("vendor/empty/AGENTS.md")[2])
+
+    def test_targets_in_a_nested_repo_are_rejected(self):
+        # Not a submodule: git add skips the path and exits 0, so nothing is staged.
+        nested = make_repo(self.repo / "nested")
+        write(nested, "f.py", "x = 1\n")
+        for target, kind in [
+            ("nested/repo/AGENTS.md", "agents_md"),
+            ("nested/repo/deep/AGENTS.md", "agents_md"),
+            ("nested/repo/f.py", "comment"),
+        ]:
+            with self.subTest(target=target):
+                self.assertRejected(
+                    self.move(target, kind), f"verdict 1: target {target} is inside another git repository"
+                )
+
+    def test_targets_beyond_a_symlinked_directory_are_rejected(self):
+        # git stages neither path, though both lead to src/ inside the repo.
+        (self.repo / "alias").symlink_to("src", target_is_directory=True)
+        for target, kind in [("alias/AGENTS.md", "agents_md"), ("alias/a.py", "comment")]:
+            with self.subTest(target=target):
+                self.assertRejected(self.move(target, kind), f"verdict 1: target {target} can't be staged")
+
+
 GUIDED = "- one\n\n## AGENTS.md guidelines\n\n- Push-down: aggressive.\n- Brief.\n\n## Other\n\n- two\n"
 
 
@@ -723,6 +824,174 @@ class AncestorRoleTest(VerdictsTestCase):
 
     def test_bad_role_is_a_usage_error(self):
         self.assertRejected(self.check([], role="partial"), "--role")
+
+
+class ProposedVerdictTest(VerdictsTestCase):
+    """An ask's `proposed` verdict is applied as it is when the user answers as recommended, so it is checked like
+    a top-level verdict, on the ask's blocks, criterion and evidence."""
+
+    def ask(self, proposed, blocks=("b1",), **fields):
+        return {
+            "blocks": list(blocks),
+            "action": "ask",
+            "criterion": "valuable",
+            "evidence": ["e"],
+            "question": "q?",
+            "recommendation": "r",
+            "proposed": proposed,
+            **fields,
+        }
+
+    MOVE = {"action": "move", "target": "src/AGENTS.md", "target_kind": "agents_md"}
+
+    def test_every_action_but_ask_is_accepted(self):
+        for proposed, blocks in [
+            ({"action": "keep"}, ("b1",)),
+            ({"action": "fix", "new_text": "n", "rename_only": False}, ("b1",)),
+            ({"action": "trim", "new_text": "n"}, ("b1",)),
+            ({"action": "delete"}, ("b1",)),
+            ({"action": "merge", "new_text": "n"}, ("b1", "b2")),
+            ({**self.MOVE, "new_text": "n", "target_heading": "Rules"}, ("b1",)),
+            ({"action": "move", "target": "src/a.py", "target_kind": "comment"}, ("b1",)),
+        ]:
+            with self.subTest(action=proposed["action"], target=proposed.get("target")):
+                verdict = self.ask(proposed, blocks)
+                code, out, err = self.check(self.keep_rest(verdict))
+                self.assertEqual(code, 0, err)
+                self.assertIn(verdict, json.loads(out)["verdicts"])
+
+    def test_it_inherits_the_asks_blocks_criterion_and_evidence(self):
+        # Without inheritance a bare delete has no criterion or evidence, and a merge no blocks.
+        for proposed, blocks in [({"action": "delete"}, ("b1",)), ({"action": "merge", "new_text": "n"}, ("b1", "b2"))]:
+            with self.subTest(action=proposed["action"]):
+                code, _, err = self.check(self.keep_rest(self.ask(proposed, blocks)))
+                self.assertEqual(code, 0, err)
+        self.assertRejected(
+            self.check(self.keep_rest(self.ask({"action": "merge", "new_text": "n"}))),
+            "verdict 1: proposed: merge needs at least 2 blocks",
+        )
+
+    def test_its_own_criterion_evidence_and_blocks_are_checked(self):
+        code, _, err = self.check(
+            self.keep_rest(self.ask({"action": "trim", "new_text": "n", "criterion": "brief", "evidence": ["x"]}))
+        )
+        self.assertEqual(code, 0, err)
+        code, _, err = self.check(self.keep_rest(self.ask({"action": "delete", "blocks": ["b1"]})))
+        self.assertEqual(code, 0, err)
+        for proposed, expected in [
+            ({"action": "delete", "criterion": "bogus"}, "criterion must be one of"),
+            ({"action": "delete", "evidence": []}, "evidence must be"),
+            ({"action": "delete", "evidence": "e"}, "evidence must be"),
+            ({"action": "delete", "blocks": ["b2"]}, "blocks must be the ask's blocks"),
+            ({"action": "delete", "blocks": "b1"}, "blocks must be the ask's blocks"),
+            ({"action": "delete", "ruling": 3}, "ruling must be a string"),
+        ]:
+            with self.subTest(proposed=proposed):
+                self.assertRejected(self.check(self.keep_rest(self.ask(proposed))), f"verdict 1: proposed: {expected}")
+
+    def test_its_action_is_a_verdict_action_other_than_ask(self):
+        for proposed in [
+            {"action": "ask", "question": "q?", "recommendation": "r"},
+            {"action": "bogus", "x": 1},
+            {"action": "bogus"},
+            {},
+            {"new_text": "n"},
+        ]:
+            with self.subTest(proposed=proposed):
+                self.assertRejected(
+                    self.check(self.keep_rest(self.ask(proposed))), "verdict 1: proposed: action must be one of"
+                )
+
+    def test_it_takes_only_the_fields_its_action_takes(self):
+        for proposed, field in [
+            ({"action": "keep", "new_text": "n"}, "new_text"),
+            ({"action": "delete", "question": "q?"}, "question"),
+            ({"action": "delete", "proposed": {"action": "keep"}}, "proposed"),
+            ({**self.MOVE, "new_txt": "n"}, "new_txt"),
+            ({"action": "trim", "new_text": "n", "target": "src/AGENTS.md"}, "target"),
+        ]:
+            with self.subTest(proposed=proposed):
+                self.assertRejected(
+                    self.check(self.keep_rest(self.ask(proposed))),
+                    f"verdict 1: proposed: {proposed['action']} does not",
+                )
+                self.assertIn(field, self.check(self.keep_rest(self.ask(proposed)))[2])
+
+    def test_new_text_and_rename_only_rules(self):
+        for proposed, expected in [
+            ({"action": "trim"}, "new_text must be"),
+            ({"action": "fix", "new_text": " "}, "new_text must be"),
+            ({"action": "merge"}, "new_text must be"),
+            ({**self.MOVE, "new_text": ""}, "new_text must be"),
+            ({"action": "fix", "new_text": "n", "rename_only": "yes"}, "rename_only must be a boolean"),
+        ]:
+            blocks = ("b1", "b2") if proposed["action"] == "merge" else ("b1",)
+            with self.subTest(proposed=proposed):
+                self.assertRejected(
+                    self.check(self.keep_rest(self.ask(proposed, blocks))), f"verdict 1: proposed: {expected}"
+                )
+
+    def test_move_targets_are_checked_like_a_top_level_move(self):
+        write(self.repo, "src/it's.py", "x = 1\n")
+        commit_all(self.repo, "quote")
+        for target, kind in [
+            ("../out's/AGENTS.md", "agents_md"),
+            ("../outs/AGENTS.md", "agents_md"),
+            ("./tests//AGENTS.md", "agents_md"),
+            ("src/../AGENTS.md", "agents_md"),
+            ("/abs/AGENTS.md", "agents_md"),
+            ("x';touch pwned;'/AGENTS.md", "agents_md"),
+            ("src/it's.py", "comment"),
+            ("src\nx/AGENTS.md", "agents_md"),
+            ("src\x7fx/AGENTS.md", "agents_md"),
+            (".git/AGENTS.md", "agents_md"),
+            (".GIT/config", "comment"),
+            ("AGENTS.md", "agents_md"),
+            ("src/notes.md", "agents_md"),
+            ("src/missing.py", "comment"),
+            ("src/a.py", "other"),
+        ]:
+            with self.subTest(target=target, kind=kind):
+                proposed = {"action": "move", "target": target, "target_kind": kind}
+                self.assertRejected(self.check(self.keep_rest(self.ask(proposed))), "verdict 1: proposed: ")
+        for drop in ("target", "target_kind"):
+            with self.subTest(drop=drop):
+                proposed = {k: v for k, v in self.MOVE.items() if k != drop}
+                self.assertRejected(self.check(self.keep_rest(self.ask(proposed))), f"verdict 1: proposed: {drop}")
+        self.assertRejected(
+            self.check(self.keep_rest(self.ask({**self.MOVE, "target_heading": 3}))),
+            "verdict 1: proposed: target_heading must be a string",
+        )
+
+    def test_ancestor_proposed_is_a_move_into_the_scope(self):
+        write(self.repo, "src/deep/AGENTS.md", "- d\n")
+        for proposed in (self.MOVE, {**self.MOVE, "target": "src/deep/AGENTS.md"}):
+            with self.subTest(target=proposed["target"]):
+                code, _, err = self.check([self.ask(proposed)], role="ancestor", scope=["src"])
+                self.assertEqual(code, 0, err)
+        for proposed, expected in [
+            ({**self.MOVE, "target": "new/AGENTS.md"}, "target new/AGENTS.md is outside the scope"),
+            (
+                {"action": "move", "target": "README.md", "target_kind": "comment"},
+                "target README.md is outside the scope",
+            ),
+            ({"action": "delete"}, "action delete is not allowed on an ancestor file; use move"),
+            ({"action": "trim", "new_text": "n"}, "action trim is not allowed on an ancestor file"),
+            ({"action": "keep"}, "action keep is not allowed on an ancestor file"),
+        ]:
+            with self.subTest(proposed=proposed):
+                self.assertRejected(
+                    self.check([self.ask(proposed)], role="ancestor", scope=["src"]), f"verdict 1: proposed: {expected}"
+                )
+
+    def test_a_guidelines_block_still_takes_an_ask_with_any_proposed(self):
+        # The ask is the user's say on a guidelines block, so its proposed change is allowed there.
+        write(self.repo, "AGENTS.md", GUIDED)
+        commit_all(self.repo, "guided")
+        verdicts = [{"blocks": [f"b{n}"], "action": "keep"} for n in range(1, 5) if n != 2]
+        verdicts.insert(1, self.ask({"action": "trim", "new_text": "- Push-down: aggressive."}, ("b2",)))
+        code, _, err = self.check(verdicts)
+        self.assertEqual(code, 0, err)
 
 
 CHOICES = (

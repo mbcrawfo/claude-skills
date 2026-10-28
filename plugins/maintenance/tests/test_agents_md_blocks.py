@@ -157,6 +157,19 @@ class SplitBlocksTest(unittest.TestCase):
         # Four or more columns past the item's content is indented code, not a fence, so a later item still splits.
         self.assertEqual(kl("- a\n\n      ```\n- b\n"), [("list_item", 1, 3, []), ("list_item", 4, 4, [])])
 
+    def test_a_fence_indented_four_or_more_does_not_close_a_fence(self):
+        # It is a line of code; as a closing fence it would turn the text after it into a code block, unreviewed.
+        cases = [
+            ("```\n    ```\nstill code\n```\n\nP\n", [("code", 1, 4, []), ("paragraph", 6, 6, [])]),
+            (
+                "- item\n\n  ```\n      ```\n  more code\n  ```\n\nP\n",
+                [("list_item", 1, 6, []), ("paragraph", 8, 8, [])],
+            ),
+        ]
+        for text, expected in cases:
+            with self.subTest(text=text):
+                self.assertEqual(kl(text), expected)
+
 
 if __name__ == "__main__":
     unittest.main()
