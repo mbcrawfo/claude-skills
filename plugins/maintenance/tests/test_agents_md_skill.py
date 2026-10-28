@@ -319,6 +319,78 @@ class SkillMdTest(unittest.TestCase):
         ):
             self.assertIn(phrase, text)
 
+    def _section(self, start, end=None):
+        text = SKILL.read_text(encoding="utf-8")
+        return text[text.index(start) : text.index(end)] if end else text[text.index(start) :]
+
+    def test_size_question_in_confirm_step(self):
+        confirm = self._section("## 2. Confirm before dispatch", "## 3. Dispatch")
+        for phrase in (
+            "no size question is due",
+            "`limits.source`",
+            "`rules_over`",
+            "`files_over`",
+            "Adopt size limits?",
+            "80 words per rule, 8 KB per file, 16 KB for the root",
+            "answer none",
+        ):
+            self.assertIn(phrase, confirm)
+
+    def test_limits_line_grammar_in_skill(self):
+        text = SKILL.read_text(encoding="utf-8")
+        for line in ("Size limits: none.", "; checked by ", "; not checked by a test."):
+            self.assertIn(line, text)
+
+    def test_dispatch_carries_docs_bytes_over_and_limits(self):
+        dispatch = self._section("## 3. Dispatch", "## 4. Merge")
+        for phrase in ("DOCS:", "BYTES:", "OVER:", "size limits:", "--rule-words"):
+            self.assertIn(phrase, dispatch)
+
+    def test_merge_reconciles_repoints_and_backstops(self):
+        merge = self._section("## 4. Merge", "## 5. Sort")
+        for bullet in ("- **Reconcile destinations.**", "- **Re-point references.**", "- **Size accounting.**"):
+            self.assertIn(bullet, merge)
+        (size,) = [line for line in merge.splitlines() if line.startswith("- **Size accounting.**")]
+        for phrase in ("at most once per file", "file-level", "exception list", "leaving those moves out"):
+            self.assertIn(phrase, size)
+        (refs,) = [line for line in merge.splitlines() if line.startswith("- **Re-point references.**")]
+        for phrase in ("`references`", "backticked", "`truncated`"):
+            self.assertIn(phrase, refs)
+
+    def test_approval_message_sections(self):
+        approval = self._section("## 6. Approval message", "## 7. Apply")
+        for phrase in (
+            "**Documentation moves",
+            "**Splits",
+            "**Size",
+            "**The limits line",
+            "**The test question",
+            "**Test maintenance",
+            "boundary cases",
+            "exception list",
+            "not checked by a test",
+        ):
+            self.assertIn(phrase, approval)
+
+    def test_apply_writes_docs_and_runs_only_the_new_test(self):
+        apply = self._section("## 7. Apply", "## 8. Commit")
+        for phrase in (
+            "`# <title>`",
+            "`pointer`",
+            "`parts`",
+            "never the whole suite",
+            "`dotnet test --filter`",
+            "nothing is committed",
+            "uncommitted",
+        ):
+            self.assertIn(phrase, apply)
+        self.assertIn("could not be run", self._section("## 8. Commit"))
+
+    def test_script_calls_accept_size_flags(self):
+        text = SKILL.read_text(encoding="utf-8")
+        for flag in ("--rule-words", "--file-bytes", "--root-bytes", "--no-size-limits"):
+            self.assertIn(flag, text[text.index("## The script") : text.index("## 1. Inventory")])
+
     def test_manifest_descriptions_match(self):
         repo = PLUGIN.parent.parent
         plugin = json.loads((PLUGIN / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
@@ -458,6 +530,7 @@ class QuotedPathsTest(unittest.TestCase):
         repo = {"repo root": str(self.repo)}
         inventory = lines["inventory"].replace(" [--scope '<dir>' ...]", " --scope '<dir>'")
         inventory = inventory.replace(" [--base '<ref>']", "")
+        inventory = re.sub(r" \[--[\w-]+(?: N)?\]", "", inventory)
         out = self.bash(fill(inventory, {**repo, "dir": "my docs"}))
         self.assertEqual(out["scope"], ["my docs"])
         self.assertEqual([f["path"] for f in out["files"]], ["AGENTS.md", "my docs/AGENTS.md"])
@@ -468,6 +541,7 @@ class QuotedPathsTest(unittest.TestCase):
         payload = {"file": "my docs/AGENTS.md", "verdicts": [{"blocks": ["b1", "b2"], "action": "keep"}]}
         message.write_text("```json\n" + json.dumps(payload) + "\n```\n", encoding="utf-8")
         check = lines["check-verdicts"].replace("full|ancestor", "full").replace(" [--scope '<dir>' ...]", "")
+        check = re.sub(r" \[--rule-words N\]", "", check)
         out = self.bash(fill(check, {**repo, "path": "my docs/AGENTS.md", "message file": str(message)}))
         self.assertEqual(out["counts"], {"keep": 1})
 
