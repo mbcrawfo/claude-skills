@@ -664,6 +664,23 @@ class UnstageableTargetTest(VerdictsTestCase):
                     self.move(target, kind), f"verdict 1: target {target} is inside another git repository"
                 )
 
+    def test_targets_in_a_linked_worktree_are_rejected(self):
+        # A linked worktree's `.git` is a file, not a directory; git add skips the path and exits 0.
+        git(self.repo, "worktree", "add", "-q", "wt")
+        self.assertTrue((self.repo / "wt" / ".git").is_file())
+        for target, kind in [("wt/AGENTS.md", "agents_md"), ("wt/src/a.py", "comment")]:
+            with self.subTest(target=target):
+                self.assertRejected(
+                    self.move(target, kind), f"verdict 1: target {target} is inside another git repository: wt"
+                )
+
+    def test_a_dangling_git_symlink_is_not_a_repo(self):
+        # git stages paths there, so the target stays valid.
+        (self.repo / "odd").mkdir()
+        (self.repo / "odd" / ".git").symlink_to("nowhere")
+        code, _, err = self.move("odd/AGENTS.md")
+        self.assertEqual(code, 0, err)
+
     def test_targets_beyond_a_symlinked_directory_are_rejected(self):
         # git stages neither path, though both lead to src/ inside the repo.
         (self.repo / "alias").symlink_to("src", target_is_directory=True)

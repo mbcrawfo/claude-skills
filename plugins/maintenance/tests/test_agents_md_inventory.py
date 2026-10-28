@@ -78,6 +78,35 @@ class InventoryTest(RepoTestCase):
         self.assertFalse(out["worktree_clean"])
         self.assertEqual(out["uncommitted"], {"count": 1, "paths": ["new/"]})
 
+    def test_in_head_says_whether_a_commit_adds_the_whole_file(self):
+        # A file staged or marked intent-to-add is tracked, but not in HEAD: committing it adds all of it.
+        write(self.repo, "AGENTS.md", "- a\n")
+        commit_all(self.repo, "add")
+        write(self.repo, "staged/AGENTS.md", "- s\n")
+        git(self.repo, "add", "staged/AGENTS.md")
+        write(self.repo, "ita/AGENTS.md", "- i\n")
+        git(self.repo, "add", "-N", "ita/AGENTS.md")
+        write(self.repo, "new/AGENTS.md", "- n\n")
+        facts = {f["path"]: (f["tracked"], f["dirty"], f["in_head"]) for f in self.inventory()["files"]}
+        self.assertEqual(
+            facts,
+            {
+                "AGENTS.md": (True, False, True),
+                "staged/AGENTS.md": (True, True, False),
+                "ita/AGENTS.md": (True, True, False),
+                "new/AGENTS.md": (False, True, False),
+            },
+        )
+
+    def test_in_head_with_no_commits_yet(self):
+        repo = self.tmp / "unborn"
+        repo.mkdir()
+        git(repo, "init", "-b", "main")
+        write(repo, "AGENTS.md", "- a\n")
+        git(repo, "add", "AGENTS.md")
+        (item,) = run("inventory", "--repo", str(repo))["files"]
+        self.assertEqual((item["tracked"], item["in_head"]), (True, False))
+
     def test_untracked_counts_as_dirty_whatever_the_user_config(self):
         write(self.repo, "AGENTS.md", "- a\n")
         commit_all(self.repo, "add")
@@ -341,6 +370,10 @@ class InventoryTest(RepoTestCase):
         def staged_rename(repo):
             git(repo, "mv", "src/a.py", "src/b.py")
 
+        def worktree_rename(repo):
+            (repo / "src" / "a.py").rename(repo / "src" / "c.py")
+            git(repo, "add", "-N", "src/c.py")
+
         for name, change, paths in [
             ("unstaged edit", lambda repo: write(repo, "src/a.py", "x = 2\n"), ["src/a.py"]),
             ("staged edit", staged_edit, ["src/a.py"]),
@@ -348,6 +381,7 @@ class InventoryTest(RepoTestCase):
             ("deletion", lambda repo: (repo / "src" / "a.py").unlink(), ["src/a.py"]),
             ("untracked file", lambda repo: write(repo, "notes.txt", "x\n"), ["notes.txt"]),
             ("staged rename", staged_rename, ["src/b.py"]),  # one entry, though porcelain -z gives two paths
+            ("worktree rename", worktree_rename, ["src/c.py"]),  # ` R`: the rename is in the second column
         ]:
             with self.subTest(name=name):
                 with tempfile.TemporaryDirectory() as tmp:
@@ -530,6 +564,13 @@ class LinkedFileTest(RepoTestCase):
         (self.repo / "AGENTS.md").symlink_to("CLAUDE.md")
         (item,) = self.inventory()["files"]
         self.assertEqual((item["resolved"], item["tracked"], item["dirty"]), ("CLAUDE.md", False, True))
+
+    def test_in_head_is_the_resolved_files(self):
+        write(self.repo, "CLAUDE.md", "- one\n")
+        commit_all(self.repo, "add")
+        (self.repo / "AGENTS.md").symlink_to("CLAUDE.md")  # a new link to a committed file
+        (item,) = self.inventory()["files"]
+        self.assertTrue(item["in_head"])
 
     def test_a_retargeted_link_is_dirty(self):
         write(self.repo, "CLAUDE.md", "- one\n")

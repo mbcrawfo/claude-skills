@@ -243,8 +243,11 @@ class SkillMdTest(unittest.TestCase):
         merge = text[text.index("## 4. Merge") : text.index("## 5. Sort")]
         (dirty,) = [line for line in merge.splitlines() if line.startswith("- **Dirty files.**")]
         self.assertIn("`??`", dirty)
+        self.assertIn("an `A` in either column", dirty)  # staged-new and intent-to-add
         sort = text[text.index("## 5. Sort") : text.index("## 6. Approval message")]
-        self.assertIn("adds the whole file", sort)
+        (line,) = [line for line in sort.splitlines() if "adds the whole file" in line]
+        for phrase in ("not in HEAD", "`in_head` false", "`??`", "`A`"):
+            self.assertIn(phrase, line)
 
     def test_linked_files_go_through_their_resolved_path(self):
         text = SKILL.read_text(encoding="utf-8")

@@ -485,8 +485,8 @@ def _status(root: Path, *paths: str, untracked: str = "all") -> list[tuple[str, 
         field = fields[i]
         if len(field) > 3:
             entries.append((field[:2], field[3:]))
-            if field[0] in "RC":
-                i += 1  # a rename or copy is followed by its source path
+            if field[0] in "RC" or field[1] in "RC":
+                i += 1  # a rename or copy, staged or in the work tree, is followed by its source path
         i += 1
     return entries
 
@@ -504,6 +504,11 @@ def _git_state(root: Path, resolved: str, paths: list[str]) -> tuple[bool, bool]
     return tracked, dirty
 
 
+def _in_head(root: Path, resolved: str) -> bool:
+    """Whether HEAD holds the file. One that is staged or intent-to-add is tracked, but committing it adds all of it."""
+    return _git(root, "cat-file", "-e", f"HEAD:{resolved}", check=False).returncode == 0
+
+
 def _uncommitted(root: Path) -> dict:
     """The repo's uncommitted work: staged or unstaged changes, and untracked files that aren't ignored."""
     entries = _status(root, untracked="normal")  # an untracked directory is one entry
@@ -519,6 +524,7 @@ def _file_entry(root: Path, path: str, resolved: str, aliases: list[str], role: 
         "aliases": aliases,
         "role": role,
         "tracked": tracked,
+        "in_head": _in_head(root, resolved),
         "dirty": dirty,
         "bytes": len(raw),
         "sha256": hashlib.sha256(raw).hexdigest(),
@@ -749,9 +755,10 @@ def _check_stageable(root: Path, target: str) -> None:
         first = (result.stderr.strip().splitlines() or ["git check-ignore failed"])[0]
         raise CliError(f"target {target} can't be staged: {first}")
     # A nested repo that isn't a submodule passes check-ignore, and `git add` skips it without an error. Any
-    # directory below the root with a `.git` entry (a repo's directory, a submodule's or worktree's file) is one.
+    # directory below the root with a `.git` (a repo's directory, a submodule's or linked worktree's file) is one;
+    # a dangling `.git` symlink is not, and git stages paths there.
     for parent in Path(target).parents:
-        if parent != Path(".") and os.path.lexists(root / parent / ".git"):
+        if parent != Path(".") and os.path.exists(root / parent / ".git"):
             raise CliError(f"target {target} is inside another git repository: {parent.as_posix()}")
 
 

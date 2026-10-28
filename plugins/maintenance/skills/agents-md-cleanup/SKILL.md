@@ -101,7 +101,7 @@ Combine the verdicts across files:
 - **Empty sections.** When the removals would leave a heading with nothing under it, or a file with no statements, add a row removing that heading or file.
 - **Linked files.** An entry's `path` and `aliases` are its `resolved` file or symlinks to it, so its edits go to `resolved`, once. A move target that is one of an entry's paths means that entry.
 - **Other files.** For every other existing file to edit (a move target, a `proposed` one included, `.gitignore`, the rulings file), run `blocks` on it and keep its `sha256` and its `resolved` path, used from here on.
-- **Dirty files.** Use `dirty` for files in `files`. For every other file to edit, including each source file that a comment move would edit, run `GIT_LITERAL_PATHSPECS=1 git status --porcelain --untracked-files=all -- '<file>'` on its resolved path. Any output makes it dirty, an untracked (`??`) file included. Flag each dirty one.
+- **Dirty files.** Use `dirty` for files in `files`. For every other file to edit, including each source file that a comment move would edit, run `GIT_LITERAL_PATHSPECS=1 git status --porcelain --untracked-files=all -- '<file>'` on its resolved path. Any output makes it dirty, an untracked (`??`) file included. Flag each dirty one, and note each that is not in HEAD: `??`, or an `A` in either column of its status code (staged new, or intent-to-add).
 - **Guidelines section.** On a first run, draft it for the root AGENTS.md (a new file if the user accepted one). If the file has equivalent guidelines under another heading, edit those and give them a heading containing `AGENTS.md guidelines`. Keep it under about 10 lines, in this shape:
 
   ```
@@ -135,7 +135,7 @@ Combine the verdicts across files:
 - any other fix;
 - a move into a new AGENTS.md or a code comment that the policy doesn't pre-approve;
 - deleting a whole AGENTS.md file;
-- any edit to a dirty file. For an untracked file (`??`, or `tracked` false), the question says the commit adds the whole file, not only this edit.
+- any edit to a dirty file. For a file not in HEAD (`in_head` false, or `??` or an `A` in its status code), the question says the commit adds the whole file, not only this edit.
 
 ## 6. Approval message
 
