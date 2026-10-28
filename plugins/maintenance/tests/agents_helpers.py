@@ -30,7 +30,7 @@ def call(*argv: str) -> tuple[int, str, str]:
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         try:
             code = agents_md_inventory.main(list(argv))
-        except SystemExit as exc:  # argparse usage errors
+        except SystemExit as exc:  # --help
             code = exc.code if isinstance(exc.code, int) else 2
     return code, out.getvalue(), err.getvalue()
 

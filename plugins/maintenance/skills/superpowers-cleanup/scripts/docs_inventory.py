@@ -20,6 +20,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+from typing import NoReturn
 
 DEFAULT_SPECS = "docs/superpowers/specs"
 DEFAULT_PLANS = "docs/superpowers/plans"
@@ -34,6 +35,13 @@ _BACKTICK = re.compile(r"`([^`]+)`")
 
 class CliError(Exception):
     pass
+
+
+class _Parser(argparse.ArgumentParser):
+    """Reports a usage error as a CliError, so it exits 1 with one `error: ...` line like any other failure."""
+
+    def error(self, message: str) -> NoReturn:
+        raise CliError(" ".join(message.split()))
 
 
 def _git(root: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
@@ -394,7 +402,7 @@ def cmd_refs(args: argparse.Namespace) -> dict:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="docs_inventory.py", description=__doc__.splitlines()[0])
+    parser = _Parser(prog="docs_inventory.py", description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
 
     inv = sub.add_parser("inventory", help="list spec, plan and research files with their facts")
@@ -413,8 +421,8 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
     try:
+        args = _parser().parse_args(argv)
         result = args.func(args)
     except CliError as exc:
         print(f"error: {exc}", file=sys.stderr)

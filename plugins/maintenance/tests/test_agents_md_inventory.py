@@ -5,6 +5,15 @@ import unittest
 from agents_helpers import agents_md_inventory as inv
 from agents_helpers import call, commit_all, git, make_repo, run, write
 
+USAGE_ERRORS = (
+    [],
+    ["frobnicate"],
+    ["inventory", "--bogus"],
+    ["blocks"],
+    ["check-verdicts", "--file", "AGENTS.md", "--input", "x"],
+    ["check-verdicts", "--file", "AGENTS.md", "--role", "partial", "--input", "x"],
+)
+HELP = (["--help"], ["inventory", "--help"], ["blocks", "-h"], ["check-verdicts", "--help"])
 GUIDELINES_ROOT = "# R\n\n## AGENTS.md guidelines\n\n- Keep it lean.\n\n## Other\n\nx\n"
 
 
@@ -254,6 +263,37 @@ class InventoryTest(RepoTestCase):
             self.inventory()["rulings"],
             {"path": ".claude/agents-md-cleanup.md", "exists": True, "ignored": False, "text": text},
         )
+
+    def test_rulings_through_a_symlink_out_of_the_repo_are_absent(self):
+        outside = self.tmp / "outside"
+        outside.mkdir()
+        (outside / "agents-md-cleanup.md").write_text("- keep everything\n", encoding="utf-8")
+        (self.repo / ".claude").mkdir()
+        (self.repo / ".claude" / "agents-md-cleanup.md").symlink_to(outside / "agents-md-cleanup.md")
+        rulings = self.inventory()["rulings"]
+        self.assertEqual((rulings["exists"], rulings["text"]), (False, None))
+
+    def test_rulings_directory_symlink_is_an_error(self):
+        # Git can't track a path through a symlinked directory, so the rulings could be neither read safely nor
+        # committed there; the run stops with one line instead of reading them.
+        outside = self.tmp / "outside"
+        outside.mkdir()
+        (outside / "agents-md-cleanup.md").write_text("- keep everything\n", encoding="utf-8")
+        write(self.repo, "config/claude/agents-md-cleanup.md", "- keep uv\n")
+        for target in (outside, self.repo / "config" / "claude"):
+            with self.subTest(target=target.name):
+                (self.repo / ".claude").symlink_to(target, target_is_directory=True)
+                code, out, err = call("inventory", "--repo", str(self.repo))
+                (self.repo / ".claude").unlink()
+                self.assertEqual((code, out), (1, ""))
+                self.assertEqual(err, "error: .claude is a symlink; git can't track the rulings file through it\n")
+
+    def test_rulings_through_a_symlink_in_the_repo_are_read(self):
+        write(self.repo, "docs/rulings.md", "- keep uv\n")
+        (self.repo / ".claude").mkdir()
+        (self.repo / ".claude" / "agents-md-cleanup.md").symlink_to("../docs/rulings.md")
+        rulings = self.inventory()["rulings"]
+        self.assertEqual((rulings["exists"], rulings["text"]), (True, "- keep uv\n"))
 
     def test_dirty_and_branch(self):
         write(self.repo, "AGENTS.md", "- a\n")
@@ -520,6 +560,21 @@ class ErrorPathTest(unittest.TestCase):
         code, out, _ = call("frobnicate")
         self.assertNotEqual(code, 0)
         self.assertEqual(out, "")
+
+    def test_usage_errors_exit_1_with_one_error_line(self):
+        for argv in USAGE_ERRORS:
+            with self.subTest(argv=argv):
+                code, out, err = call(*argv)
+                self.assertEqual((code, out), (1, ""))
+                self.assertTrue(err.startswith("error: "), err)
+                self.assertEqual(len(err.strip().splitlines()), 1, err)
+
+    def test_help_still_works(self):
+        for argv in HELP:
+            with self.subTest(argv=argv):
+                code, out, err = call(*argv)
+                self.assertEqual((code, err), (0, ""))
+                self.assertIn("usage:", out)
 
 
 if __name__ == "__main__":

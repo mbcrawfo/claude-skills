@@ -26,6 +26,7 @@ import posixpath
 import re
 import subprocess
 import sys
+from typing import NoReturn
 
 RULINGS_PATH = ".claude/agents-md-cleanup.md"
 
@@ -46,6 +47,13 @@ _TABLE_DELIMITER = re.compile(r"^[ \t]*\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \
 
 class CliError(Exception):
     pass
+
+
+class _Parser(argparse.ArgumentParser):
+    """Reports a usage error as a CliError, so it exits 1 with one `error: ...` line like any other failure."""
+
+    def error(self, message: str) -> NoReturn:
+        raise CliError(" ".join(message.split()))
 
 
 def _indent(line: str) -> int:
@@ -519,8 +527,10 @@ def _guidelines(root: Path, all_paths: list[str]) -> dict | None:
 
 
 def _rulings(root: Path) -> dict:
-    target = root / RULINGS_PATH
-    exists = target.is_file()
+    if (root / RULINGS_PATH).parent.is_symlink():
+        raise CliError(".claude is a symlink; git can't track the rulings file through it")
+    # Like every other file the script reads, the rulings count only when they resolve to a file inside the repo.
+    exists = _is_inside(root, root / RULINGS_PATH)
     # `check-ignore` rejects --literal-pathspecs, so it runs without it; the path is a fixed literal anyway.
     result = _git(root, "check-ignore", "-q", RULINGS_PATH, literal=False, check=False)
     if result.returncode not in (0, 1):
@@ -802,7 +812,7 @@ def cmd_check_verdicts(args: argparse.Namespace) -> dict:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="agents_md_inventory.py", description=__doc__.splitlines()[0])
+    parser = _Parser(prog="agents_md_inventory.py", description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
 
     inv = sub.add_parser("inventory", help="list AGENTS.md files with their blocks and facts")
@@ -827,8 +837,8 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
     try:
+        args = _parser().parse_args(argv)
         result = args.func(args)
     except CliError as exc:
         print(f"error: {exc}", file=sys.stderr)

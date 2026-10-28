@@ -722,8 +722,7 @@ class AncestorRoleTest(VerdictsTestCase):
         self.assertRejected(self.check([self.MOVE, self.MOVE], role="ancestor", scope=["src"]), "b2")
 
     def test_bad_role_is_a_usage_error(self):
-        code, _, _ = self.check([], role="partial")
-        self.assertEqual(code, 2)
+        self.assertRejected(self.check([], role="partial"), "--role")
 
 
 if __name__ == "__main__":
