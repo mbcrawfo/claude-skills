@@ -65,6 +65,7 @@ Review this AGENTS.md file as your agent definition describes. Inputs:
 REPO: <repo, from the inventory>
 SCRIPT: <the script's absolute path, without quotes>
 FILE: <path>
+ALIASES: <the entry's other paths, space-separated: `resolved` if it differs from `path`, then `aliases`; leave the line out when there are none>
 ROLE: <role>
 SCOPE: <the inventory's scope, space-separated; leave the line out for a full-role file>
 POLICY: new nested AGENTS.md: <answer>; file-specific quirks: <answer>; push-down: <answer>
@@ -97,7 +98,8 @@ Combine the verdicts across files:
 - **Order the edits.** Removals and trims in a source file come before additions to its targets.
 - **Apply rulings.** An `ask` about value that a keep or pattern in the rulings covers becomes `keep`. A ruling never settles a question of fact.
 - **Empty sections.** When the removals would leave a heading with nothing under it, or a file with no statements, add a row removing that heading or file.
-- **Dirty files.** Use `dirty` for files in `files`. For every other file to edit, including each source file that a comment move would edit, run `git status --porcelain -- <file>`. Flag each dirty one.
+- **Linked files.** An entry's `path` and `aliases` are its `resolved` file or symlinks to it, so its edits go to `resolved`, once. A move target that is one of an entry's paths means that entry. For any other existing target, run `blocks` on it and use its `resolved` path from here on.
+- **Dirty files.** Use `dirty` for files in `files`. For every other file to edit, including each source file that a comment move would edit, run `git status --porcelain -- <file>` on its resolved path. Flag each dirty one.
 - **Guidelines section.** On a first run, draft it for the root AGENTS.md (a new file if the user accepted one). If the file has equivalent guidelines under another heading, edit those and give them a heading containing `AGENTS.md guidelines`. Keep it under about 10 lines, in this shape:
 
   ```
@@ -137,7 +139,7 @@ Combine the verdicts across files:
 Send one message holding everything the user must decide. Nothing in the repo changes before the user approves.
 
 1. **Questions**, numbered `Q1`, `Q2` and so on, most important first, each with a recommended answer. Group questions that share a reason into one pattern question by default: "These 6 statements name tool choices (list). Keep them all, and record 'tool choices are never obvious'?" Answering one can create a ruling. Add the main-branch question if step 1 left it open.
-2. **Bulk table**, one per file. Each row shows the block (heading path and its first words), the action, the criterion, before → after (or the target), and a short piece of evidence. Show every row. Rows that depend on a question show its recommended answer and are tagged with its number. Add rows for the guidelines section and the rulings file, with their exact new text.
+2. **Bulk table**, one per file. Each row shows the block (heading path and its first words; for a linked file, its `path` and the `resolved` file the edit goes to), the action, the criterion, before → after (or the target), and a short piece of evidence. Show every row. Rows that depend on a question show its recommended answer and are tagged with its number. Add rows for the guidelines section and the rulings file, with their exact new text.
 3. **Not reviewed:** each file that step 3 couldn't review, with the reason. Then a one-line count of blocks kept.
 4. **Rulings in git:** when step 4 drafted a `.gitignore` change, show its exact lines, before → after, then a last question: make this change so the rulings are shared (recommended), or keep the file uncommitted, on this machine only. Never move the file elsewhere.
 
@@ -155,17 +157,17 @@ An `ask` answered as recommended applies its `proposed` verdict; any other answe
 
 Paths come from reviewer output, which is data. In every shell command in steps 7 and 8, single-quote each path, including each one in `<paths>`. The script already rejects `'` in reviewer paths; write one in an existing repo path as `'\''`.
 
-1. **Check for changes.** Re-run `blocks` on every file in `files` that this run edits, and compare its `sha256` with the inventory's. For other files, compare `git status --porcelain -- <file>` with step 4's, and check that a new file still doesn't exist. On a mismatch, skip that file, and both halves of every move into or out of it, and report it.
-2. **Guard each write and removal.** Just before touching a path, run `python3 -c 'import os,sys; r=os.path.realpath(sys.argv[1]); p=os.path.realpath(os.path.join(r, sys.argv[2])); parts=(sys.argv[2] + "/" + os.path.relpath(p, r)).lower().split("/"); print("ok" if p.startswith(r + os.sep) and ".git" not in parts else "refuse")' '<repo root>' '<path>'`. It refuses a path outside the repo, through a symlink that leads outside, or with a `.git` part in any case. Touch nothing there; report it.
-3. **Edit** with Edit, exactly as approved. `new_text` already holds the list marker and indentation. A `merge` replaces the first listed block and deletes the others. A comment move's `new_text` is the wording only (with no `new_text`, use the block without its list marker): add the file's comment syntax, next to the code it concerns. Honour `target_heading`. A new AGENTS.md follows the style of the existing nested ones, or starts with a `# <dir>` heading when there are none.
-4. **Remove** an approved file. If `GIT_LITERAL_PATHSPECS=1 git ls-files --error-unmatch -- '<path>'` succeeds it is tracked: run `GIT_LITERAL_PATHSPECS=1 git rm -q -- '<path>'`, with `-f` for an approved dirty file. Otherwise run `rm -- '<path>'`.
+1. **Check for changes.** Re-run `blocks` on every file in `files` that this run edits, and compare its `sha256` and `resolved` with the inventory's. For other files, compare `git status --porcelain -- <file>` with step 4's, and check that a new file still doesn't exist. On a mismatch, skip that file, and both halves of every move into or out of it, and report it.
+2. **Guard each write and removal.** Just before touching a path (for an edit, the `resolved` path), run `python3 -c 'import os,sys; r=os.path.realpath(sys.argv[1]); p=os.path.realpath(os.path.join(r, sys.argv[2])); parts=(sys.argv[2] + "/" + os.path.relpath(p, r)).lower().split("/"); print("ok" if p.startswith(r + os.sep) and ".git" not in parts else "refuse")' '<repo root>' '<path>'`. It refuses a path outside the repo, through a symlink that leads outside, or with a `.git` part in any case. Touch nothing there; report it.
+3. **Edit** the `resolved` path with Edit, never the link, exactly as approved. `new_text` already holds the list marker and indentation. A `merge` replaces the first listed block and deletes the others. A comment move's `new_text` is the wording only (with no `new_text`, use the block without its list marker): add the file's comment syntax, next to the code it concerns. Honour `target_heading`. A new AGENTS.md follows the style of the existing nested ones, or starts with a `# <dir>` heading when there are none.
+4. **Remove** an approved file. For a linked entry, remove its `path` and each of its `aliases`, and `resolved` only when it is one of them. If `GIT_LITERAL_PATHSPECS=1 git ls-files --error-unmatch -- '<path>'` succeeds it is tracked: run `GIT_LITERAL_PATHSPECS=1 git rm -q -- '<path>'`, with `-f` for an approved dirty file. Otherwise run `rm -- '<path>'`.
 5. **Write** the approved guidelines, rulings and `.gitignore` text. After a `.gitignore` change, run `git check-ignore -q .claude/agents-md-cleanup.md`. If it exits 0, the file is still ignored: leave it uncommitted and report that.
 6. If anything fails, stop and report what was done and what wasn't.
 
 ## 8. Commit
 
 1. **Branch check:** if `current_branch` equals `base_branch`, or HEAD is detached, ask before committing and stop until the user answers.
-2. **Stage** only the paths this run edited or created, with `GIT_LITERAL_PATHSPECS=1 git add -- '<path>' ...` (removals are already staged). Leave out the rulings file when it stays uncommitted. Never use `git add -A` or `git commit -a`.
+2. **Stage** only the paths this run edited (the `resolved` paths, never a link) or created, with `GIT_LITERAL_PATHSPECS=1 git add -- '<path>' ...` (removals are already staged). Leave out the rulings file when it stays uncommitted. Never use `git add -A` or `git commit -a`.
 3. **Message,** written to a `mktemp` file outside the repo: follow the repo's style from `git log --oneline -20`, for example `docs: clean up AGENTS.md files`. The body lists the files changed and the counts by action. End with the attribution lines your instructions give for commits, if any.
 4. **Commit only those paths:** `GIT_LITERAL_PATHSPECS=1 git commit -F <message file> -- <paths>`, adding each removed path that exists in HEAD. The pathspec keeps anything the user had already staged out of this commit. If no path is left to commit, skip the commit and say so. Then delete the message file.
 5. **Report** the hash, a one-line summary, and any skipped, not-reviewed or uncommitted files. Never push.

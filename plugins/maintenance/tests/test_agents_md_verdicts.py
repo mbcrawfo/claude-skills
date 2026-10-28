@@ -477,6 +477,33 @@ class FullRoleTest(VerdictsTestCase):
                 }
                 self.assertRejected(self.check(self.keep_rest(verdict)), "is inside .git")
 
+    def test_move_target_that_is_the_same_file_is_rejected(self):
+        # A link to the reviewed file, or the file a link points to, is the file itself.
+        (self.repo / "docs").mkdir()
+        (self.repo / "docs" / "AGENTS.md").symlink_to("../AGENTS.md")
+        write(self.repo, "CLAUDE.md", "- c\n")
+        (self.repo / "web").mkdir()
+        (self.repo / "web" / "AGENTS.md").symlink_to("../CLAUDE.md")
+        commit_all(self.repo, "links")
+        for file, target, kind in [
+            ("AGENTS.md", "docs/AGENTS.md", "agents_md"),
+            ("docs/AGENTS.md", "AGENTS.md", "agents_md"),
+            ("web/AGENTS.md", "CLAUDE.md", "comment"),
+        ]:
+            with self.subTest(file=file, target=target):
+                verdict = {
+                    "blocks": ["b1"],
+                    "action": "move",
+                    "criterion": "level",
+                    "target": target,
+                    "target_kind": kind,
+                    "evidence": ["e"],
+                }
+                blocks = ("b1",) if file == "web/AGENTS.md" else ("b1", "b2", "b3", "b4")
+                verdicts = [verdict, *({"blocks": [b], "action": "keep"} for b in blocks if b != "b1")]
+                payload = {"file": file, "verdicts": verdicts}
+                self.assertRejected(self.check(None, file=file, payload=payload), "the file itself")
+
     def test_symlink_loop_file_is_rejected(self):
         (self.repo / "loop").mkdir()
         (self.repo / "loop" / "AGENTS.md").symlink_to("AGENTS.md")
@@ -593,9 +620,25 @@ class GuidelinesSectionTest(VerdictsTestCase):
                 payload = {"file": name, "verdicts": verdicts}
                 self.assertRejected(self.check(None, file=name, payload=payload, repo=repo), "guidelines")
 
+    def test_a_link_to_the_root_file_is_the_root(self):
+        # The skill may pass any path of a merged entry; the root's guidelines stay protected through each.
+        (self.repo / "docs").mkdir()
+        (self.repo / "docs" / "AGENTS.md").symlink_to("../AGENTS.md")
+        commit_all(self.repo, "link")
+        payload = {"file": "docs/AGENTS.md", "verdicts": self.keep_rest(self.verdict("trim"))}
+        self.assertRejected(self.check(None, file="docs/AGENTS.md", payload=payload), "guidelines")
+
     def test_nested_file_is_not_the_root(self):
         payload = {"file": "src/AGENTS.md", "verdicts": self.keep_rest(self.verdict("trim"))}
         code, _, err = self.check(None, file="src/AGENTS.md", payload=payload)
+        self.assertEqual(code, 0, err)
+        # A nested link to a root file that isn't an AGENTS.md is not the root either.
+        write(self.repo, "CLAUDE.md", GUIDED)
+        (self.repo / "web").mkdir()
+        (self.repo / "web" / "AGENTS.md").symlink_to("../CLAUDE.md")
+        commit_all(self.repo, "link")
+        payload = {"file": "web/AGENTS.md", "verdicts": self.keep_rest(self.verdict("trim"))}
+        code, _, err = self.check(None, file="web/AGENTS.md", payload=payload)
         self.assertEqual(code, 0, err)
 
     def test_ancestor_root_cannot_move_a_guidelines_block(self):

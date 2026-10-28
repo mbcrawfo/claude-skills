@@ -6,7 +6,8 @@ Every command prints one JSON object on stdout. On failure it exits 1 and prints
 
 Commands:
   inventory  every AGENTS.md in scope (and the ancestors of a partial run), split into blocks,
-             with git state, the root file's guidelines section and any saved rulings
+             with git state, the root file's guidelines section and any saved rulings; paths that
+             are one file through symlinks merge into one entry, with the file's `resolved` path
   blocks     one file's blocks and content hash, to check it before an edit is applied
   check-verdicts
              validate a reviewer's verdicts for one file against that file's blocks
@@ -401,19 +402,46 @@ def _decode(raw: bytes) -> str:
     return raw.decode("utf-8", errors="replace")
 
 
-def _git_state(root: Path, path: str) -> tuple[bool, bool]:
-    """(tracked, dirty) for one file. Untracked files are not dirty: only non-`??` status entries count."""
-    tracked = _git(root, "ls-files", "--error-unmatch", "--", path, check=False).returncode == 0
-    status = _git(root, "status", "--porcelain=v1", "-z", "--", path).stdout
+def _on_disk_spelling(root: Path, rel: str) -> str:
+    """`rel` with each part spelled as it is on disk. Only a case-insensitive filesystem makes them differ."""
+    current = root
+    spelled = []
+    for part in rel.split("/"):
+        try:
+            names = os.listdir(current)
+        except OSError:
+            names = []
+        if part not in names:  # the path exists, so a name that differs only in case is this part
+            part = next((name for name in names if name.lower() == part.lower()), part)
+        spelled.append(part)
+        current = current / part
+    return "/".join(spelled)
+
+
+def _resolved(root: Path, path: str) -> str:
+    """The repo-relative path of the file `path` is, once symlinks are followed: where its edits go."""
+    return _on_disk_spelling(root, (root / path).resolve().relative_to(root).as_posix())
+
+
+def _git_state(root: Path, resolved: str, paths: list[str]) -> tuple[bool, bool]:
+    """(tracked, dirty) for one file and the links to it.
+
+    `tracked` is the resolved file's. `dirty` counts the resolved file and each link, since a retargeted link is a
+    change too. Untracked files are not dirty: only non-`??` status entries count.
+    """
+    tracked = _git(root, "ls-files", "--error-unmatch", "--", resolved, check=False).returncode == 0
+    status = _git(root, "status", "--porcelain=v1", "-z", "--", resolved, *paths).stdout
     dirty = any(entry[:2] != "??" for entry in status.split("\0") if len(entry) > 3)
     return tracked, dirty
 
 
-def _file_entry(root: Path, path: str, role: str) -> dict:
+def _file_entry(root: Path, path: str, resolved: str, aliases: list[str], role: str) -> dict:
     raw = _read_bytes(root, path)
-    tracked, dirty = _git_state(root, path)
+    tracked, dirty = _git_state(root, resolved, [path, *aliases])
     return {
         "path": path,
+        "resolved": resolved,
+        "aliases": aliases,
         "role": role,
         "tracked": tracked,
         "dirty": dirty,
@@ -421,6 +449,27 @@ def _file_entry(root: Path, path: str, role: str) -> dict:
         "sha256": hashlib.sha256(raw).hexdigest(),
         "blocks": split_blocks(_decode(raw)),
     }
+
+
+def _entries(root: Path, all_paths: list[str], scopes: list[str]) -> list[dict]:
+    """One entry per file: paths that resolve to the same file merge, so it is reviewed and edited once.
+
+    The entry's `path` is the shallowest of its paths in scope, since agents load the file at every path and the
+    shallowest covers the most; the others, in scope or not, are its `aliases`. It is `full` if any path is.
+    """
+    groups: dict[str, list[str]] = {}
+    for path in all_paths:
+        groups.setdefault(_resolved(root, path), []).append(path)
+    files = []
+    for resolved, paths in groups.items():
+        roles = {path: _role(path, scopes) for path in paths}
+        in_scope = [path for path in paths if roles[path] is not None]
+        if not in_scope:
+            continue
+        lead = min(in_scope, key=lambda path: (path.count("/"), path))
+        role = "full" if "full" in roles.values() else "ancestor"
+        files.append(_file_entry(root, lead, resolved, [path for path in paths if path != lead], role))
+    return sorted(files, key=lambda entry: entry["path"])
 
 
 def _guidelines(root: Path, all_paths: list[str]) -> dict | None:
@@ -448,11 +497,7 @@ def cmd_inventory(args: argparse.Namespace) -> dict:
     scopes = resolve_scope(root, args.scope)
     base = detect_base(root, args.base)
     all_paths = discover(root)
-    files = []
-    for path in all_paths:
-        role = _role(path, scopes)
-        if role is not None:
-            files.append(_file_entry(root, path, role))
+    files = _entries(root, all_paths, scopes)
     full = sum(1 for f in files if f["role"] == "full")
     return {
         "repo": str(root),
@@ -491,7 +536,12 @@ def _repo_file(root: Path, arg: str) -> tuple[str, bytes]:
 def cmd_blocks(args: argparse.Namespace) -> dict:
     root = repo_root(Path(args.repo))
     rel, raw = _repo_file(root, args.path)
-    return {"path": rel, "sha256": hashlib.sha256(raw).hexdigest(), "blocks": split_blocks(_decode(raw))}
+    return {
+        "path": rel,
+        "resolved": _resolved(root, rel),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "blocks": split_blocks(_decode(raw)),
+    }
 
 
 ACTIONS = ("keep", "fix", "trim", "delete", "merge", "move", "ask")
@@ -540,6 +590,23 @@ def _can_hold_file(root: Path, target: str) -> bool:
         return False
 
 
+def _same_file(one: Path, other: Path) -> bool:
+    """Whether both paths exist and are one file, through symlinks or a case-insensitive filesystem."""
+    try:
+        return one.samefile(other)
+    except OSError:
+        return False
+
+
+def _is_root_file(root: Path, file: str) -> bool:
+    """Whether `file` is the root AGENTS.md (any case), by its own path or as a link to it or from it."""
+    try:
+        names = os.listdir(root)
+    except OSError:
+        return False
+    return any(name.lower() == "agents.md" and _same_file(root / name, root / file) for name in names)
+
+
 def _in_git_dir(root: Path, target: str) -> bool:
     """Whether `target` has a `.git` part in any case, as written or once its symlinks are resolved.
 
@@ -563,7 +630,7 @@ def _check_move(verdict: dict, file: str, root: Path) -> None:
     if "'" in target or any(ord(ch) < 32 or ord(ch) == 127 for ch in target):
         # The skill single-quotes targets in shell commands; a quote or control character could break out.
         raise CliError(f"target must not contain a single quote or a control character: {target!r}")
-    if target == file:
+    if target == file or _same_file(root / target, root / file):
         raise CliError(f"target must not be the file itself: {target}")
     if _in_git_dir(root, target):
         raise CliError(f"target {target} is inside .git")
@@ -691,8 +758,8 @@ def cmd_check_verdicts(args: argparse.Namespace) -> dict:
     if not isinstance(data, dict):
         raise CliError("invalid json: the top level must be an object")
     text = _decode(raw)
-    # The root AGENTS.md (any case) holds the guidelines section; a nested file's matching heading is ordinary.
-    guidelines = find_guidelines(text) if file.lower() == "agents.md" else None
+    # The root AGENTS.md holds the guidelines section; a nested file's matching heading is ordinary.
+    guidelines = find_guidelines(text) if _is_root_file(root, file) else None
     return validate_verdicts(split_blocks(text), data, args.role, scope, file, root, guidelines)
 
 

@@ -66,7 +66,18 @@ class ReviewerAgentTest(unittest.TestCase):
 
     def test_names_every_input(self):
         text = AGENT.read_text(encoding="utf-8")
-        for key in ("REPO", "SCRIPT", "FILE", "ROLE", "SCOPE", "GUIDELINES", "POLICY", "RULINGS", "AGENTS_MD_DIRS"):
+        for key in (
+            "REPO",
+            "SCRIPT",
+            "FILE",
+            "ALIASES",
+            "ROLE",
+            "SCOPE",
+            "GUIDELINES",
+            "POLICY",
+            "RULINGS",
+            "AGENTS_MD_DIRS",
+        ):
             self.assertIn(f"`{key}`", text)
         self.assertIn("python3 <SCRIPT> blocks --repo <REPO> <FILE>", text)
 
@@ -195,6 +206,16 @@ class SkillMdTest(unittest.TestCase):
         self.assertIn("never edit that file", bullet)
         for line in ("`!/.claude/`", "`/.claude/*`", "`!/.claude/agents-md-cleanup.md`"):
             self.assertIn(line, bullet)
+
+    def test_linked_files_go_through_their_resolved_path(self):
+        text = SKILL.read_text(encoding="utf-8")
+        self.assertIn("ALIASES:", text[text.index("## 3. Dispatch") : text.index("## 4. Merge")])
+        merge = text[text.index("## 4. Merge") : text.index("## 5. Sort")]
+        self.assertIn("**Linked files.**", merge)
+        apply = text[text.index("## 7. Apply") : text.index("## 8. Commit")]
+        for phrase in ("`sha256` and `resolved`", "the `resolved` path", "never the link"):
+            self.assertIn(phrase, apply)
+        self.assertIn("`resolved` paths", text[text.index("## 8. Commit") :])
 
     def test_apply_checks_sha(self):
         text = SKILL.read_text(encoding="utf-8")

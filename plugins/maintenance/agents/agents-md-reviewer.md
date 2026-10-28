@@ -25,6 +25,7 @@ The dispatch prompt gives one `KEY: value` per line:
 - `REPO`: absolute path of the repository. Start every shell command with `cd <REPO> &&`, writing the path itself.
 - `SCRIPT`: absolute path of `agents_md_inventory.py`.
 - `FILE`: the AGENTS.md to review, relative to `REPO`.
+- `ALIASES`: optional. Other paths of this same file: the file `FILE` links to, or other links to it. They are `FILE` itself, never a duplicate of it and never a move target.
 - `ROLE`: `full` (judge every block) or `ancestor` (see *Ancestor role*).
 - `SCOPE`: ancestor role only. Space-separated directories, relative to `REPO`, that this run reviews.
 - `GUIDELINES`: the text of the root AGENTS.md's guidelines section, or `none`.
@@ -132,7 +133,7 @@ The block is `{"file": <FILE exactly as given>, "verdicts": [...]}`, with no oth
 | `evidence` | non-empty list of strings; required unless `keep` |
 | `new_text` | required for `fix`, `trim` and `merge`; optional for `move`; nothing else |
 | `rename_only` | `fix` only, optional: `true` when the evidence shows a rename |
-| `target` | `move` only, required: a repo-relative path, normalised, with no `..` part and no `.git` part in any case or through a symlink, never `FILE` |
+| `target` | `move` only, required: a repo-relative path, normalised, with no `..` part and no `.git` part in any case or through a symlink, never `FILE` or one of `ALIASES` |
 | `target_kind` | `move` only, required: `agents_md` (the target is named AGENTS.md) or `comment` (an existing file) |
 | `target_heading` | `move` only, optional: the heading in the target to place it under |
 | `question`, `recommendation` | `ask` only, required: one plain question for the user, and the answer you recommend |
