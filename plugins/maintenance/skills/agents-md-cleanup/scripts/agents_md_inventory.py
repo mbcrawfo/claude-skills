@@ -40,6 +40,7 @@ _LIST_MARKER = re.compile(r"^(?:[-*+]|\d{1,9}[.)])(?:[ \t]+|$)")
 _LIST_INTERRUPT = re.compile(r"^(?:[-*+]|1[.)])[ \t]+\S")
 _QUOTE = re.compile(r"^ {0,3}>")
 _YAML_KEY = re.compile(r"^[A-Za-z_][\w-]*:")
+_INLINE_MARKUP = re.compile(r"[`*_~\\]")
 _TABLE_DELIMITER = re.compile(r"^[ \t]*\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$")
 
 
@@ -52,7 +53,10 @@ def _indent(line: str) -> int:
     return len(expanded) - len(expanded.lstrip())
 
 
-def _fence_open(line: str) -> tuple[str, int] | None:
+def _fence_open(line: str, offset: int = 0) -> tuple[str, int] | None:
+    """(fence char, length) when `line` opens a fence, its indent counted from column `offset`."""
+    if offset:
+        line = line.expandtabs(4)[min(offset, _indent(line)) :]
     match = _FENCE.match(line)
     if not match:
         return None
@@ -62,18 +66,34 @@ def _fence_open(line: str) -> tuple[str, int] | None:
     return fence[0], len(fence)
 
 
-def _fence_end(lines: list[str], start: int) -> int:
+def _fence_end(lines: list[str], start: int, offset: int = 0) -> int:
     """Index of the line that closes the fence opened at `start`; the last line if it never closes."""
-    char, length = _fence_open(lines[start])  # type: ignore[misc]
+    char, length = _fence_open(lines[start], offset)  # type: ignore[misc]
     for j in range(start + 1, len(lines)):
         stripped = lines[j].strip()
-        if _indent(lines[j]) < 4 and stripped.startswith(char * length) and not stripped.strip(char):
+        if _indent(lines[j]) < offset + 4 and stripped.startswith(char * length) and not stripped.strip(char):
             return j
     return len(lines) - 1
 
 
 def _is_comment_start(line: str) -> bool:
     return _indent(line) < 4 and line.lstrip().startswith("<!--")
+
+
+def _comment_end(lines: list[str], start: int) -> int:
+    """Index of the line holding the `-->` that closes the comment opened at `start`.
+
+    A comment with no `-->` before the file ends or the next comment opens is its opening line alone, so it
+    can't hide the statements after it.
+    """
+    if "-->" in lines[start]:
+        return start
+    for j in range(start + 1, len(lines)):
+        if _is_comment_start(lines[j]):
+            break
+        if "-->" in lines[j]:
+            return j
+    return start
 
 
 def _is_table_start(lines: list[str], i: int) -> bool:
@@ -96,9 +116,21 @@ def _is_block_start(line: str) -> bool:
     )
 
 
+def _content_indent(line: str) -> int:
+    """The column where a list item's text starts: after its marker and the 1 to 4 spaces that follow it."""
+    expanded = line.expandtabs(4)
+    stripped = expanded.lstrip()
+    marker = _LIST_MARKER.match(stripped).group(0)  # type: ignore[union-attr]
+    width = len(marker.rstrip())
+    spaces = len(marker) - width
+    return len(expanded) - len(stripped) + width + (spaces if 1 <= spaces <= 4 else 1)
+
+
 def _list_item_end(lines: list[str], start: int) -> int:
     """Index of the last line of the list item that starts at `start`."""
     base = _indent(lines[start])
+    # (indent, content indent) of this item and each nested item: a fence belongs to the deepest one it sits in.
+    items = [(base, _content_indent(lines[start]))]
     last = start
     j = start + 1
     while j < len(lines):
@@ -112,10 +144,14 @@ def _list_item_end(lines: list[str], start: int) -> int:
         indent = _indent(line)
         if indent < 2 and _is_block_start(line):
             break
-        if _LIST_MARKER.match(line.lstrip()) and indent <= base:
-            break
-        if indent >= 2 and _fence_open(line):
-            j = _fence_end(lines, j)
+        if _LIST_MARKER.match(line.lstrip()):
+            if indent <= base:
+                break
+            items.append((indent, _content_indent(line)))
+        else:
+            content = next((c for i, c in reversed(items) if i < indent), items[0][1])
+            if _fence_open(line, content):
+                j = _fence_end(lines, j, content)
         last = j
         j += 1
     return last
@@ -200,8 +236,7 @@ def _parse(text: str) -> tuple[list[dict], list[dict]]:
             end = _fence_end(lines, i)
             add("code", i, end)
         elif _is_comment_start(line):
-            while end < len(lines) - 1 and "-->" not in lines[end]:
-                end += 1
+            end = _comment_end(lines, i)
             add("comment", i, end)
         elif match := _ATX_HEADING.match(line):
             heading(len(match.group(1)), _ATX_CLOSING.sub("", match.group(2) or "").strip(), i)
@@ -238,11 +273,14 @@ def split_blocks(text: str) -> list[dict]:
 
 
 def find_guidelines(text: str) -> dict | None:
-    """The first section whose heading contains "AGENTS.md guidelines": {start_line, end_line, text}."""
+    """The first section whose heading contains "AGENTS.md guidelines": {start_line, end_line, text}.
+
+    Inline markup is ignored, so `` ## `AGENTS.md` guidelines `` matches.
+    """
     headings = _parse(text)[1]
     lines = _split_lines(text)
     for index, found in enumerate(headings):
-        if "agents.md guidelines" not in found["title"].lower():
+        if "agents.md guidelines" not in " ".join(_INLINE_MARKUP.sub("", found["title"]).lower().split()):
             continue
         end = len(lines)
         for later in headings[index + 1 :]:

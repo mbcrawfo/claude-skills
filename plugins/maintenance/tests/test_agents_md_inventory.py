@@ -296,6 +296,12 @@ class HelperTest(unittest.TestCase):
         self.assertEqual((found["start_line"], found["end_line"]), (3, 6))
         self.assertIsNone(inv.find_guidelines("# R\n"))
 
+    def test_find_guidelines_ignores_inline_markup(self):
+        for heading in ("## `AGENTS.md` guidelines", "## **AGENTS.md** Guidelines", "## _AGENTS.md_  guidelines"):
+            with self.subTest(heading=heading):
+                found = inv.find_guidelines(f"# R\n\n{heading}\n\n- a\n")
+                self.assertEqual((found["start_line"], found["end_line"]), (3, 5))
+
     def test_find_guidelines_setext_heading(self):
         found = inv.find_guidelines("Intro\n\nAGENTS.md guidelines\n---------------------\n\n- a\n")
         self.assertEqual((found["start_line"], found["end_line"]), (3, 6))

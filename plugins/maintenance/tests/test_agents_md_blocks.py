@@ -127,6 +127,36 @@ class SplitBlocksTest(unittest.TestCase):
     def test_dashes_without_yaml_key_are_not_front_matter(self):
         self.assertEqual(kl("---\n\nP\n\n---\n\nQ\n"), [("paragraph", 3, 3, []), ("paragraph", 7, 7, [])])
 
+    def test_unclosed_comment_is_one_line(self):
+        # With no `-->` to end it, a comment must not hide the statements after it.
+        self.assertEqual(
+            kl("<!-- note\n\n- a\n\n- b\n"), [("comment", 1, 1, []), ("list_item", 3, 3, []), ("list_item", 5, 5, [])]
+        )
+        self.assertEqual(kl("# H\n<!-- note\nP\n"), [("comment", 2, 2, ["H"]), ("paragraph", 3, 3, ["H"])])
+
+    def test_comment_unclosed_before_the_next_one_is_one_line(self):
+        # A later comment's `-->` does not close an earlier unclosed one across the statements between them.
+        self.assertEqual(
+            kl("<!-- note\n\n- a\n\n<!-- b -->\n"),
+            [("comment", 1, 1, []), ("list_item", 3, 3, []), ("comment", 5, 5, [])],
+        )
+
+    def test_closed_comment_spans_blank_lines(self):
+        self.assertEqual(kl("<!-- a\n\nb -->\nP\n"), [("comment", 1, 3, []), ("paragraph", 4, 4, [])])
+
+    def test_fence_indented_four_in_a_nested_item(self):
+        # The fence belongs to the nested item, so its lines are code: no heading, no stray closing fence.
+        text = "- a\n  - b:\n\n    ```sh\n# comment\n- not an item\n    ```\n- c\n"
+        self.assertEqual(kl(text), [("list_item", 1, 7, []), ("list_item", 8, 8, [])])
+
+    def test_fence_indented_to_an_ordered_items_content(self):
+        text = "1. step:\n\n    ```\n    x\n\n # y\n    ```\n2. next\n"
+        self.assertEqual(kl(text), [("list_item", 1, 7, []), ("list_item", 8, 8, [])])
+
+    def test_fence_too_deep_for_its_item_is_not_a_fence(self):
+        # Four or more columns past the item's content is indented code, not a fence, so a later item still splits.
+        self.assertEqual(kl("- a\n\n      ```\n- b\n"), [("list_item", 1, 3, []), ("list_item", 4, 4, [])])
+
 
 if __name__ == "__main__":
     unittest.main()
