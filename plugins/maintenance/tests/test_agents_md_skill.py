@@ -530,8 +530,17 @@ class QuotedPathsTest(unittest.TestCase):
         repo = {"repo root": str(self.repo)}
         inventory = lines["inventory"].replace(" [--scope '<dir>' ...]", " --scope '<dir>'")
         inventory = inventory.replace(" [--base '<ref>']", "")
-        inventory = re.sub(r" \[--[\w-]+(?: N)?\]", "", inventory)
-        out = self.bash(fill(inventory, {**repo, "dir": "my docs"}))
+        # Run each documented optional flag with a real value; --no-size-limits can't join the numbers, so runs alone.
+        self.assertIn(" [--no-size-limits]", inventory)
+        sized = re.sub(r" \[(--[\w-]+) N\]", r" \1 81", inventory.replace(" [--no-size-limits]", ""))
+        self.assertNotIn("[", sized)
+        out = self.bash(fill(sized, {**repo, "dir": "my docs"}))
+        self.assertEqual(out["limits"]["source"], "arguments")
+        self.assertEqual(
+            [out["limits"][k] for k in ("rule_words", "file_bytes", "root_bytes")], [81, 81, 81], "every flag reached"
+        )
+        unsized = re.sub(r" \[--[\w-]+ N\]", "", inventory).replace(" [--no-size-limits]", " --no-size-limits")
+        self.assertEqual(self.bash(fill(unsized, {**repo, "dir": "my docs"}))["limits"]["source"], "none")
         self.assertEqual(out["scope"], ["my docs"])
         self.assertEqual([f["path"] for f in out["files"]], ["AGENTS.md", "my docs/AGENTS.md"])
         out = self.bash(fill(lines["blocks"], {**repo, "path": "my docs/AGENTS.md"}))
@@ -541,9 +550,24 @@ class QuotedPathsTest(unittest.TestCase):
         payload = {"file": "my docs/AGENTS.md", "verdicts": [{"blocks": ["b1", "b2"], "action": "keep"}]}
         message.write_text("```json\n" + json.dumps(payload) + "\n```\n", encoding="utf-8")
         check = lines["check-verdicts"].replace("full|ancestor", "full").replace(" [--scope '<dir>' ...]", "")
-        check = re.sub(r" \[--rule-words N\]", "", check)
+        self.assertIn(" [--rule-words N]", check)
+        check = check.replace(" [--rule-words N]", " --rule-words 80")
         out = self.bash(fill(check, {**repo, "path": "my docs/AGENTS.md", "message file": str(message)}))
         self.assertEqual(out["counts"], {"keep": 1})
+
+    def test_measurement_command(self):
+        # The documented measurement runs on a quoted path and applies the script's definitions, CRLF included.
+        text = SKILL.read_text(encoding="utf-8")
+        (command,) = re.findall(r"`(python3 -c 'import json, sys;[^`]*)`", text)
+        sample = self.tmp / "size 'x' dir" / "AGENTS.md"
+        sample.parent.mkdir()
+        raw = ("# T\r\n\r\n- " + " ".join(["w"] * 81) + "\r\n").encode("utf-8")
+        sample.write_bytes(raw)
+        out = self.bash(fill(command, {"text file": str(sample), "word limit": "80", "byte limit": "8192"}))
+        self.assertEqual(out["bytes_normalised"], len(raw.replace(b"\r\n", b"\n")))
+        self.assertEqual(out["longest"], 81)
+        self.assertEqual([r["words"] for r in out["over"]["rules"]], [81])
+        self.assertFalse(out["over"]["file"])
 
     def test_reviewer_start_command(self):
         agent = AGENT.read_text(encoding="utf-8")
