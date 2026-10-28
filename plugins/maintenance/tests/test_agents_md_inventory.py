@@ -4,6 +4,7 @@ import unittest
 
 from agents_helpers import agents_md_inventory as inv
 from agents_helpers import call, commit_all, git, make_repo, run, write
+from helpers import by_path
 
 USAGE_ERRORS = (
     [],
@@ -723,10 +724,6 @@ class ErrorPathTest(unittest.TestCase):
                 self.assertIn("usage:", out)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class SizeTest(RepoTestCase):
     LONG = "- " + " ".join(["w"] * 81) + "\n"
 
@@ -812,3 +809,73 @@ class SizeTest(RepoTestCase):
         self.assertIn("error: ", err)
         code, _, err = call("inventory", "--repo", str(self.repo), "--rule-words", "0")
         self.assertEqual(code, 1)
+
+
+class DocsAndReferencesTest(RepoTestCase):
+    def test_docs_folder_pages_and_readmes(self):
+        write(self.repo, "AGENTS.md", "- a\n")
+        write(self.repo, "src/AGENTS.md", "- b\n")
+        write(self.repo, "src/README.md", "# src\n")
+        write(self.repo, "docs/architecture.md", "# Architecture\n\n## Retry\n\ntext\n\nSetext\n------\n")
+        write(self.repo, "docs/notes.txt", "not a page\n")
+        commit_all(self.repo, "add")
+        write(self.repo, "docs/untracked.md", "# New\n")
+        docs = self.inventory()["docs"]
+        self.assertEqual(docs["folder"], "docs")
+        self.assertEqual([p["path"] for p in docs["pages"]], ["docs/architecture.md", "docs/untracked.md"])
+        self.assertEqual(docs["pages"][0]["headings"], ["Architecture", "Retry", "Setext"])
+        self.assertEqual(docs["readmes"], ["README.md", "src/README.md"])
+
+    def test_docs_folder_preference_and_absence(self):
+        write(self.repo, "AGENTS.md", "- a\n")
+        write(self.repo, "documentation/x.md", "# x\n")
+        write(self.repo, "Doc/y.md", "# y\n")
+        commit_all(self.repo, "add")
+        self.assertEqual(self.inventory()["docs"]["folder"], "Doc")
+        (self.repo / "Doc" / "y.md").unlink()
+        (self.repo / "Doc").rmdir()
+        self.assertEqual(self.inventory()["docs"]["folder"], "documentation")
+        write(self.repo, "docs/.keep", "")
+        self.assertEqual(self.inventory()["docs"]["folder"], "docs")
+
+    def test_no_docs_folder(self):
+        write(self.repo, "AGENTS.md", "- a\n")
+        commit_all(self.repo, "add")
+        self.assertEqual(self.inventory()["docs"], {"folder": None, "pages": [], "readmes": ["README.md"]})
+
+    def test_references_find_mentions_outside_agents_files(self):
+        write(self.repo, "AGENTS.md", "- a\n")
+        write(self.repo, "src/AGENTS.md", "- b\n")
+        write(self.repo, "src/x.py", "# see src/AGENTS.md for the rule\n")
+        write(self.repo, "docs/td.md", "`src/AGENTS.md` says so\n")
+        write(self.repo, "nested/AGENTS.md", "- src/AGENTS.md is elsewhere\n")
+        commit_all(self.repo, "add")
+        out = self.inventory()
+        src = by_path(out, "src/AGENTS.md")
+        self.assertEqual(
+            [(h["path"], h["line"]) for h in src["references"]["hits"]], [("docs/td.md", 1), ("src/x.py", 1)]
+        )
+        self.assertEqual(src["references"]["hits"][1]["text"], "# see src/AGENTS.md for the rule")
+        self.assertFalse(src["references"]["truncated"])
+
+    def test_references_are_capped_and_flagged(self):
+        write(self.repo, "AGENTS.md", "- a\n")
+        write(self.repo, "notes.txt", "AGENTS.md\n" * 60)
+        commit_all(self.repo, "add")
+        refs = by_path(self.inventory(), "AGENTS.md")["references"]
+        self.assertEqual(len(refs["hits"]), 50)
+        self.assertTrue(refs["truncated"])
+
+    def test_references_include_aliases(self):
+        write(self.repo, "AGENTS.md", "- a\n")
+        (self.repo / "docs").mkdir()
+        (self.repo / "docs" / "AGENTS.md").symlink_to("../AGENTS.md")
+        write(self.repo, "notes.txt", "read docs/AGENTS.md\n")
+        commit_all(self.repo, "add")
+        entry = by_path(self.inventory(), "AGENTS.md")
+        self.assertEqual(entry["aliases"], ["docs/AGENTS.md"])
+        self.assertIn(("notes.txt", 1), [(h["path"], h["line"]) for h in entry["references"]["hits"]])
+
+
+if __name__ == "__main__":
+    unittest.main()

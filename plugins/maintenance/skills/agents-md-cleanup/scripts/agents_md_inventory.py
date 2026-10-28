@@ -36,6 +36,10 @@ import agents_md_limits
 
 RULINGS_PATH = ".claude/agents-md-cleanup.md"
 UNCOMMITTED_SHOWN = 10  # paths listed in `uncommitted`; `count` has them all
+DOCS_FOLDERS = ("docs", "doc", "documentation")  # in order of preference
+DOCS_PAGES_SHOWN = 200  # pages listed in `docs`
+REFERENCES_SHOWN = 50  # hits listed per file in `references`
+REFERENCE_TEXT_CHARS = 200
 
 _ATX_HEADING = re.compile(r"^ {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t]*$")
 _ATX_CLOSING = re.compile(r"(?:^|[ \t]+)#+[ \t]*$")
@@ -397,18 +401,26 @@ def _is_inside(root: Path, path: Path) -> bool:
         return False
 
 
-def discover(root: Path) -> list[str]:
-    """Repo-relative paths of every AGENTS.md (any case) that git knows and that exists, sorted.
+def _known_files(root: Path, basename: str | None = None, suffix: str | None = None) -> list[str]:
+    """Repo-relative paths git knows (tracked, or untracked and not ignored) that exist, sorted.
 
-    Asking git skips `.git` and ignored paths for free.
+    Asking git skips `.git` and ignored paths for free. `basename` and `suffix` filter, ignoring case.
     """
     listing = _git(root, "ls-files", "-z", "--cached", "--others", "--exclude-standard").stdout
     found = {
         path
         for path in listing.split("\0")
-        if path and posixpath.basename(path).lower() == "agents.md" and _is_inside(root, root / path)
+        if path
+        and (basename is None or posixpath.basename(path).lower() == basename)
+        and (suffix is None or path.lower().endswith(suffix))
+        and _is_inside(root, root / path)
     }
     return sorted(found)
+
+
+def discover(root: Path) -> list[str]:
+    """Repo-relative paths of every AGENTS.md (any case) that git knows and that exists, sorted."""
+    return _known_files(root, basename="agents.md")
 
 
 def resolve_scope(root: Path, scope: list[str]) -> list[str]:
@@ -549,7 +561,22 @@ def _file_entry(root: Path, path: str, resolved: str, aliases: list[str], role: 
         "blocks": split_blocks(text),
         "rules": rules,
         "over": agents_md_limits.over_limits(rules, size, _dir_of(path) == ".", limits),
+        "references": _references(root, [path, *aliases]),
     }
+
+
+def _references(root: Path, paths: list[str]) -> dict:
+    """Lines anywhere in the repo that mention any of `paths`, other than in AGENTS.md files themselves."""
+    args = [arg for path in paths for arg in ("-e", path)]
+    result = _git(root, "grep", "-z", "-n", "-I", "-F", *args, "--", ".", check=False)
+    if result.returncode not in (0, 1):  # 1 means no hits
+        raise CliError((result.stderr.strip().splitlines() or ["git grep failed"])[0])
+    hits = []
+    for line in result.stdout.splitlines():
+        path, number, text = line.split("\0", 2)
+        if posixpath.basename(path).lower() != "agents.md":
+            hits.append({"path": path, "line": int(number), "text": text.strip()[:REFERENCE_TEXT_CHARS]})
+    return {"hits": hits[:REFERENCES_SHOWN], "truncated": len(hits) > REFERENCES_SHOWN}
 
 
 def _entries(root: Path, all_paths: list[str], scopes: list[str], limits: dict) -> list[dict]:
@@ -579,6 +606,21 @@ def _guidelines(root: Path, all_paths: list[str]) -> dict | None:
             found = find_guidelines(_decode(_read_bytes(root, path)))
             return {"path": path, **found} if found else None
     return None
+
+
+def _docs(root: Path, all_paths: list[str]) -> dict:
+    """The docs folder (first of DOCS_FOLDERS at the root), its pages with their headings, and the READMEs."""
+    on_disk = {entry.name.lower(): entry.name for entry in root.iterdir() if entry.is_dir()}
+    folder = next((on_disk[name] for name in DOCS_FOLDERS if name in on_disk), None)
+    pages = []
+    if folder:
+        for path in _known_files(root, suffix=".md"):
+            if path.startswith(folder + "/"):
+                _, headings = _parse(_decode(_read_bytes(root, path)))
+                pages.append({"path": path, "headings": [heading["title"] for heading in headings]})
+    directories = {_dir_of(path) for path in all_paths}
+    readmes = [path for path in _known_files(root, basename="readme.md") if _dir_of(path) in directories]
+    return {"folder": folder, "pages": pages[:DOCS_PAGES_SHOWN], "readmes": readmes}
 
 
 def _rulings(root: Path) -> dict:
@@ -631,6 +673,7 @@ def cmd_inventory(args: argparse.Namespace) -> dict:
         "files": files,
         "agents_md_dirs": sorted({_dir_of(path) for path in all_paths}),
         "guidelines": guidelines,
+        "docs": _docs(root, all_paths),
         "limits": limits,
         "rulings": _rulings(root),
         "base": base,
