@@ -29,7 +29,7 @@ The dispatch prompt gives one `KEY: value` per line:
 - `ROLE`: `full` (judge every block) or `ancestor` (see *Ancestor role*).
 - `SCOPE`: ancestor role only. A JSON array of the directories, relative to `REPO`, that this run reviews.
 - `GUIDELINES`: the text of the root AGENTS.md's guidelines section, or `none`.
-- `POLICY`: the user's three policy answers for this run (see *Right level*), then a last line `size limits: <n> words per rule, <n> KB per file (root <n> KB)` or `size limits: none` (see *Limits*).
+- `POLICY`: one line holding the user's three policy answers for this run (see *Right level*), then, as its last clause after `; `, `size limits: <n> words per rule, <n> KB per file (root <n> KB)` or `size limits: none` (see *Limits*).
 - `RULINGS`: the text of `.claude/agents-md-cleanup.md`, or `none`.
 - `AGENTS_MD_DIRS`: a JSON array of the directories that hold an AGENTS.md (`.` is the root).
 - `DOCS`: the inventory's `docs` object as JSON: `{"folder": <the docs folder or null>, "pages": [{"path", "headings"}], "readmes": [<paths>]}`. The pages are the doc pages already in the repo, each with its headings (see *Placement*).
@@ -135,7 +135,7 @@ In the root file, the blocks under a heading containing `AGENTS.md guidelines` c
 - A block that matches a keep (same file, and the quote still says the same thing) is `keep` unless its facts fail (below), with `ruling` set to the quote. The user already chose to keep it there.
 - A block that matches a pattern is `keep`, with `ruling` set to the pattern. A pattern settles only that the statement is not obvious. It never shields a duplicate of another AGENTS.md or a code comment, and the other criteria still apply, so a matching block that needs a `fix`, `trim` or `move` gets that verdict, with `ruling` still set (`split` included).
 - A ruling never vouches for facts. A ruled block whose path or command the evidence shows is gone gets `fix` or `ask` under `accurate`, with `ruling` set.
-- A keep whose quote is followed by the token `(whole)` in `RULINGS` is marked `whole`; it keeps that rule as one bullet even over the word limit: `keep`, with `ruling` set to the quote. Without that mark, a rule over the limit is not kept as it is.
+- A keep whose quote is followed by the token `(whole)` in `RULINGS` is marked `whole`; it keeps that rule as one bullet even over the word limit: `keep`, with `ruling` set to `<quote> (whole)`, the quote followed by the token. Without that mark, a rule over the limit is not kept as it is; a pattern never keeps one whole.
 
 ## Ancestor role
 

@@ -187,6 +187,14 @@ class ReviewerAgentTest(unittest.TestCase):
         for phrase in ("size limits:", "90%", "never drop a clause", "`whole`", "`BYTES`", "`OVER`", "`DOCS`"):
             self.assertIn(phrase, text)
 
+    def test_whole_keep_ruling_carries_the_token(self):
+        text = AGENT.read_text(encoding="utf-8")
+        rulings = text[text.index("## Rulings") : text.index("## Ancestor role")]
+        self.assertIn("`<quote> (whole)`", rulings)
+        inputs = text[text.index("## Inputs") : text.index("## Start")]
+        self.assertIn("last clause", inputs)
+        self.assertNotIn("a last line", inputs)
+
 
 class SkillMdTest(unittest.TestCase):
     def test_frontmatter(self):
@@ -335,6 +343,30 @@ class SkillMdTest(unittest.TestCase):
             "answer none",
         ):
             self.assertIn(phrase, confirm)
+
+    def test_malformed_limits_line_makes_the_size_question_due(self):
+        inventory = self._section("## 1. Inventory", "## 2. Confirm before dispatch")
+        (malformed,) = [line for line in inventory.splitlines() if "`limits.malformed`" in line]
+        self.assertIn("even with nothing over", malformed)
+        confirm = self._section("## 2. Confirm before dispatch", "## 3. Dispatch")
+        self.assertIn("or `limits.malformed` is set", confirm)
+
+    def test_default_limits_are_not_in_force(self):
+        dispatch = self._section("## 3. Dispatch", "## 4. Merge")
+        for phrase in ("`guidelines` or `arguments`", "is `default`", "no `--rule-words`"):
+            self.assertIn(phrase, dispatch)
+
+    def test_size_test_ports_the_limits_module(self):
+        for section in (self._section("**The test question", "**Test maintenance"), self._section("## 7. Apply")):
+            for phrase in (
+                '"${CLAUDE_SKILL_DIR}/scripts/agents_md_limits.py"',
+                "`measure_rules`",
+                "`normalised_bytes`",
+            ):
+                self.assertIn(phrase, section)
+        question = self._section("**The test question", "**Test maintenance")
+        for phrase in ("at any depth", "marker excluded", "whitespace tokens", "HTML comments", "front matter"):
+            self.assertIn(phrase, question)
 
     def test_limits_line_grammar_in_skill(self):
         text = SKILL.read_text(encoding="utf-8")
