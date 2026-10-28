@@ -43,16 +43,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # The oldest Python plugin scripts support, on an image pinned so a
-          # later runner without a 3.9 build cannot break it; the pinned
-          # local version; and the newest Python, whose stdlib changes (such
-          # as Path.resolve no longer raising on symlink loops from 3.13) the
-          # pinned version would miss.
+          # The oldest supported Python, on an image pinned so a later runner
+          # without a 3.9 build cannot break it; and the pinned version, which
+          # is also the newest.
           - python-version: "3.9"
             os: ubuntu-24.04
           - python-version-file: .python-version
-            os: ubuntu-latest
-          - python-version: "3.14"
             os: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
