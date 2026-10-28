@@ -58,7 +58,11 @@ class ReviewSkillTextTest(unittest.TestCase):
         line = next(line for line in self.text.splitlines() if "`review_notes`" in line)
         self.assertIn("Do not print `review_notes`", line)
         self.assertIn("review_notes_path", line)
-        self.assertNotIn("tell the invoker to paste", self.text)
+        self.assertIn("never offer it to the developer", line)
+        self.assertIn("never retyping, trimming or summarizing it", line)
+        # Any mention of pasting must be a prohibition, so no wording hands the block to someone to paste.
+        for paste_line in (line for line in self.text.splitlines() if "paste" in line.lower()):
+            self.assertIn("never", paste_line)
 
     def test_resolve_run_keeps_the_rerun_locate_mode(self):
         line = next(line for line in self.text.splitlines() if line.strip().startswith("- Then run `rs locate` again"))
