@@ -7,6 +7,7 @@ import unittest
 from agents_helpers import call, commit_all, git, make_repo, write
 
 AGENTS = "- one\n\n- two\n\n- three\n\n- four\n"
+RULINGS = ".claude/agents-md-cleanup.md"
 
 
 class VerdictsTestCase(unittest.TestCase):
@@ -1269,6 +1270,7 @@ class WordLimitGuardTest(VerdictsTestCase):
 
     def test_keep_with_a_ruling_stays_a_keep(self):
         write(self.repo, "AGENTS.md", self.LONG + "\n\n- two\n\n- three\n\n- four\n")
+        write(self.repo, RULINGS, '- AGENTS.md: "Keep the security rule whole." (whole) Reviewed by security.\n')
         commit_all(self.repo, "long")
         whole = self.keep_rest({"blocks": ["b1"], "action": "keep", "ruling": "Keep the security rule whole. (whole)"})
         self.assertEqual(json.loads(self.check_limited(whole)[1])["verdicts"][0]["action"], "keep")
@@ -1276,6 +1278,56 @@ class WordLimitGuardTest(VerdictsTestCase):
         self.assertEqual(json.loads(self.check_limited(pattern)[1])["verdicts"][0]["action"], "ask")
         blank = self.keep_rest({"blocks": ["b1"], "action": "keep", "ruling": "  "})
         self.assertEqual(json.loads(self.check_limited(blank)[1])["verdicts"][0]["action"], "ask")
+
+    def keep_verdict(self, ruling):
+        """The action check-verdicts gives a keep of the 81-word first rule with this ruling."""
+        code, out, err = self.check_limited(self.keep_rest({"blocks": ["b1"], "action": "keep", "ruling": ruling}))
+        self.assertEqual(code, 0, err)
+        return json.loads(out)["verdicts"][0]["action"]
+
+    def test_whole_ruling_counts_only_when_the_rulings_file_holds_it(self):
+        write(self.repo, "AGENTS.md", self.LONG + "\n\n- two\n\n- three\n\n- four\n")
+        commit_all(self.repo, "long")
+        with self.subTest("no rulings file"):
+            self.assertEqual(self.keep_verdict("anything (whole)"), "ask")
+        write(self.repo, RULINGS, "- Tool choices are never obvious.\n- AGENTS.md: `Retries` (whole) Paid for.\n")
+        rows = [
+            ("ruling not in the file", "anything (whole)", "ask"),
+            ("another keep's quote, not this file's line", "Tool choices are never obvious. (whole)", "ask"),
+            ("bare token", "(whole)", "ask"),
+            ("quote in the file, token elsewhere", "Tool choices (whole)", "ask"),
+            ("exact text of the line", "AGENTS.md: `Retries` (whole) Paid for.", "keep"),
+            ("quote and token", "`Retries` (whole)", "keep"),
+            ("quote marks left out", "Retries (whole)", "keep"),
+            ("other quote marks", "\u201cRetries\u201d (whole)", "keep"),
+            ("case", "RETRIES (whole)", "keep"),
+            ("spacing", "  Retries   (whole) ", "keep"),
+            ("spanning two lines", "obvious. - AGENTS.md: Retries (whole)", "ask"),
+            ("token in another case", "Retries (WHOLE)", "ask"),
+        ]
+        for name, ruling, action in rows:
+            with self.subTest(name):
+                self.assertEqual(self.keep_verdict(ruling), action)
+
+    def test_whole_ruling_ignores_a_rulings_file_reached_through_a_symlink(self):
+        write(self.repo, "AGENTS.md", self.LONG + "\n\n- two\n\n- three\n\n- four\n")
+        line = "- AGENTS.md: Long rule (whole) Paid for.\n"
+        write(self.repo, "meta/agents-md-cleanup.md", line)
+        commit_all(self.repo, "long")
+        (self.repo / ".claude").symlink_to("meta")
+        with self.subTest(".claude is a symlink"):
+            self.assertEqual(self.keep_verdict("Long rule (whole)"), "ask")
+        (self.repo / ".claude").unlink()
+        (self.repo / ".claude").mkdir()
+        outside = self.tmp / "outside.md"
+        outside.write_text(line, encoding="utf-8")
+        (self.repo / RULINGS).symlink_to(outside)
+        with self.subTest("the file leads outside the repo"):
+            self.assertEqual(self.keep_verdict("Long rule (whole)"), "ask")
+        (self.repo / RULINGS).unlink()
+        write(self.repo, RULINGS, line)
+        with self.subTest("a plain file"):
+            self.assertEqual(self.keep_verdict("Long rule (whole)"), "keep")
 
     def test_move_to_an_agents_md_without_new_text_measures_the_blocks(self):
         write(self.repo, "AGENTS.md", self.LONG + "\n\n- two\n\n- three\n\n- four\n")
@@ -1427,6 +1479,7 @@ class WholeRulingTest(VerdictsTestCase):
         write(self.repo, "AGENTS.md", self.RULE + "\n\n- two\n\n- three\n\n- four\n")
         write(self.repo, "src/AGENTS.md", "- s\n")
         write(self.repo, "docs/architecture.md", "# Arch\n")
+        write(self.repo, RULINGS, '- AGENTS.md: "Long rule" (whole) The retry contract.\n')
         commit_all(self.repo, "long")
 
     def fix(self, **extra):
@@ -1490,6 +1543,10 @@ class WholeRulingTest(VerdictsTestCase):
             ("trim, no ruling", trim, "new_text holds a rule of 94 words"),
             ("move, no ruling", self.move(), "blocks hold a rule of 94 words"),
             ("move, quote ruling", self.move(ruling="Long rule"), "blocks hold a rule of 94 words"),
+            ("fix, (whole) not in the rulings", self.fix(ruling="Other (whole)"), "new_text holds a rule of 94 words"),
+            ("trim, (whole) not in the rulings", {**trim, "ruling": "Other (whole)"}, "new_text holds a rule of 94"),
+            ("move, (whole) not in the rulings", self.move(ruling="Other (whole)"), "blocks hold a rule of 94 words"),
+            ("move, bare token", self.move(ruling="(whole)"), "blocks hold a rule of 94 words"),
         ]
         for name, verdict, expected in rows:
             with self.subTest(name):
@@ -1510,6 +1567,17 @@ class WholeRulingTest(VerdictsTestCase):
         for name, verdict in (("proposed fix", self.ask(fix)), ("proposed move", self.ask(move))):
             with self.subTest(name + ", no ruling"):
                 self.assertRejected(self.check_limited(self.keep_rest(verdict)), "proposed: ")
+        for name, verdict in (
+            ("proposed fix, (whole) not in the rulings", self.ask(fix, ruling="Other (whole)")),
+            ("proposed move, (whole) not in the rulings", self.ask({**move, "ruling": "Other (whole)"})),
+        ):
+            with self.subTest(name):
+                self.assertRejected(self.check_limited(self.keep_rest(verdict)), "proposed: ")
+
+    def test_without_the_rulings_file_a_whole_ruling_is_capped(self):
+        (self.repo / RULINGS).unlink()
+        self.assertRejected(self.check_limited(self.keep_rest(self.fix(ruling=self.WHOLE))), "new_text holds a rule")
+        self.assertRejected(self.check_limited(self.keep_rest(self.move(ruling=self.WHOLE))), "blocks hold a rule")
 
     def test_whole_ruling_does_not_lift_the_cap_on_new_rules(self):
         long = "- " + " ".join(["x"] * 81)

@@ -197,6 +197,7 @@ class ReviewerAgentTest(unittest.TestCase):
         text = AGENT.read_text(encoding="utf-8")
         rulings = text[text.index("## Rulings") : text.index("## Ancestor role")]
         self.assertIn("`<quote> (whole)`", rulings)
+        self.assertIn("The token must come from `RULINGS`", rulings)
         (lifted,) = [line for line in rulings.splitlines() if "lifts the word limit" in line]
         for phrase in ("`fix`", "`trim`", "`move`", "`proposed`", "`pointer`", "`merge`", "`split`"):
             self.assertIn(phrase, lifted)

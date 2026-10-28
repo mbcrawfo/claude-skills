@@ -16,7 +16,8 @@ Commands:
              validate a reviewer's verdicts for one file against that file's blocks; a deletion that may
              drop a project choice comes back as an `ask`; with `--rule-words`, so does a `keep` of a rule over
              that many words whose ruling lacks `(whole)`, and any text over it is rejected, except a rule
-             kept `(whole)` that a fix, trim or move carries as one unit
+             kept `(whole)` that a fix, trim or move carries as one unit; `(whole)` counts only when a line of
+             the rulings file holds the ruling
 
 `split_blocks` cuts a markdown file into the addressable blocks the skill's verdicts refer to.
 """
@@ -646,18 +647,24 @@ def _docs(root: Path, all_paths: list[str]) -> dict:
     }
 
 
+def _rulings_text(root: Path) -> str | None:
+    """The rulings file's text, or None when it does not exist.
+
+    Like every other file the script reads, the rulings count only when they resolve to a file inside the repo.
+    """
+    return _decode(_read_bytes(root, RULINGS_PATH)) if _is_inside(root, root / RULINGS_PATH) else None
+
+
 def _rulings(root: Path) -> dict:
     if (root / RULINGS_PATH).parent.is_symlink():
         raise CliError(".claude is a symlink; git can't track the rulings file through it")
-    # Like every other file the script reads, the rulings count only when they resolve to a file inside the repo.
-    exists = _is_inside(root, root / RULINGS_PATH)
     # `check-ignore` rejects --literal-pathspecs, so it runs without it; the path is a fixed literal anyway.
     result = _git(root, "check-ignore", "-q", RULINGS_PATH, literal=False, check=False)
     if result.returncode not in (0, 1):
         raise CliError((result.stderr.strip().splitlines() or ["git check-ignore failed"])[0])
     ignored = result.returncode == 0
-    text = _decode(_read_bytes(root, RULINGS_PATH)) if exists else None
-    return {"path": RULINGS_PATH, "exists": exists, "ignored": ignored, "text": text}
+    text = _rulings_text(root)
+    return {"path": RULINGS_PATH, "exists": text is not None, "ignored": ignored, "text": text}
 
 
 def _limits(args: argparse.Namespace, guidelines: dict | None) -> dict:
@@ -765,6 +772,8 @@ PROPOSED_ACTIONS = tuple(action for action in ACTIONS if action != "ask")
 PROPOSED_INHERITS = ("blocks", "criterion", "evidence", "ruling")
 # The actions that keep a rule as one unit, so a `(whole)` ruling lifts the word cap on its own text.
 WHOLE_ACTIONS = ("fix", "trim", "move")
+# Quote marks a keep's quote may carry in the rulings file but not in a reviewer's ruling, or the other way round.
+_QUOTE_MARKS = re.compile("[\"'`\u201c\u201d\u2018\u2019]")
 _JSON_FENCE = re.compile(r"```json\s*\n(.*?)\n```", re.S)
 # What marks a statement as a possible project choice: a tool, command or path (an inline code span), or an
 # alternative weighed against it.
@@ -774,6 +783,26 @@ CHOICE_QUESTION = "Delete this statement? It names a tool, command or alternativ
 OVER_LIMIT_QUESTION = (
     "Keep this rule whole, over the word limit, with an entry in the test's exception list? Or split it?"
 )
+
+
+def _ruling_key(text: str) -> str:
+    """`text` as a ruling is matched against the rulings file: quote marks dropped, spacing and case folded."""
+    return " ".join(_QUOTE_MARKS.sub("", text).split()).casefold()
+
+
+def _is_whole(verdict: dict, rulings: str | None) -> bool:
+    """Whether the verdict's ruling keeps a rule whole: it holds `(whole)` and a line of the rulings file holds it.
+
+    A reviewer can write the token into any ruling; only the user's keep in the rulings file records that the user
+    kept the rule whole. The ruling must name a quote besides the token.
+    """
+    ruling = verdict.get("ruling")
+    if not isinstance(ruling, str) or WHOLE_TOKEN not in ruling or rulings is None:
+        return False
+    key = _ruling_key(ruling)
+    if not _ruling_key(ruling.replace(WHOLE_TOKEN, "")):
+        return False
+    return any(key in _ruling_key(line) for line in rulings.split("\n"))
 
 
 def _text_field(verdict: dict, name: str) -> str:
@@ -899,17 +928,17 @@ def _check_split(verdict: dict, file: str, root: Path) -> None:
             raise CliError(f"part {number}: {exc}") from exc
 
 
-def _check_text_limits(verdict: dict, rule_words: int, texts: list[str]) -> None:
+def _check_text_limits(verdict: dict, rule_words: int, texts: list[str], rulings: str | None = None) -> None:
     """Refuse text bound for an AGENTS.md that holds a rule over the word limit.
 
     Measured: a `fix`, `trim` or `merge`'s `new_text`, a move's `new_text` when it targets an AGENTS.md (or, with
     no `new_text`, the moved blocks' own `texts`, which it carries verbatim), every `pointer`, and a part's `text`
     when it stays or targets an AGENTS.md. Text that goes to a doc or a code comment is prose, not a rule, and is
-    not capped. A `fix`, `trim` or `move` whose ruling holds `(whole)` carries a rule the user kept whole, so its
-    `new_text` and blocks are not capped; its `pointer` is a new rule and still is.
+    not capped. A `fix`, `trim` or `move` whose ruling holds `(whole)`, as a line of the `rulings` text does, carries
+    a rule the user kept whole, so its `new_text` and blocks are not capped; its `pointer` is a new rule and still is.
     """
     fields = {}
-    whole = verdict["action"] in WHOLE_ACTIONS and WHOLE_TOKEN in str(verdict.get("ruling", ""))
+    whole = verdict["action"] in WHOLE_ACTIONS and _is_whole(verdict, rulings)
     to_agents_md = verdict["action"] != "move" or verdict.get("target_kind") == "agents_md"
     if "new_text" in verdict and to_agents_md and not whole:
         fields["new_text"] = verdict.get("new_text")
@@ -954,9 +983,17 @@ def _check_stageable(root: Path, target: str) -> None:
 
 
 def _check_verdict(
-    verdict: dict, file: str, root: Path, rule_words: int | None = None, texts: list[str] | None = None
+    verdict: dict,
+    file: str,
+    root: Path,
+    rule_words: int | None = None,
+    texts: list[str] | None = None,
+    rulings: str | None = None,
 ) -> None:
-    """Check one verdict's shape and text; `texts` are its blocks' texts, measured when a move carries them."""
+    """Check one verdict's shape and text; `texts` are its blocks' texts, measured when a move carries them.
+
+    `rulings` is the rulings file's text, which a `(whole)` ruling must appear in to lift the word cap.
+    """
     action = verdict.get("action")
     if action not in ACTIONS:
         raise CliError(f"unknown action {action!r}; expected one of {', '.join(ACTIONS)}")
@@ -982,7 +1019,7 @@ def _check_verdict(
     if action == "split":
         _check_split(verdict, file, root)
     if rule_words is not None:
-        _check_text_limits(verdict, rule_words, texts or [])
+        _check_text_limits(verdict, rule_words, texts or [], rulings)
     if action == "ask":
         _text_field(verdict, "question")
         _text_field(verdict, "recommendation")
@@ -990,7 +1027,7 @@ def _check_verdict(
             if not isinstance(verdict["proposed"], dict):
                 raise CliError("proposed must be an object")
             try:
-                _check_proposed(verdict, file, root, rule_words, texts)
+                _check_proposed(verdict, file, root, rule_words, texts, rulings)
             except CliError as exc:
                 raise CliError(f"proposed: {exc}") from exc
     if "ruling" in verdict and not isinstance(verdict["ruling"], str):
@@ -1003,7 +1040,12 @@ def _proposed(ask: dict) -> dict:
 
 
 def _check_proposed(
-    ask: dict, file: str, root: Path, rule_words: int | None = None, texts: list[str] | None = None
+    ask: dict,
+    file: str,
+    root: Path,
+    rule_words: int | None = None,
+    texts: list[str] | None = None,
+    rulings: str | None = None,
 ) -> None:
     """Check an ask's `proposed` like a top-level verdict, since answering as recommended applies it as it is.
 
@@ -1014,7 +1056,7 @@ def _check_proposed(
         raise CliError(f"action must be one of {', '.join(PROPOSED_ACTIONS)}")
     if "blocks" in proposed and proposed["blocks"] != ask["blocks"]:
         raise CliError("blocks must be the ask's blocks")
-    _check_verdict(_proposed(ask), file, root, rule_words, texts)
+    _check_verdict(_proposed(ask), file, root, rule_words, texts, rulings)
 
 
 def _cites_other_file(evidence: list[str], file: str, root: Path) -> bool:
@@ -1045,13 +1087,15 @@ def _guard_choice(verdict: dict, blocks: list[dict], file: str, root: Path) -> d
     }
 
 
-def _guard_length(verdict: dict, blocks: list[dict], file: str, rule_words: int | None) -> dict:
+def _guard_length(
+    verdict: dict, blocks: list[dict], file: str, rule_words: int | None, rulings: str | None = None
+) -> dict:
     """Turn a `keep` of a rule over the word limit into an `ask`, unless its ruling keeps it whole.
 
     Keeping such a rule whole needs the user's say, and an entry in the test's exception list. Only a ruling holding
-    the token `(whole)` records that say; a pattern ruling does not.
+    the token `(whole)` that a line of the `rulings` text also holds records that say; a pattern ruling does not.
     """
-    if rule_words is None or verdict["action"] != "keep" or WHOLE_TOKEN in str(verdict.get("ruling", "")):
+    if rule_words is None or verdict["action"] != "keep" or _is_whole(verdict, rulings):
         return verdict
     evidence = [
         f"{file}:{block['start_line'] + rule['line'] - 1}: {rule['words']} words"
@@ -1089,11 +1133,13 @@ def validate_verdicts(
     root: Path,
     guidelines: dict | None = None,
     rule_words: int | None = None,
+    rulings: str | None = None,
 ) -> dict:
     """Check a reviewer's verdicts against `file`'s blocks; return the report, or raise CliError.
 
     The report's verdicts are the reviewer's, except that a deletion that may drop a project choice is an `ask`,
-    and so is a `keep` of a rule over `rule_words` words (when given) whose ruling does not hold `(whole)`.
+    and so is a `keep` of a rule over `rule_words` words (when given) whose ruling does not hold `(whole)`. A ruling's
+    `(whole)` counts only when a line of `rulings`, the rulings file's text, holds the ruling.
 
     `guidelines` is the root file's guidelines section ({start_line, end_line}): its blocks take only keep or ask.
     """
@@ -1121,7 +1167,7 @@ def validate_verdicts(
                 if block in seen:
                     raise CliError(f"block {block} is in more than one verdict")
                 seen.add(block)
-            _check_verdict(verdict, file, root, rule_words, [by_id[b]["text"] for b in listed])
+            _check_verdict(verdict, file, root, rule_words, [by_id[b]["text"] for b in listed], rulings)
             if guidelines and verdict["action"] not in ("keep", "ask"):
                 for block in listed:
                     found = by_id[block]
@@ -1145,7 +1191,8 @@ def validate_verdicts(
     guarded = []
     for verdict in verdicts:
         covered = [by_id[b] for b in verdict["blocks"]]
-        guarded.append(_guard_length(_guard_choice(verdict, covered, file, root), covered, file, rule_words))
+        choice = _guard_choice(verdict, covered, file, root)
+        guarded.append(_guard_length(choice, covered, file, rule_words, rulings))
     verdicts = guarded
     counts: dict[str, int] = {}
     for verdict in verdicts:
@@ -1175,7 +1222,12 @@ def cmd_check_verdicts(args: argparse.Namespace) -> dict:
     text = _decode(raw)
     # The root AGENTS.md holds the guidelines section; a nested file's matching heading is ordinary.
     guidelines = find_guidelines(text) if _is_root_file(root, file) else None
-    return validate_verdicts(split_blocks(text), data, args.role, scope, file, root, guidelines, args.rule_words)
+    # A `(whole)` ruling must be the user's, recorded in the rulings file. Through a symlinked `.claude` the file
+    # is treated as absent; `inventory` already reported that as an error.
+    rulings = None if (root / RULINGS_PATH).parent.is_symlink() else _rulings_text(root)
+    return validate_verdicts(
+        split_blocks(text), data, args.role, scope, file, root, guidelines, args.rule_words, rulings
+    )
 
 
 def _parser() -> argparse.ArgumentParser:
