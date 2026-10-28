@@ -425,7 +425,19 @@ class InventoryTest(RepoTestCase):
         out = self.inventory()
         self.assertEqual(out["files"], [])
         self.assertEqual(out["agents_md_dirs"], [])
-        self.assertEqual(out["totals"], {"files": 0, "full": 0, "ancestor": 0, "blocks": 0, "agents": 0})
+        self.assertEqual(
+            out["totals"],
+            {
+                "files": 0,
+                "full": 0,
+                "ancestor": 0,
+                "blocks": 0,
+                "agents": 0,
+                "rules": 0,
+                "rules_over": 0,
+                "files_over": 0,
+            },
+        )
         self.assertIsNone(out["guidelines"])
 
     def test_invalid_utf8_does_not_crash(self):
@@ -596,7 +608,19 @@ class LinkedFileTest(RepoTestCase):
             [(f["path"], f["resolved"], f["aliases"]) for f in out["files"]],
             [("AGENTS.md", "AGENTS.md", ["docs/AGENTS.md", "web/AGENTS.md"]), ("src/AGENTS.md", "src/AGENTS.md", [])],
         )
-        self.assertEqual(out["totals"], {"files": 2, "full": 2, "ancestor": 0, "blocks": 3, "agents": 2})
+        self.assertEqual(
+            out["totals"],
+            {
+                "files": 2,
+                "full": 2,
+                "ancestor": 0,
+                "blocks": 3,
+                "agents": 2,
+                "rules": 3,
+                "rules_over": 0,
+                "files_over": 0,
+            },
+        )
         self.assertEqual(out["agents_md_dirs"], [".", "docs", "src", "web"])
 
     def test_two_links_to_one_other_file_merge(self):
@@ -701,3 +725,90 @@ class ErrorPathTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SizeTest(RepoTestCase):
+    LONG = "- " + " ".join(["w"] * 81) + "\n"
+
+    def test_file_entry_measures_rules_and_bytes(self):
+        write(self.repo, "AGENTS.md", "- a b\n  - c\n\n```\nx\n```\n" + self.LONG)
+        commit_all(self.repo, "add")
+        out = self.inventory()
+        (f,) = out["files"]
+        self.assertEqual([(r["line"], r["words"]) for r in f["rules"]], [(1, 2), (2, 1), (7, 81)])
+        self.assertEqual(f["bytes_normalised"], f["bytes"])
+        self.assertEqual([r["line"] for r in f["over"]["rules"]], [7])
+        self.assertEqual(f["over"]["file"], False)
+        self.assertEqual(out["totals"]["rules"], 3)
+        self.assertEqual(out["totals"]["rules_over"], 1)
+        self.assertEqual(out["totals"]["files_over"], 0)
+        self.assertEqual(
+            out["limits"],
+            {
+                "source": "default",
+                "rule_words": 80,
+                "file_bytes": 8192,
+                "root_bytes": 16384,
+                "test": None,
+                "malformed": None,
+            },
+        )
+
+    def test_crlf_file_normalised(self):
+        write(self.repo, "AGENTS.md", b"- a\r\n- b\r\n")
+        commit_all(self.repo, "add")
+        (f,) = self.inventory()["files"]
+        self.assertEqual((f["bytes"], f["bytes_normalised"]), (10, 8))
+
+    def test_root_gets_the_root_limit(self):
+        write(self.repo, "AGENTS.md", "- a\n" * 2300)  # 9200 bytes
+        write(self.repo, "src/AGENTS.md", "- a\n" * 2300)
+        commit_all(self.repo, "add")
+        out = self.inventory()
+        root, src = out["files"]
+        self.assertEqual((root["over"]["file"], root["over"]["limit"]), (False, 16384))
+        self.assertEqual((src["over"]["file"], src["over"]["limit"]), (True, 8192))
+        self.assertEqual(out["totals"]["files_over"], 1)
+
+    def test_limits_from_the_guidelines_line(self):
+        write(
+            self.repo,
+            "AGENTS.md",
+            "## AGENTS.md guidelines\n\n"
+            "- Size limits: 100 words per rule, 1 KB per file, 2 KB for the root; not checked by a test.\n"
+            + "- a\n"
+            * 600,
+        )
+        commit_all(self.repo, "add")
+        out = self.inventory()
+        self.assertEqual(out["limits"]["source"], "guidelines")
+        self.assertEqual(out["limits"]["root_bytes"], 2048)
+        self.assertTrue(out["files"][0]["over"]["file"])
+
+    def test_limits_none_measures_but_marks_nothing(self):
+        write(self.repo, "AGENTS.md", "## AGENTS.md guidelines\n\n- Size limits: none.\n\n" + self.LONG)
+        commit_all(self.repo, "add")
+        out = self.inventory()
+        self.assertEqual(out["limits"]["source"], "none")
+        self.assertEqual(out["files"][0]["rules"][-1]["words"], 81)
+        self.assertEqual(out["totals"]["rules_over"], 0)
+
+    def test_malformed_limits_line_is_reported(self):
+        write(self.repo, "AGENTS.md", "## AGENTS.md guidelines\n\n- Size limits: 80 words.\n")
+        commit_all(self.repo, "add")
+        out = self.inventory()
+        self.assertEqual(out["limits"]["source"], "default")
+        self.assertEqual(out["limits"]["malformed"], "Size limits: 80 words.")
+
+    def test_argument_overrides(self):
+        write(self.repo, "AGENTS.md", "## AGENTS.md guidelines\n\n- Size limits: none.\n\n" + self.LONG)
+        commit_all(self.repo, "add")
+        out = self.inventory("--rule-words", "60")
+        self.assertEqual((out["limits"]["source"], out["limits"]["rule_words"]), ("arguments", 60))
+        self.assertEqual(out["totals"]["rules_over"], 1)
+        self.assertEqual(self.inventory("--no-size-limits")["limits"]["source"], "none")
+        code, _, err = call("inventory", "--repo", str(self.repo), "--no-size-limits", "--file-bytes", "10")
+        self.assertEqual(code, 1)
+        self.assertIn("error: ", err)
+        code, _, err = call("inventory", "--repo", str(self.repo), "--rule-words", "0")
+        self.assertEqual(code, 1)

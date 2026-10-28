@@ -8,7 +8,7 @@ import tempfile
 import unittest
 
 from agents_helpers import agents_md_inventory as inv
-from agents_helpers import call, commit_all, make_repo, write
+from agents_helpers import agents_md_limits, call, commit_all, make_repo, write
 
 PLUGIN = Path(__file__).resolve().parent.parent
 AGENT = PLUGIN / "agents" / "agents-md-reviewer.md"
@@ -408,6 +408,7 @@ class QuotedPathsTest(unittest.TestCase):
         self.skill_dir = self.tmp / "plugin cache" / "agents-md-cleanup"
         (self.skill_dir / "scripts").mkdir(parents=True)
         shutil.copy(inv.__file__, self.skill_dir / "scripts" / "agents_md_inventory.py")
+        shutil.copy(agents_md_limits.__file__, self.skill_dir / "scripts" / "agents_md_limits.py")
 
     def bash(self, command: str) -> dict:
         env = {**os.environ, "CLAUDE_SKILL_DIR": str(self.skill_dir)}

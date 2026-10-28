@@ -8,7 +8,9 @@ Commands:
   inventory  every AGENTS.md in scope (and the ancestors of a partial run), split into blocks,
              with git state, the repo's uncommitted work, the root file's guidelines section and any
              saved rulings; paths that are one file through symlinks merge into one entry, with the
-             file's `resolved` path
+             file's `resolved` path; each file also carries its rules' word counts, its normalised byte count and
+             what is over the size limits (from the guidelines' `Size limits:` line, the defaults or the
+             `--rule-words`, `--file-bytes`, `--root-bytes` and `--no-size-limits` arguments)
   blocks     one file's blocks and content hash, to check it before an edit is applied
   check-verdicts
              validate a reviewer's verdicts for one file against that file's blocks; a deletion that may
@@ -30,6 +32,8 @@ import subprocess
 import sys
 from typing import NoReturn
 
+import agents_md_limits
+
 RULINGS_PATH = ".claude/agents-md-cleanup.md"
 UNCOMMITTED_SHOWN = 10  # paths listed in `uncommitted`; `count` has them all
 
@@ -50,6 +54,16 @@ _TABLE_DELIMITER = re.compile(r"^[ \t]*\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \
 
 class CliError(Exception):
     pass
+
+
+def _positive_int(value: str) -> int:
+    try:
+        number = int(value)
+    except ValueError:
+        number = 0
+    if number < 1:
+        raise argparse.ArgumentTypeError(f"expected a positive integer, got {value!r}")
+    return number
 
 
 class _Parser(argparse.ArgumentParser):
@@ -515,9 +529,12 @@ def _uncommitted(root: Path) -> dict:
     return {"count": len(entries), "paths": [path for _, path in entries[:UNCOMMITTED_SHOWN]]}
 
 
-def _file_entry(root: Path, path: str, resolved: str, aliases: list[str], role: str) -> dict:
+def _file_entry(root: Path, path: str, resolved: str, aliases: list[str], role: str, limits: dict) -> dict:
     raw = _read_bytes(root, path)
     tracked, dirty = _git_state(root, resolved, [path, *aliases])
+    text = _decode(raw)
+    rules = agents_md_limits.measure_rules(text)
+    size = agents_md_limits.normalised_bytes(raw)
     return {
         "path": path,
         "resolved": resolved,
@@ -528,11 +545,14 @@ def _file_entry(root: Path, path: str, resolved: str, aliases: list[str], role: 
         "dirty": dirty,
         "bytes": len(raw),
         "sha256": hashlib.sha256(raw).hexdigest(),
-        "blocks": split_blocks(_decode(raw)),
+        "bytes_normalised": size,
+        "blocks": split_blocks(text),
+        "rules": rules,
+        "over": agents_md_limits.over_limits(rules, size, _dir_of(path) == ".", limits),
     }
 
 
-def _entries(root: Path, all_paths: list[str], scopes: list[str]) -> list[dict]:
+def _entries(root: Path, all_paths: list[str], scopes: list[str], limits: dict) -> list[dict]:
     """One entry per file: paths that resolve to the same file merge, so it is reviewed and edited once.
 
     The entry's `path` is the shallowest of its paths in scope, since agents load the file at every path and the
@@ -549,7 +569,7 @@ def _entries(root: Path, all_paths: list[str], scopes: list[str]) -> list[dict]:
             continue
         lead = min(in_scope, key=lambda path: (path.count("/"), path))
         role = "full" if "full" in roles.values() else "ancestor"
-        files.append(_file_entry(root, lead, resolved, [path for path in paths if path != lead], role))
+        files.append(_file_entry(root, lead, resolved, [path for path in paths if path != lead], role, limits))
     return sorted(files, key=lambda entry: entry["path"])
 
 
@@ -575,12 +595,32 @@ def _rulings(root: Path) -> dict:
     return {"path": RULINGS_PATH, "exists": exists, "ignored": ignored, "text": text}
 
 
+def _limits(args: argparse.Namespace, guidelines: dict | None) -> dict:
+    """The size limits in force, plus `malformed`: a `Size limits:` line that failed to parse, else None."""
+    overrides = {
+        "rule_words": args.rule_words,
+        "file_bytes": args.file_bytes,
+        "root_bytes": args.root_bytes,
+        "none": args.no_size_limits,
+    }
+    if args.no_size_limits and any(overrides[k] is not None for k in ("rule_words", "file_bytes", "root_bytes")):
+        raise CliError("--no-size-limits cannot be combined with --rule-words, --file-bytes or --root-bytes")
+    parsed, malformed = None, None
+    try:
+        parsed = agents_md_limits.parse_limits_line(guidelines["text"] if guidelines else "")
+    except ValueError as exc:
+        malformed = str(exc)
+    return {**agents_md_limits.limits_in_force(parsed, overrides), "malformed": malformed}
+
+
 def cmd_inventory(args: argparse.Namespace) -> dict:
     root = repo_root(Path(args.repo))
     scopes = resolve_scope(root, args.scope)
     base = detect_base(root, args.base)
     all_paths = discover(root)
-    files = _entries(root, all_paths, scopes)
+    guidelines = _guidelines(root, all_paths)
+    limits = _limits(args, guidelines)
+    files = _entries(root, all_paths, scopes, limits)
     full = sum(1 for f in files if f["role"] == "full")
     uncommitted = _uncommitted(root)
     return {
@@ -590,7 +630,8 @@ def cmd_inventory(args: argparse.Namespace) -> dict:
         "uncommitted": uncommitted,
         "files": files,
         "agents_md_dirs": sorted({_dir_of(path) for path in all_paths}),
-        "guidelines": _guidelines(root, all_paths),
+        "guidelines": guidelines,
+        "limits": limits,
         "rulings": _rulings(root),
         "base": base,
         "base_branch": base_branch(root, base),
@@ -601,6 +642,9 @@ def cmd_inventory(args: argparse.Namespace) -> dict:
             "ancestor": len(files) - full,
             "blocks": sum(len(f["blocks"]) for f in files),
             "agents": len(files),
+            "rules": sum(len(f["rules"]) for f in files),
+            "rules_over": sum(len(f["over"]["rules"]) for f in files),
+            "files_over": sum(1 for f in files if f["over"]["file"]),
         },
     }
 
@@ -949,6 +993,10 @@ def _parser() -> argparse.ArgumentParser:
     inv.add_argument("--repo", default=".")
     inv.add_argument("--scope", action="append", default=[], help="a directory to review in full; repeatable")
     inv.add_argument("--base", default=None)
+    inv.add_argument("--rule-words", type=_positive_int, default=None, help="most words a rule may have")
+    inv.add_argument("--file-bytes", type=_positive_int, default=None, help="most bytes a non-root file may have")
+    inv.add_argument("--root-bytes", type=_positive_int, default=None, help="most bytes the root file may have")
+    inv.add_argument("--no-size-limits", action="store_true", help="measure but mark nothing over the limits")
     inv.set_defaults(func=cmd_inventory)
 
     blocks = sub.add_parser("blocks", help="split one file into blocks and hash it")
