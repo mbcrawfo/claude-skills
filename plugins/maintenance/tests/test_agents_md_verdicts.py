@@ -106,6 +106,16 @@ class FullRoleTest(VerdictsTestCase):
         code, out, err = self.check(verdicts)
         self.assertEqual(code, 0, err)
         self.assertEqual(json.loads(out)["counts"], {"fix": 1, "delete": 1, "move": 1, "ask": 1})
+        split = {
+            "blocks": ["b1"],
+            "action": "split",
+            "criterion": "brief",
+            "parts": [{"text": "- a"}, {"text": "- b"}],
+            "evidence": ["e"],
+        }
+        code, out, err = self.check(self.keep_rest(split))
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)["counts"], {"split": 1, "keep": 3})
 
     def test_rename_only_on_fix_is_accepted(self):
         verdict = {
@@ -378,7 +388,8 @@ class FullRoleTest(VerdictsTestCase):
         "trim": {"new_text"},
         "delete": set(),
         "merge": {"new_text"},
-        "move": {"new_text", "target", "target_kind", "target_heading"},
+        "move": {"new_text", "target", "target_kind", "target_heading", "pointer"},
+        "split": {"parts"},
         "ask": {"question", "recommendation", "proposed"},
     }
     # A valid verdict per action holding only its required fields, and a valid value for every known field.
@@ -394,6 +405,13 @@ class FullRoleTest(VerdictsTestCase):
             "criterion": "level",
             "target": "src/AGENTS.md",
             "target_kind": "agents_md",
+            "evidence": ["e"],
+        },
+        "split": {
+            "blocks": ["b1"],
+            "action": "split",
+            "criterion": "brief",
+            "parts": [{"text": "- a"}, {"text": "- b"}],
             "evidence": ["e"],
         },
         "ask": {
@@ -414,6 +432,8 @@ class FullRoleTest(VerdictsTestCase):
         "target": "src/AGENTS.md",
         "target_kind": "agents_md",
         "target_heading": "Rules",
+        "pointer": "- see docs",
+        "parts": [{"text": "- a"}, {"text": "- b"}],
         "question": "q?",
         "recommendation": "r",
         "proposed": {"action": "keep"},
@@ -425,6 +445,8 @@ class FullRoleTest(VerdictsTestCase):
         for action, base in self.BASE.items():
             with self.subTest(action=action):
                 verdict = {**base, **{k: self.VALUES[k] for k in self.ALWAYS | self.TAKES[action] if k in self.VALUES}}
+                if action == "move":  # a pointer goes with a doc target
+                    verdict = {**verdict, "target": "docs/x.md", "target_kind": "doc"}
                 code, _, err = self.check(self.keep_rest(verdict))
                 self.assertEqual(code, 0, err)
 
@@ -1085,3 +1107,198 @@ class ProjectChoiceDeletionTest(VerdictsTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SplitAndDocTest(VerdictsTestCase):
+    def setUp(self):
+        super().setUp()
+        write(self.repo, "docs/architecture.md", "# Arch\n\n## Retry\n")
+        commit_all(self.repo, "docs")
+
+    def doc_move(self, **extra):
+        return {
+            "blocks": ["b1"],
+            "action": "move",
+            "criterion": "placement",
+            "evidence": ["AGENTS.md:1 explains"],
+            "target": "docs/architecture.md",
+            "target_kind": "doc",
+            "target_heading": "Retry",
+            "new_text": "The retry loop backs off twice.",
+            **extra,
+        }
+
+    def test_doc_move_with_pointer_is_accepted(self):
+        code, out, err = self.check(
+            self.keep_rest(self.doc_move(pointer="- Retry behaviour: see `docs/architecture.md#retry`."))
+        )
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)["counts"], {"move": 1, "keep": 3})
+
+    def test_doc_move_to_a_new_page_is_accepted(self):
+        v = self.doc_move(target="docs/branding.md")
+        del v["target_heading"]
+        self.assertEqual(self.check(self.keep_rest(v))[0], 0)
+
+    def test_doc_move_requires_new_text(self):
+        v = self.doc_move()
+        del v["new_text"]
+        self.assertRejected(self.check(self.keep_rest(v)), "new_text")
+
+    def test_pointer_only_on_doc_moves(self):
+        v = {**self.doc_move(pointer="- see docs"), "target": "src/AGENTS.md", "target_kind": "agents_md"}
+        self.assertRejected(self.check(self.keep_rest(v)), "pointer")
+
+    def test_doc_target_rules(self):
+        for target, expected in (
+            ("docs/AGENTS.md", "AGENTS.md"),
+            ("src/a.py", ".md"),
+            ("../out.md", ".."),
+            ("README.md/x.md", "not a file path"),
+        ):
+            self.assertRejected(self.check(self.keep_rest(self.doc_move(target=target))), expected)
+
+    def test_placement_is_a_criterion(self):
+        v = {
+            "blocks": ["b1"],
+            "action": "delete",
+            "criterion": "placement",
+            "evidence": ["docs/architecture.md:3 already says it"],
+        }
+        self.assertEqual(self.check(self.keep_rest(v))[0], 0)
+
+    def split(self, parts):
+        return {
+            "blocks": ["b1"],
+            "action": "split",
+            "criterion": "brief",
+            "evidence": ["AGENTS.md:1 holds two rules"],
+            "parts": parts,
+        }
+
+    def test_split_is_accepted_with_staying_and_leaving_parts(self):
+        v = self.split(
+            [
+                {"text": "- First rule."},
+                {
+                    "text": "- Second rule: see `docs/architecture.md#retry`.",
+                    "target": "docs/architecture.md",
+                    "target_kind": "doc",
+                    "target_heading": "Retry",
+                    "pointer": "- Retry: see `docs/architecture.md#retry`.",
+                },
+                {"text": "Keep MAX at 3.", "target": "src/a.py", "target_kind": "comment"},
+            ]
+        )
+        code, out, err = self.check(self.keep_rest(v))
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)["counts"]["split"], 1)
+
+    def test_split_needs_two_parts_with_text(self):
+        self.assertRejected(self.check(self.keep_rest(self.split([{"text": "- one"}]))), "parts")
+        self.assertRejected(self.check(self.keep_rest(self.split([{"text": "- one"}, {"text": ""}]))), "text")
+        self.assertRejected(
+            self.check(self.keep_rest(self.split([{"text": "- one"}, {"text": "- two", "extra": 1}]))), "extra"
+        )
+
+    def test_split_part_targets_are_checked_like_moves(self):
+        bad = self.split([{"text": "- one"}, {"text": "- two", "target": "docs/AGENTS.md", "target_kind": "doc"}])
+        self.assertRejected(self.check(self.keep_rest(bad)), "AGENTS.md")
+        missing = self.split([{"text": "- one"}, {"text": "- two", "target": "docs/architecture.md"}])
+        self.assertRejected(self.check(self.keep_rest(missing)), "target_kind")
+        pointer = self.split(
+            [{"text": "- one"}, {"text": "- two", "target": "src/a.py", "target_kind": "comment", "pointer": "x"}]
+        )
+        self.assertRejected(self.check(self.keep_rest(pointer)), "pointer")
+
+    def test_split_takes_no_new_text(self):
+        self.assertRejected(
+            self.check(self.keep_rest({**self.split([{"text": "- a"}, {"text": "- b"}]), "new_text": "x"})), "new_text"
+        )
+
+    def test_split_is_not_allowed_on_an_ancestor(self):
+        write(self.repo, "src/AGENTS.md", "- s\n")
+        commit_all(self.repo, "src")
+        self.assertRejected(
+            self.check([self.split([{"text": "- a"}, {"text": "- b"}])], role="ancestor", scope=["src"]), "not allowed"
+        )
+
+    def test_proposed_may_be_a_split_or_a_doc_move(self):
+        ask = {
+            "blocks": ["b1"],
+            "action": "ask",
+            "criterion": "brief",
+            "evidence": ["e"],
+            "question": "q",
+            "recommendation": "r",
+            "proposed": {"action": "split", "parts": [{"text": "- a"}, {"text": "- b"}]},
+        }
+        self.assertEqual(self.check(self.keep_rest(ask))[0], 0)
+        ask["proposed"] = {"action": "move", "target": "docs/architecture.md", "target_kind": "doc", "new_text": "t"}
+        self.assertEqual(self.check(self.keep_rest(ask))[0], 0)
+
+
+class WordLimitGuardTest(VerdictsTestCase):
+    LONG = "- " + " ".join(["w"] * 81)
+
+    def check_limited(self, verdicts, **kw):
+        path = self.tmp / "verdicts.txt"
+        path.write_text(
+            "Report\n```json\n" + json.dumps({"file": "AGENTS.md", "verdicts": verdicts}) + "\n```\n", encoding="utf-8"
+        )
+        return call(
+            "check-verdicts",
+            "--repo",
+            str(self.repo),
+            "--file",
+            "AGENTS.md",
+            "--role",
+            "full",
+            "--input",
+            str(path),
+            "--rule-words",
+            "80",
+        )
+
+    def test_keep_over_the_word_limit_becomes_an_ask(self):
+        write(self.repo, "AGENTS.md", self.LONG + "\n\n- two\n\n- three\n\n- four\n")
+        commit_all(self.repo, "long")
+        code, out, err = self.check_limited(self.keep_rest())
+        self.assertEqual(code, 0, err)
+        first = json.loads(out)["verdicts"][0]
+        self.assertEqual((first["action"], first["criterion"]), ("ask", "brief"))
+        self.assertIn("81 words", first["evidence"][0])
+        self.assertIn("exception list", first["question"])
+        self.assertNotIn("proposed", first)
+
+    def test_keep_with_a_ruling_stays_a_keep(self):
+        write(self.repo, "AGENTS.md", self.LONG + "\n\n- two\n\n- three\n\n- four\n")
+        commit_all(self.repo, "long")
+        verdicts = self.keep_rest({"blocks": ["b1"], "action": "keep", "ruling": "whole: the security rule"})
+        self.assertEqual(json.loads(self.check_limited(verdicts)[1])["verdicts"][0]["action"], "keep")
+
+    def test_new_text_over_the_limit_is_rejected(self):
+        long = "- " + " ".join(["x"] * 81)
+        trim = {"blocks": ["b1"], "action": "trim", "criterion": "brief", "evidence": ["e"], "new_text": long}
+        self.assertRejected(self.check_limited(self.keep_rest(trim)), "81 words, over the limit of 80")
+        split = {
+            "blocks": ["b1"],
+            "action": "split",
+            "criterion": "brief",
+            "evidence": ["e"],
+            "parts": [{"text": "- a"}, {"text": long}],
+        }
+        self.assertRejected(self.check_limited(self.keep_rest(split)), "parts")
+        exact = {
+            "blocks": ["b1"],
+            "action": "trim",
+            "criterion": "brief",
+            "evidence": ["e"],
+            "new_text": "- " + " ".join(["x"] * 80),
+        }
+        self.assertEqual(self.check_limited(self.keep_rest(exact))[0], 0)
+
+    def test_without_the_flag_nothing_is_guarded(self):
+        write(self.repo, "AGENTS.md", self.LONG + "\n\n- two\n\n- three\n\n- four\n")
+        commit_all(self.repo, "long")
+        self.assertEqual(json.loads(self.check(self.keep_rest())[1])["verdicts"][0]["action"], "keep")
