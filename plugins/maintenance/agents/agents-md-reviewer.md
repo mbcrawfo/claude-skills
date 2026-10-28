@@ -32,7 +32,7 @@ The dispatch prompt gives one `KEY: value` per line:
 - `POLICY`: one line holding the user's three policy answers for this run (see *Right level*), then, as its last clause after `; `, `size limits: <n> words per rule, <n> KB per file (root <n> KB)` or `size limits: none` (see *Limits*).
 - `RULINGS`: the text of `.claude/agents-md-cleanup.md`, or `none`.
 - `AGENTS_MD_DIRS`: a JSON array of the directories that hold an AGENTS.md (`.` is the root).
-- `DOCS`: the inventory's `docs` object as JSON: `{"folder": <the docs folder or null>, "pages": [{"path", "headings"}], "readmes": [<paths>]}`. The pages are the doc pages already in the repo, each with its headings (see *Placement*).
+- `DOCS`: the inventory's `docs` object as JSON: `{"folder": <the docs folder or null>, "pages": [{"path", "headings"}], "readmes": [<paths>], "truncated": <bool>}`. The pages are the doc pages already in the repo, each with its headings (see *Placement*). When `truncated` is true the list stops at 200 pages: before proposing a new page, run `cd '<REPO>' && git ls-files -- '<folder>'` and check that no existing page covers the topic.
 - `BYTES`: the size of `FILE` in bytes, as the size limit counts it.
 - `OVER`: the `over` object for `FILE` as JSON: `{"rules": [<the rules over the word limit, each with its line and word count>], "file": <true when the file is over its byte limit>, "limit": <the byte limit>, "headroom": <true when the file is over 90% of it>}`.
 
@@ -136,6 +136,7 @@ In the root file, the blocks under a heading containing `AGENTS.md guidelines` c
 - A block that matches a pattern is `keep`, with `ruling` set to the pattern. A pattern settles only that the statement is not obvious. It never shields a duplicate of another AGENTS.md or a code comment, and the other criteria still apply, so a matching block that needs a `fix`, `trim` or `move` gets that verdict, with `ruling` still set (`split` included).
 - A ruling never vouches for facts. A ruled block whose path or command the evidence shows is gone gets `fix` or `ask` under `accurate`, with `ruling` set.
 - A keep whose quote is followed by the token `(whole)` in `RULINGS` is marked `whole`; it keeps that rule as one bullet even over the word limit: `keep`, with `ruling` set to `<quote> (whole)`, the quote followed by the token. Without that mark, a rule over the limit is not kept as it is; a pattern never keeps one whole.
+- A `whole` rule whose facts fail, or that belongs at another level, still gets `fix`, `trim` or a `move` (an `ask` whose `proposed` is one of them included), with `ruling` set to `<quote> (whole)`. That ruling lifts the word limit on the rule's own text, not on a `pointer`, a `merge` or a `split`'s parts.
 
 ## Ancestor role
 
@@ -171,7 +172,7 @@ The block is `{"file": <FILE exactly as given>, "verdicts": [...]}`, with no oth
 | `pointer` | `move` with `target_kind: doc` only, optional: the one-line rule that stays in this file |
 | `parts` | `split` only, required: at least two objects in order, each `{"text": ...}` plus, for a part that leaves, `target`, `target_kind` and optionally `target_heading` and `pointer` (a doc part only), checked as a `move` is. A part without `target` stays |
 | `question`, `recommendation` | `ask` only, required: one plain question for the user, and the answer you recommend |
-| `proposed` | `ask` only, optional: the verdict your recommendation would apply, such as `{"action": "trim", "new_text": "..."}`. Any action but `ask`, with the fields that action takes, checked by the same rules. It applies to the ask's `blocks`, `criterion` and `evidence` unless it gives its own (`blocks`, if given, must be the same list). With `ROLE: ancestor`, only a `move` into `SCOPE` |
+| `proposed` | `ask` only, optional: the verdict your recommendation would apply, such as `{"action": "trim", "new_text": "..."}`. Any action but `ask`, with the fields that action takes, checked by the same rules. It applies to the ask's `blocks`, `criterion`, `evidence` and `ruling` unless it gives its own (`blocks`, if given, must be the same list). With `ROLE: ancestor`, only a `move` into `SCOPE` |
 | `ruling` | optional: the keep quote or pattern that decided the verdict |
 
 `new_text` is the block's replacement markdown, list marker and indentation included, except for a comment move (wording only). Leave out any field the action doesn't take: the skill rejects them.
@@ -180,7 +181,7 @@ When one block holds statements that need different actions and the actions are 
 
 ## Example
 
-Inputs: `FILE: AGENTS.md`, `ROLE: full`, `AGENTS_MD_DIRS: ["."]`, `RULINGS` holds the pattern "Tool choices (package managers, linters, test runners) are never obvious.", `POLICY` is new nested AGENTS.md `allowed`, quirks `comment in that file`, push-down `aggressive`, and `size limits: 60 words per rule, 8 KB per file (root 12 KB)`, `BYTES` is 1302, `OVER` is `{"rules": [{"line": 22, "end_line": 22, "words": 90, "first_words": "The retry loop in `billing/client.py` makes at most"}], "file": false, "limit": 12288, "headroom": false}`, and `DOCS` is `{"folder": "docs", "pages": [{"path": "docs/architecture.md", "headings": ["Overview", "Billing"]}], "readmes": []}`. The file:
+Inputs: `FILE: AGENTS.md`, `ROLE: full`, `AGENTS_MD_DIRS: ["."]`, `RULINGS` holds the pattern "Tool choices (package managers, linters, test runners) are never obvious.", `POLICY` is new nested AGENTS.md `allowed`, quirks `comment in that file`, push-down `aggressive`, and `size limits: 60 words per rule, 8 KB per file (root 12 KB)`, `BYTES` is 1302, `OVER` is `{"rules": [{"line": 22, "end_line": 22, "words": 90, "first_words": "The retry loop in `billing/client.py` makes at most"}], "file": false, "limit": 12288, "headroom": false}`, and `DOCS` is `{"folder": "docs", "pages": [{"path": "docs/architecture.md", "headings": ["Overview", "Billing"]}], "readmes": [], "truncated": false}`. The file:
 
 ```markdown
 # Example app

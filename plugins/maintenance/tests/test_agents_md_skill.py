@@ -187,10 +187,19 @@ class ReviewerAgentTest(unittest.TestCase):
         for phrase in ("size limits:", "90%", "never drop a clause", "`whole`", "`BYTES`", "`OVER`", "`DOCS`"):
             self.assertIn(phrase, text)
 
+    def test_docs_truncated_sends_the_reviewer_to_git(self):
+        text = AGENT.read_text(encoding="utf-8")
+        inputs = text[text.index("## Inputs") : text.index("## Start")]
+        for phrase in ('"truncated": <bool>', "When `truncated` is true", "git ls-files -- '<folder>'"):
+            self.assertIn(phrase, inputs)
+
     def test_whole_keep_ruling_carries_the_token(self):
         text = AGENT.read_text(encoding="utf-8")
         rulings = text[text.index("## Rulings") : text.index("## Ancestor role")]
         self.assertIn("`<quote> (whole)`", rulings)
+        (lifted,) = [line for line in rulings.splitlines() if "lifts the word limit" in line]
+        for phrase in ("`fix`", "`trim`", "`move`", "`proposed`", "`pointer`", "`merge`", "`split`"):
+            self.assertIn(phrase, lifted)
         inputs = text[text.index("## Inputs") : text.index("## Start")]
         self.assertIn("last clause", inputs)
         self.assertNotIn("a last line", inputs)
@@ -355,6 +364,30 @@ class SkillMdTest(unittest.TestCase):
         dispatch = self._section("## 3. Dispatch", "## 4. Merge")
         for phrase in ("`guidelines` or `arguments`", "is `default`", "no `--rule-words`"):
             self.assertIn(phrase, dispatch)
+
+    def test_adopted_limits_rerun_inventory_and_are_in_force(self):
+        confirm = self._section("## 2. Confirm before dispatch", "## 3. Dispatch")
+        for phrase in (
+            "After every size answer, re-run `inventory`",
+            "even when the numbers equal `limits`",
+            "`--rule-words`, `--file-bytes` and `--root-bytes` with the adopted numbers",
+            "`--no-size-limits` for none",
+            "`limits.source` is `arguments`",
+        ):
+            self.assertIn(phrase, confirm)
+        self.assertNotIn("If they differ from `limits`", confirm)
+        dispatch = self._section("## 3. Dispatch", "## 4. Merge")
+        self.assertIn("Limits adopted this run are in force", dispatch)
+
+    def test_rulings_file_names_five_criteria(self):
+        text = SKILL.read_text(encoding="utf-8")
+        self.assertIn("by the five criteria", text)
+        self.assertNotIn("four criteria", text)
+
+    def test_test_maintenance_covers_a_none_line(self):
+        maintenance = self._section("**Test maintenance", "**Not reviewed")
+        self.assertIn("`Size limits: none.`", maintenance)
+        self.assertIn("remove the test", maintenance)
 
     def test_size_test_ports_the_limits_module(self):
         for section in (self._section("**The test question", "**Test maintenance"), self._section("## 7. Apply")):
