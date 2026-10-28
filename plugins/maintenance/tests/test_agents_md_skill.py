@@ -224,6 +224,18 @@ class SkillMdTest(unittest.TestCase):
         text = SKILL.read_text(encoding="utf-8")
         self.assertIn("sha256", text[text.index("## 7. Apply") :])
 
+    def test_every_edited_file_is_checked_by_content_hash(self):
+        # Porcelain status stays ` M` through further edits, so only a hash taken at step 4 catches a later change.
+        text = SKILL.read_text(encoding="utf-8")
+        merge = text[text.index("## 4. Merge") : text.index("## 5. Sort")]
+        (other,) = [line for line in merge.splitlines() if line.startswith("- **Other files.**")]
+        for phrase in ("`blocks`", "`sha256`", "`.gitignore`", "the rulings file"):
+            self.assertIn(phrase, other)
+        apply = text[text.index("## 7. Apply") : text.index("## 8. Commit")]
+        (check,) = [line for line in apply.splitlines() if line.startswith("1. **Check for changes.**")]
+        self.assertIn("every existing file this run edits", check)
+        self.assertNotIn("porcelain", check)
+
     def test_approval_and_commit_rules(self):
         text = SKILL.read_text(encoding="utf-8")
         for phrase in (

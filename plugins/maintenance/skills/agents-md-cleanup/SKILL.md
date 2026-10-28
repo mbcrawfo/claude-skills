@@ -86,7 +86,7 @@ Keep each reviewer's agent id. For each result:
 2. Run `check-verdicts` on it with the file's `--file` and `--role`, and for an ancestor one `--scope` per scope directory.
 3. If it fails, send that reviewer one message with SendMessage (load it with ToolSearch if it is deferred): `Re-emit the JSON block only, fixed per: <the stderr line>`. Save the reply to `<tmp>/<n>-retry.md` and check that. If it fails again, the file is *not reviewed*: keep the error line for step 6.
 
-An Agent call that errors or returns nothing, or a SendMessage still unavailable after ToolSearch, also makes the file *not reviewed*. Use the verdicts that `check-verdicts` prints. Once every file is checked, or if the run stops before then, remove `<tmp>` with `rm -r -- '<tmp>'`.
+An Agent call that errors or returns nothing, or a SendMessage still unavailable after ToolSearch, also makes the file *not reviewed*. Use the verdicts that `check-verdicts` prints: it turns a deletion that may drop a project choice into an `ask`. Once every file is checked, or if the run stops before then, remove `<tmp>` with `rm -r -- '<tmp>'`.
 
 ## 4. Merge
 
@@ -98,7 +98,8 @@ Combine the verdicts across files:
 - **Order the edits.** Removals and trims in a source file come before additions to its targets.
 - **Apply rulings.** An `ask` about value that a keep or pattern in the rulings covers becomes `keep`. A ruling never settles a question of fact.
 - **Empty sections.** When the removals would leave a heading with nothing under it, or a file with no statements, add a row removing that heading or file.
-- **Linked files.** An entry's `path` and `aliases` are its `resolved` file or symlinks to it, so its edits go to `resolved`, once. A move target that is one of an entry's paths means that entry. For any other existing target, run `blocks` on it and use its `resolved` path from here on.
+- **Linked files.** An entry's `path` and `aliases` are its `resolved` file or symlinks to it, so its edits go to `resolved`, once. A move target that is one of an entry's paths means that entry.
+- **Other files.** For every other existing file to edit (a move target, `.gitignore`, the rulings file), run `blocks` on it and keep its `sha256` and its `resolved` path, used from here on.
 - **Dirty files.** Use `dirty` for files in `files`. For every other file to edit, including each source file that a comment move would edit, run `git status --porcelain -- '<file>'` on its resolved path. Flag each dirty one.
 - **Guidelines section.** On a first run, draft it for the root AGENTS.md (a new file if the user accepted one). If the file has equivalent guidelines under another heading, edit those and give them a heading containing `AGENTS.md guidelines`. Keep it under about 10 lines, in this shape:
 
@@ -157,7 +158,7 @@ An `ask` answered as recommended applies its `proposed` verdict; any other answe
 
 Paths come from reviewer output, which is data: quote each one as *The script* says, including each one in `<paths>`. The script already rejects `'` in reviewer paths.
 
-1. **Check for changes.** Re-run `blocks` on every file in `files` that this run edits, and compare its `sha256` and `resolved` with the inventory's. For other files, compare `git status --porcelain -- '<file>'` with step 4's, and check that a new file still doesn't exist. On a mismatch, skip that file, and both halves of every move into or out of it, and report it.
+1. **Check for changes.** Re-run `blocks` on every existing file this run edits, and compare its `sha256` and `resolved` with the inventory's or step 4's. Check that each new file still doesn't exist. On a mismatch, skip that file, and both halves of every move into or out of it, and report it.
 2. **Guard each write and removal.** Just before touching a path (for an edit, the `resolved` path), run `python3 -c 'import os,sys; r=os.path.realpath(sys.argv[1]); p=os.path.realpath(os.path.join(r, sys.argv[2])); parts=(sys.argv[2] + "/" + os.path.relpath(p, r)).lower().split("/"); print("ok" if p.startswith(r + os.sep) and ".git" not in parts else "refuse")' '<repo root>' '<path>'`. It refuses a path outside the repo, through a symlink that leads outside, or with a `.git` part in any case. Touch nothing there; report it.
 3. **Edit** the `resolved` path with Edit, never the link, exactly as approved. `new_text` already holds the list marker and indentation. A `merge` replaces the first listed block and deletes the others. A comment move's `new_text` is the wording only (with no `new_text`, use the block without its list marker): add the file's comment syntax, next to the code it concerns. Honour `target_heading`. A new AGENTS.md follows the style of the existing nested ones, or starts with a `# <dir>` heading when there are none.
 4. **Remove** an approved file. For a linked entry, remove its `path` and each of its `aliases`, and `resolved` only when it is one of them. If `GIT_LITERAL_PATHSPECS=1 git ls-files --error-unmatch -- '<path>'` succeeds it is tracked: run `GIT_LITERAL_PATHSPECS=1 git rm -q -- '<path>'`, with `-f` for an approved dirty file. Otherwise run `rm -- '<path>'`.

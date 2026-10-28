@@ -65,7 +65,7 @@ A statement earns its place when it records:
 
 A choice between real alternatives is never obvious, even when it is common practice. Ask: could a capable agent, with no notes, reasonably do something else here? If so, the statement is valuable.
 
-It fails when it duplicates a code comment, a README, the config or another AGENTS.md that loads with it, or when almost any project would do the same without being told ("write clear code", "fix the tests you break"). Config that sets up a tool doesn't duplicate the choice to use it: `[tool.ruff]` in `pyproject.toml` leaves "lint with ruff" valuable; only a restated detail (a line length, a rule list) duplicates the config. A duplicate's `evidence` quotes the other copy with its `file:line`. When this file and a deeper AGENTS.md say the same thing, keep the copy at the right level: delete this one only if the other is where the rule belongs.
+It fails when it duplicates a code comment, a README, the config or another AGENTS.md that loads with it, or when almost any project would do the same without being told ("write clear code", "fix the tests you break"). Config that sets up a tool doesn't duplicate the choice to use it: `[tool.ruff]` in `pyproject.toml` leaves "lint with ruff" valuable; only a restated detail (a line length, a rule list) duplicates the config. A duplicate's `evidence` quotes the other copy with its repo-relative `path:line`; without one, the skill asks the user before deleting a statement that names a tool, command or alternative. When this file and a deeper AGENTS.md say the same thing, keep the copy at the right level: delete this one only if the other is where the rule belongs.
 
 When you can't tell whether a statement is valuable, the verdict is `ask`, never `delete`.
 

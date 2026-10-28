@@ -10,7 +10,8 @@ Commands:
              are one file through symlinks merge into one entry, with the file's `resolved` path
   blocks     one file's blocks and content hash, to check it before an edit is applied
   check-verdicts
-             validate a reviewer's verdicts for one file against that file's blocks
+             validate a reviewer's verdicts for one file against that file's blocks; a deletion that may
+             drop a project choice comes back as an `ask`
 
 `split_blocks` cuts a markdown file into the addressable blocks the skill's verdicts refer to.
 """
@@ -608,6 +609,11 @@ ACTION_KEYS = {
 }
 TOP_LEVEL_KEYS = ("file", "verdicts")
 _JSON_FENCE = re.compile(r"```json\s*\n(.*?)\n```", re.S)
+# What marks a statement as a possible project choice: a tool, command or path (an inline code span), or an
+# alternative weighed against it.
+_CHOICE = re.compile(r"`[^`]+`|\b(?:rather than|instead of|always|never|not|only|prefer|avoid)\b", re.I)
+_CITATION = re.compile(r"`?([^\s:`'\"()]+)`?:\d+")
+CHOICE_QUESTION = "Delete this statement? It names a tool, command or alternative, so it may record a project choice."
 
 
 def _text_field(verdict: dict, name: str) -> str:
@@ -724,6 +730,34 @@ def _check_verdict(verdict: dict, file: str, root: Path) -> None:
         raise CliError("ruling must be a string")
 
 
+def _cites_other_file(evidence: list[str], file: str, root: Path) -> bool:
+    """Whether the evidence cites a `path:line` in an existing repo file other than `file`."""
+    return any(
+        _is_inside(root, root / path) and not _same_file(root / path, root / file)
+        for entry in evidence
+        for path in _CITATION.findall(entry)
+    )
+
+
+def _guard_choice(verdict: dict, blocks: list[dict], file: str, root: Path) -> dict:
+    """Turn a `valuable` or `brief` delete of a statement that may be a project choice into an `ask`.
+
+    A project choice is never obvious, so only a cited copy in another file lets such a deletion rest on the
+    reviewer's word.
+    """
+    if verdict["action"] != "delete" or verdict["criterion"] not in ("valuable", "brief"):
+        return verdict
+    if not any(_CHOICE.search(block["text"]) for block in blocks) or _cites_other_file(verdict["evidence"], file, root):
+        return verdict
+    return {
+        **verdict,
+        "action": "ask",
+        "question": CHOICE_QUESTION,
+        "recommendation": "Delete it, as the reviewer proposes, unless it records a choice the project made.",
+        "proposed": {"action": "delete"},
+    }
+
+
 def validate_verdicts(
     blocks: list[dict],
     data: dict,
@@ -734,6 +768,8 @@ def validate_verdicts(
     guidelines: dict | None = None,
 ) -> dict:
     """Check a reviewer's verdicts against `file`'s blocks; return the report, or raise CliError.
+
+    The report's verdicts are the reviewer's, except that a deletion that may drop a project choice is an `ask`.
 
     `guidelines` is the root file's guidelines section ({start_line, end_line}): its blocks take only keep or ask.
     """
@@ -780,6 +816,7 @@ def validate_verdicts(
         for block in blocks:
             if block["id"] not in seen:
                 raise CliError(f"block {block['id']} not covered")
+    verdicts = [_guard_choice(verdict, [by_id[b] for b in verdict["blocks"]], file, root) for verdict in verdicts]
     counts: dict[str, int] = {}
     for verdict in verdicts:
         counts[verdict["action"]] = counts.get(verdict["action"], 0) + 1

@@ -134,6 +134,12 @@ class GraderTest(unittest.TestCase):
         self.assertIn("min: 0", lines)
         self.assertIn("max: 0", lines)
 
+    def test_no_dispatch_can_fail(self):
+        # Without Agent granted, a dispatch could never happen, and max: 0 would pass whatever the skill did.
+        line = next(x for x in front_matter(FIRST / "prompt.md") if x.startswith("allowed_tools:"))
+        tools = [t.strip() for t in line.split(":", 1)[1].strip().strip("[]").split(",")]
+        self.assertIn("Agent", tools)
+
     def test_nothing_changed_regex(self):
         for case in (FIRST, REVIEW):
             lines = front_matter(case / "graders" / "nothing-changed.md")

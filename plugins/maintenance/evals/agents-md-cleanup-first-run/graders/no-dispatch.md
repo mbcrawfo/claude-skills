@@ -5,4 +5,4 @@ min: 0
 max: 0
 ---
 
-No reviewer agent was dispatched: a first run stops at the pre-dispatch message until the user answers.
+No reviewer agent was dispatched: a first run stops at the pre-dispatch message until the user answers. The case grants `Agent`, so a skill that dispatched too early would fail here.

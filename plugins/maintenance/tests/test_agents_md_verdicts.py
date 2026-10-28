@@ -725,5 +725,77 @@ class AncestorRoleTest(VerdictsTestCase):
         self.assertRejected(self.check([], role="partial"), "--role")
 
 
+CHOICES = (
+    "- Write clear, readable code.\n"
+    "- Use `uv` for dependencies.\n"
+    "- Prefer composition rather than inheritance.\n"
+    "- Lint with ruff, never black.\n"
+)
+
+
+class ProjectChoiceDeletionTest(VerdictsTestCase):
+    """A deletion that may drop a project choice comes back as an ask, unless a copy in another file is cited."""
+
+    def setUp(self):
+        super().setUp()
+        write(self.repo, "AGENTS.md", CHOICES)
+        write(self.repo, "docs/style.md", "Use uv.\n")
+        commit_all(self.repo, "choices")
+
+    def delete(self, block, *evidence, criterion="valuable"):
+        return {"blocks": [block], "action": "delete", "criterion": criterion, "evidence": list(evidence) or ["e"]}
+
+    def verdicts(self, verdict):
+        code, out, err = self.check(self.keep_rest(verdict))
+        self.assertEqual(code, 0, err)
+        return json.loads(out)
+
+    def assertAsks(self, verdict):
+        report = self.verdicts(verdict)
+        (got,) = [v for v in report["verdicts"] if v["blocks"] == verdict["blocks"]]
+        self.assertEqual(got["action"], "ask")
+        self.assertEqual(got["proposed"], {"action": "delete"})
+        self.assertEqual((got["criterion"], got["evidence"]), (verdict["criterion"], verdict["evidence"]))
+        self.assertTrue(got["question"].strip() and got["recommendation"].strip())
+        self.assertEqual(report["counts"], {"ask": 1, "keep": 3})
+        # The rewritten verdict is itself valid.
+        code, _, err = self.check(report["verdicts"])
+        self.assertEqual(code, 0, err)
+
+    def assertDeletes(self, verdict):
+        report = self.verdicts(verdict)
+        self.assertIn(verdict, report["verdicts"])
+        self.assertEqual(report["counts"], {"delete": 1, "keep": 3})
+
+    def test_generic_advice_stays_a_delete(self):
+        self.assertDeletes(self.delete("b1", "AGENTS.md:1 is advice any project follows"))
+
+    def test_tool_or_alternative_becomes_an_ask(self):
+        for block in ("b2", "b3", "b4"):
+            with self.subTest(block=block):
+                self.assertAsks(self.delete(block, f"AGENTS.md:{block[1]} is common practice"))
+
+    def test_a_brief_delete_naming_a_tool_becomes_an_ask(self):
+        self.assertAsks(self.delete("b2", "says nothing", criterion="brief"))
+
+    def test_a_cited_copy_in_another_file_keeps_the_delete(self):
+        for evidence in ("docs/style.md:1 says the same", "`docs/style.md`:1 Use uv."):
+            with self.subTest(evidence=evidence):
+                self.assertDeletes(self.delete("b2", "AGENTS.md:2", evidence))
+
+    def test_a_citation_that_proves_no_copy_still_asks(self):
+        for evidence in ("AGENTS.md:2 duplicates itself", "docs/nope.md:1", "../outside.md:1", "/etc/hosts:1"):
+            with self.subTest(evidence=evidence):
+                self.assertAsks(self.delete("b2", evidence))
+
+    def test_a_false_statement_stays_a_delete(self):
+        self.assertDeletes(self.delete("b2", "uv.lock: no such file", criterion="accurate"))
+
+    def test_ruling_is_kept(self):
+        verdict = {**self.delete("b2"), "ruling": "Tool choices are never obvious."}
+        (got,) = [v for v in self.verdicts(verdict)["verdicts"] if v["blocks"] == ["b2"]]
+        self.assertEqual((got["action"], got["ruling"]), ("ask", "Tool choices are never obvious."))
+
+
 if __name__ == "__main__":
     unittest.main()
