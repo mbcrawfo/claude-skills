@@ -876,6 +876,13 @@ class DocsAndReferencesTest(RepoTestCase):
         self.assertEqual(entry["aliases"], ["docs/AGENTS.md"])
         self.assertIn(("notes.txt", 1), [(h["path"], h["line"]) for h in entry["references"]["hits"]])
 
+    def test_references_survive_a_form_feed_in_a_matching_line(self):
+        write(self.repo, "AGENTS.md", "- a\n")
+        write(self.repo, "n.txt", "see AGENTS.md\x0cmore\n")
+        commit_all(self.repo, "add")
+        hits = by_path(self.inventory(), "AGENTS.md")["references"]["hits"]
+        self.assertIn(("n.txt", 1), [(h["path"], h["line"]) for h in hits])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -572,7 +572,9 @@ def _references(root: Path, paths: list[str]) -> dict:
     if result.returncode not in (0, 1):  # 1 means no hits
         raise CliError((result.stderr.strip().splitlines() or ["git grep failed"])[0])
     hits = []
-    for line in result.stdout.splitlines():
+    for line in result.stdout.split("\n"):  # not splitlines(): a form feed or U+2028 in a match is not a break
+        if not line:
+            continue
         path, number, text = line.split("\0", 2)
         if posixpath.basename(path).lower() != "agents.md":
             hits.append({"path": path, "line": int(number), "text": text.strip()[:REFERENCE_TEXT_CHARS]})
