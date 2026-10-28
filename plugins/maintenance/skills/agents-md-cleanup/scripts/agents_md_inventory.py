@@ -877,11 +877,22 @@ def _check_split(verdict: dict, file: str, root: Path) -> None:
 
 
 def _check_text_limits(verdict: dict, rule_words: int) -> None:
-    """Refuse text the verdict would write that holds a rule over the word limit."""
-    fields = {name: verdict[name] for name in ("new_text", "pointer") if name in verdict}
+    """Refuse text bound for an AGENTS.md that holds a rule over the word limit.
+
+    Measured: a `fix`, `trim` or `merge`'s `new_text`, a move's `new_text` when it targets an AGENTS.md, every
+    `pointer`, and a part's `text` when it stays or targets an AGENTS.md. Text that goes to a doc or a code
+    comment is prose, not a rule, and is not capped.
+    """
+    fields = {}
+    if "new_text" in verdict and (verdict["action"] != "move" or verdict.get("target_kind") == "agents_md"):
+        fields["new_text"] = verdict.get("new_text")
+    if "pointer" in verdict:
+        fields["pointer"] = verdict["pointer"]
     for number, part in enumerate(verdict.get("parts", []), start=1):
-        for name in ("text", "pointer"):
-            fields[f"parts[{number}].{name}"] = part.get(name)
+        if part.get("target_kind", "agents_md") == "agents_md":
+            fields[f"parts[{number}].text"] = part["text"]
+        if "pointer" in part:
+            fields[f"parts[{number}].pointer"] = part["pointer"]
     for name, text in fields.items():
         for rule in agents_md_limits.measure_rules(text) if isinstance(text, str) else []:
             if rule["words"] > rule_words:
@@ -999,7 +1010,7 @@ def _guard_length(verdict: dict, blocks: list[dict], file: str, rule_words: int 
 
     Keeping such a rule whole needs the user's say, and an entry in the test's exception list.
     """
-    if rule_words is None or verdict["action"] != "keep" or "ruling" in verdict:
+    if rule_words is None or verdict["action"] != "keep" or str(verdict.get("ruling", "")).strip():
         return verdict
     evidence = [
         f"{file}:{block['start_line'] + rule['line'] - 1}: {rule['words']} words"

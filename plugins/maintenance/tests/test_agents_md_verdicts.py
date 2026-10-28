@@ -1105,10 +1105,6 @@ class ProjectChoiceDeletionTest(VerdictsTestCase):
         self.assertEqual((got["action"], got["ruling"]), ("ask", "Tool choices are never obvious."))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class SplitAndDocTest(VerdictsTestCase):
     def setUp(self):
         super().setUp()
@@ -1276,6 +1272,8 @@ class WordLimitGuardTest(VerdictsTestCase):
         commit_all(self.repo, "long")
         verdicts = self.keep_rest({"blocks": ["b1"], "action": "keep", "ruling": "whole: the security rule"})
         self.assertEqual(json.loads(self.check_limited(verdicts)[1])["verdicts"][0]["action"], "keep")
+        blank = self.keep_rest({"blocks": ["b1"], "action": "keep", "ruling": "  "})
+        self.assertEqual(json.loads(self.check_limited(blank)[1])["verdicts"][0]["action"], "ask")
 
     def test_new_text_over_the_limit_is_rejected(self):
         long = "- " + " ".join(["x"] * 81)
@@ -1288,7 +1286,7 @@ class WordLimitGuardTest(VerdictsTestCase):
             "evidence": ["e"],
             "parts": [{"text": "- a"}, {"text": long}],
         }
-        self.assertRejected(self.check_limited(self.keep_rest(split)), "parts")
+        self.assertRejected(self.check_limited(self.keep_rest(split)), "parts[2].text")
         exact = {
             "blocks": ["b1"],
             "action": "trim",
@@ -1302,3 +1300,29 @@ class WordLimitGuardTest(VerdictsTestCase):
         write(self.repo, "AGENTS.md", self.LONG + "\n\n- two\n\n- three\n\n- four\n")
         commit_all(self.repo, "long")
         self.assertEqual(json.loads(self.check(self.keep_rest())[1])["verdicts"][0]["action"], "keep")
+
+    def test_doc_and_comment_text_are_not_capped(self):
+        long = " ".join(["x"] * 100)
+        write(self.repo, "docs/architecture.md", "# Arch\n")
+        commit_all(self.repo, "docs")
+        doc_move = {
+            "blocks": ["b1"],
+            "action": "move",
+            "criterion": "placement",
+            "evidence": ["e"],
+            "target": "docs/architecture.md",
+            "target_kind": "doc",
+            "new_text": long,
+        }
+        self.assertEqual(self.check_limited(self.keep_rest(doc_move))[0], 0)
+        leaving = {"text": long, "target": "docs/architecture.md", "target_kind": "doc"}
+        split = {"blocks": ["b1"], "action": "split", "criterion": "brief", "evidence": ["e"]}
+        self.assertEqual(self.check_limited(self.keep_rest({**split, "parts": [{"text": "- a"}, leaving]}))[0], 0)
+        comment = {"text": long, "target": "src/a.py", "target_kind": "comment"}
+        self.assertEqual(self.check_limited(self.keep_rest({**split, "parts": [{"text": "- a"}, comment]}))[0], 0)
+        staying = {**split, "parts": [{"text": long}, {"text": "- b"}]}
+        self.assertRejected(self.check_limited(self.keep_rest(staying)), "parts[1].text")
+
+
+if __name__ == "__main__":
+    unittest.main()
