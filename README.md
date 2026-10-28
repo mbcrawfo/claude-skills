@@ -17,7 +17,7 @@ Run `/plugin` to browse what's available. Pull updates with `/plugin marketplace
 
 - [`branch-review`](plugins/branch-review/README.md): a local replacement for CodeRabbit PR reviews. Agents review a branch, fix the findings and re-check until it converges.
 - [`implementation-manager`](plugins/implementation-manager/README.md): runs a planned piece of work to completion through child sessions that each deliver a pull request, with one run watcher and a push queue.
-- [`maintenance`](plugins/maintenance/README.md): repo maintenance skills. `superpowers-cleanup` removes old superpowers spec, plan and research files on request, handling every reference to them before one reviewed commit.
+- [`maintenance`](plugins/maintenance/README.md): repo maintenance skills. `superpowers-cleanup` removes old superpowers spec, plan and research files on request, handling every reference to them before one reviewed commit. `agents-md-cleanup` keeps AGENTS.md files accurate, brief and at the right level.
 
 ## Layout
 
