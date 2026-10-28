@@ -20,8 +20,9 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 import agents_md_inventory  # noqa: E402
+import agents_md_limits  # noqa: E402
 
-__all__ = ["agents_md_inventory", "call", "commit_all", "git", "make_repo", "run", "write"]
+__all__ = ["agents_md_inventory", "agents_md_limits", "call", "commit_all", "git", "make_repo", "run", "write"]
 
 
 def call(*argv: str) -> tuple[int, str, str]:
