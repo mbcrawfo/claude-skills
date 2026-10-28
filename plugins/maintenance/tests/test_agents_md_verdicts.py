@@ -1443,6 +1443,16 @@ class WordLimitGuardTest(VerdictsTestCase):
         commit_all(self.repo, "long")
         self.assertEqual(json.loads(self.check(self.keep_rest())[1])["verdicts"][0]["action"], "keep")
 
+    def test_split_part_moving_to_an_agents_md_is_capped(self):
+        split = {"blocks": ["b1"], "action": "split", "criterion": "level", "evidence": ["e"]}
+        moving = {"text": "- " + " ".join(["x"] * 81), "target": "src/AGENTS.md", "target_kind": "agents_md"}
+        self.assertRejected(
+            self.check_limited(self.keep_rest({**split, "parts": [{"text": "- a"}, moving]})),
+            "parts[2].text holds a rule of 81 words, over the limit of 80",
+        )
+        exact = {**moving, "text": "- " + " ".join(["x"] * 80)}
+        self.assertEqual(self.check_limited(self.keep_rest({**split, "parts": [{"text": "- a"}, exact]}))[0], 0)
+
     def test_doc_and_comment_text_are_not_capped(self):
         long = " ".join(["x"] * 100)
         write(self.repo, "docs/architecture.md", "# Arch\n")

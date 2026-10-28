@@ -821,6 +821,7 @@ class DocsAndReferencesTest(RepoTestCase):
         write(self.repo, "AGENTS.md", "- a\n")
         write(self.repo, "src/AGENTS.md", "- b\n")
         write(self.repo, "src/README.md", "# src\n")
+        write(self.repo, "lib/README.md", "# lib, with no AGENTS.md beside it\n")
         write(self.repo, "docs/architecture.md", "# Architecture\n\n## Retry\n\ntext\n\nSetext\n------\n")
         write(self.repo, "docs/notes.txt", "not a page\n")
         commit_all(self.repo, "add")
@@ -885,6 +886,16 @@ class DocsAndReferencesTest(RepoTestCase):
         refs = by_path(self.inventory(), "AGENTS.md")["references"]
         self.assertEqual(len(refs["hits"]), 50)
         self.assertTrue(refs["truncated"])
+
+    def test_references_at_exactly_the_cap_are_not_truncated(self):
+        write(self.repo, "AGENTS.md", "- a\n")
+        write(self.repo, "notes.txt", "AGENTS.md\n" * inv.REFERENCES_SHOWN)
+        commit_all(self.repo, "add")
+        refs = by_path(self.inventory(), "AGENTS.md")["references"]
+        self.assertEqual((len(refs["hits"]), refs["truncated"]), (50, False))
+        write(self.repo, "notes.txt", "AGENTS.md\n" * (inv.REFERENCES_SHOWN + 1))
+        refs = by_path(self.inventory(), "AGENTS.md")["references"]
+        self.assertEqual((len(refs["hits"]), refs["truncated"]), (50, True))
 
     def test_references_include_aliases(self):
         write(self.repo, "AGENTS.md", "- a\n")
