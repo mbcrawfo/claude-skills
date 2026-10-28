@@ -186,7 +186,7 @@ When the `locate` before a second-opinion or final-verification round gives a re
 ## 9. Report
 
 1. Run `rs summary` and print its `text`. The script has also written it to the `path` it returns, and the Review notes block to `review_notes_path`.
-2. Print `review_notes` and tell the invoker to paste it into the PR description as it is: never retype, trim or summarize it. Findings under "Open and unverified" were not settled by this review; say so.
+2. Do not print `review_notes`, and never offer it to the developer or ask anyone to paste it. The Review notes block goes in the PR description, and whichever agent opens or edits the PR puts it there: build the body file from the file at `review_notes_path` (with `cat`, say), never retyping, trimming or summarizing it. That agent runs `rs summary` again to get the path if it no longer has it. Findings under "Open and unverified" were not settled by this review; say so.
 3. Your final message lists the escalated and the invalid findings, or says there are none. For each escalated finding, give what the developer must decide.
 4. When you marked a finding invalid because of a repo rule that no `AGENTS.md` states, say so, and give the line to add to the nearest `AGENTS.md`.
 

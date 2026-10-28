@@ -42,7 +42,7 @@ The loop:
 - **Record and triage.** The reviewer's findings are recorded. For each open one, the orchestrating agent checks the claim against the code and records what it checked, then fixes it with a regression test shown to fail without the fix, disputes it with evidence, or escalates it. A finding whose fix is a choice for the developer is always escalated, unless the intent settles it. Findings outside the change get the status `outside` and stay out of the fix loop, unless the fix is trivial and in changed files or the developer asks for it; when the repo's `AGENTS.md` forbids deferring findings, they are escalated instead.
 - **Second opinion.** Once no finding is open, the state script decides whether a second deep round is due, which it is when a deep round rated the merge risk `moderate` or `high` or the review found a critical or major issue. A fresh reviewer, Opus unless `--model` says otherwise, then reviews the whole change set once more, putting first the steps a first pass most often skips. It runs in place of the follow-up that claimed fixes would otherwise get, and verifies them. It also runs in place of a merge-check: the reviewer then checks each conflict resolution against both sides as well. It waits while a finding is escalated, since the developer's answer may add code, and runs once the decisions are recorded. Each branch gets at most one automatic second opinion; `--second-opinion` asks for one and `--no-second-opinion` skips it.
 - **Repeat.** Each round gets a new reviewer. The loop continues while findings are open, fixes are unverified or a second opinion is due, and stops when the state script reports convergence. It stops after six rounds, counted from the start of the run or the last forced deep review, whichever is later. At the cap, one more follow-up may run to verify claimed fixes, and a due second opinion still runs.
-- **Report.** A summary's header names the round count, the last round and the merge risk, and the next line lists every round with its mode and model (`Rounds: 1 deep (opus), 2 deep (second opinion) (opus), 3 followup (sonnet)`). Then it lists counts, the findings still open or unverified, an intent check (claims the code does not keep, and behavior the intent does not mention, from the latest deep round on), what the latest deep round could not check, then the escalated findings, behavior changes for the developer to confirm, and the deferred, accepted, invalid, outside-the-change and verified findings. The state script rewrites it after every change to the review state. Beside it, `review-notes.md` holds a generated "Review notes" block: a line of round counts, models and risk, the non-empty sections, and the fixed findings by title. Paste that block into the PR description as it is.
+- **Report.** A summary's header names the round count, the last round and the merge risk, and the next line lists every round with its mode and model (`Rounds: 1 deep (opus), 2 deep (second opinion) (opus), 3 followup (sonnet)`). Then it lists counts, the findings still open or unverified, an intent check (claims the code does not keep, and behavior the intent does not mention, from the latest deep round on), what the latest deep round could not check, then the escalated findings, behavior changes for the developer to confirm, and the deferred, accepted, invalid, outside-the-change and verified findings. The state script rewrites it after every change to the review state. Beside it, `review-notes.md` holds a generated "Review notes" block: a line of round counts, models and risk, the non-empty sections, and the fixed findings by title. The agent that opens the PR puts that block in the PR description as it is; the review never hands it to you to paste.
 
 Notes, discussion entries and decisions reach the state script through files (`--note-file`, `--text-file`) rather than quoted shell arguments, since reviewer text can contain quotes, `$` and backticks.
 
@@ -59,7 +59,7 @@ State is kept outside the repo, in the plugin's data directory, which Claude Cod
   review.json    # findings, status and round metadata
   rounds/<N>.md  # each reviewer's report
   summary.md     # the latest summary
-  review-notes.md  # the Review notes block to paste into the PR
+  review-notes.md  # the Review notes block for the PR description
 ```
 
 Slashes in the branch name become `__`, and every path segment of the origin URL is kept, so a GitLab subgroup repo is `group__sub__repo`. A repo without an origin URL gets a `local-<hash>` key that its linked worktrees share. A detached HEAD is `detached-<sha7>`.
@@ -111,6 +111,10 @@ branch-review:record --repo PATH --commit SHA --reason-file PATH [--base REF]
 ```
 
 `--base` sets the base ref the branch's review state uses from then on, as `/branch-review:review --base` does. It prints the JSON `{"recorded", "round", "commit", "branch", "files", "dir"}`; `recorded: false` means the commit is already the head of the latest round. It refuses a detached HEAD, a missing `origin/<branch>` ref, a commit not on that ref and an empty reason (exit 1, one line on stderr). A recorded round is listed as `recorded` in the summary and the review notes, and never counts as review: it does not count toward the six-round cap and neither satisfies nor triggers a second opinion. The skill is hidden from the `/` menu (`user-invocable: false`), and its description tells the model to use it only on the protocol's instruction, never at a user's request.
+
+## What's new in 0.12.1
+
+- The review no longer prints the Review notes block or asks you to paste it. The agent that opens or edits the PR copies `review-notes.md` into the PR description itself.
 
 ## What's new in 0.12
 

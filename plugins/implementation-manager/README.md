@@ -4,7 +4,7 @@ Runs a planned multi-phase piece of work to merged code. The session you run it 
 
 ## Requirements
 
-- The [`branch-review`](../branch-review/README.md) plugin, 0.10.0 or later, for `/branch-review:review` and `branch-review:check` (and `branch-review:record` in integration-branch mode). It is a declared dependency with that minimum version, so installing this plugin installs it too. The manager stops at setup if a skill it needs is missing.
+- The [`branch-review`](../branch-review/README.md) plugin, 0.12.1 or later, for `/branch-review:review` and `branch-review:check` (and `branch-review:record` in integration-branch mode). It is a declared dependency with that minimum version, so installing this plugin installs it too. The manager stops at setup if a skill it needs is missing.
 - The Claude desktop app's session tools (`start_session`, `get_session`, `list_events`, `sync_with_base_branch`, the ccd_pr tools), which start and inspect child sessions. The skill does not work in a plain terminal session.
 - `gh`, logged in, and `python3` (3.9+).
 
@@ -29,7 +29,7 @@ Pushes go through the manager. A child reviews its change with `/branch-review:r
 
 Before its last validation ahead of a request, and before it applies an owner's answer, a child syncs with the base if the base moved, so the sync on `go` is usually a no-op. On `go`, the child syncs with the base right before it pushes. A clean merge is pushed after validation, with no new request; the review check counts a clean base merge as covered. A conflicting merge, or a failed validation, sends the child back to ask again; for a conflicting merge the check reports `base-conflict`, and the child's review checks the resolutions in a small merge-check round.
 
-The child's PR description carries the review summary's Escalated, Deferred, Invalid, Outside the change and Intent check sections under "Review notes". Findings outside the change are not deferrals: where the repository forbids deferring review findings, the review escalates them, and the check reports `escalated` until the owner answers. The child prompt's review command has no `--no-second-opinion`, so a second opinion the review calls for always runs; until it does, the check reports `second-opinion-pending`.
+The child copies the review's generated Review notes block (`review-notes.md`) into its PR description itself. Findings outside the change are not deferrals: where the repository forbids deferring review findings, the review escalates them, and the check reports `escalated` until the owner answers. The child prompt's review command has no `--no-second-opinion`, so a second opinion the review calls for always runs; until it does, the check reports `second-opinion-pending`.
 
 A child asks the owner, through the manager, as soon as it meets a choice the spec does not settle that changes what a test guarantees, behavior users can see or the unit's scope; a plan workflow's own rulings cover implementation choices only. `/branch-review:review` is the child's review, so it skips a plan workflow's per-task code-quality reviews and runs the full validation once the change is complete, unless the repository requires it per commit.
 
