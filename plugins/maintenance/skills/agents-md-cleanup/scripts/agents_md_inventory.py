@@ -15,7 +15,8 @@ Commands:
   check-verdicts
              validate a reviewer's verdicts for one file against that file's blocks; a deletion that may
              drop a project choice comes back as an `ask`; with `--rule-words`, so does a `keep` of a rule over
-             that many words whose ruling lacks `(whole)`, and any text over it is rejected
+             that many words whose ruling lacks `(whole)`, and any text over it is rejected, except a rule
+             kept `(whole)` that a fix, trim or move carries as one unit
 
 `split_blocks` cuts a markdown file into the addressable blocks the skill's verdicts refer to.
 """
@@ -635,7 +636,12 @@ def _docs(root: Path, all_paths: list[str]) -> dict:
                 pages.append({"path": path, "headings": [heading["title"] for heading in headings]})
     directories = {_dir_of(path) for path in all_paths}
     readmes = [path for path in _known_files(root, basename="readme.md") if _dir_of(path) in directories]
-    return {"folder": folder, "pages": pages[:DOCS_PAGES_SHOWN], "readmes": readmes}
+    return {
+        "folder": folder,
+        "pages": pages[:DOCS_PAGES_SHOWN],
+        "readmes": readmes,
+        "truncated": len(pages) > DOCS_PAGES_SHOWN,
+    }
 
 
 def _rulings(root: Path) -> dict:
@@ -751,9 +757,12 @@ TOP_LEVEL_KEYS = ("file", "verdicts")
 # A split's parts: `text` is required; the rest name where the part goes, as a move's fields do.
 PART_KEYS = ("text", "target", "target_kind", "target_heading", "pointer")
 PART_MOVE_KEYS = PART_KEYS[1:]
-# An ask's `proposed` verdict: what it may be, and what it takes from the ask unless it gives its own.
+# An ask's `proposed` verdict: what it may be, and what it takes from the ask unless it gives its own. The ruling
+# comes along so that a rule kept `(whole)` stays exempt from the word cap in the proposed fix or move too.
 PROPOSED_ACTIONS = tuple(action for action in ACTIONS if action != "ask")
-PROPOSED_INHERITS = ("blocks", "criterion", "evidence")
+PROPOSED_INHERITS = ("blocks", "criterion", "evidence", "ruling")
+# The actions that keep a rule as one unit, so a `(whole)` ruling lifts the word cap on its own text.
+WHOLE_ACTIONS = ("fix", "trim", "move")
 _JSON_FENCE = re.compile(r"```json\s*\n(.*?)\n```", re.S)
 # What marks a statement as a possible project choice: a tool, command or path (an inline code span), or an
 # alternative weighed against it.
@@ -894,12 +903,15 @@ def _check_text_limits(verdict: dict, rule_words: int, texts: list[str]) -> None
     Measured: a `fix`, `trim` or `merge`'s `new_text`, a move's `new_text` when it targets an AGENTS.md (or, with
     no `new_text`, the moved blocks' own `texts`, which it carries verbatim), every `pointer`, and a part's `text`
     when it stays or targets an AGENTS.md. Text that goes to a doc or a code comment is prose, not a rule, and is
-    not capped.
+    not capped. A `fix`, `trim` or `move` whose ruling holds `(whole)` carries a rule the user kept whole, so its
+    `new_text` and blocks are not capped; its `pointer` is a new rule and still is.
     """
     fields = {}
-    if "new_text" in verdict and (verdict["action"] != "move" or verdict.get("target_kind") == "agents_md"):
+    whole = verdict["action"] in WHOLE_ACTIONS and WHOLE_TOKEN in str(verdict.get("ruling", ""))
+    to_agents_md = verdict["action"] != "move" or verdict.get("target_kind") == "agents_md"
+    if "new_text" in verdict and to_agents_md and not whole:
         fields["new_text"] = verdict.get("new_text")
-    elif verdict["action"] == "move" and verdict.get("target_kind") == "agents_md":
+    elif verdict["action"] == "move" and verdict.get("target_kind") == "agents_md" and not whole:
         for text in texts:
             for rule in agents_md_limits.measure_rules(text):
                 if rule["words"] > rule_words:
@@ -991,7 +1003,10 @@ def _proposed(ask: dict) -> dict:
 def _check_proposed(
     ask: dict, file: str, root: Path, rule_words: int | None = None, texts: list[str] | None = None
 ) -> None:
-    """Check an ask's `proposed` like a top-level verdict, since answering as recommended applies it as it is."""
+    """Check an ask's `proposed` like a top-level verdict, since answering as recommended applies it as it is.
+
+    It inherits the ask's ruling, so a proposed fix or move of a rule kept `(whole)` is exempt from the word cap.
+    """
     proposed = ask["proposed"]
     if proposed.get("action") not in PROPOSED_ACTIONS:
         raise CliError(f"action must be one of {', '.join(PROPOSED_ACTIONS)}")

@@ -144,8 +144,9 @@ def format_limits_line(rule_words: int, file_bytes: int, root_bytes: int, test: 
 def limits_in_force(parsed: dict | None, overrides: dict) -> dict:
     """Resolve the limits. Arguments always win over the guidelines line, which wins over the defaults.
 
-    `overrides["none"]` gives source `none` with the default numbers, whatever the guidelines line says. Numeric
-    overrides over a guidelines `none` give source `arguments`, the other numbers coming from the defaults.
+    `overrides["none"]` gives source `none` with the default numbers, whatever the guidelines line says, but keeps
+    the line's `test`, which still enforces the old limits until the run updates or removes it. Numeric overrides
+    over a guidelines `none` give source `arguments`, the other numbers coming from the defaults.
     """
     limits = {
         "source": "default",
@@ -156,6 +157,8 @@ def limits_in_force(parsed: dict | None, overrides: dict) -> dict:
     }
     if overrides.get("none"):
         limits["source"] = "none"
+        if parsed and not parsed.get("none"):
+            limits["test"] = parsed["test"]
         return limits
     given = {k: overrides[k] for k in ("rule_words", "file_bytes", "root_bytes") if overrides.get(k) is not None}
     if parsed and parsed.get("none"):

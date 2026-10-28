@@ -1352,6 +1352,30 @@ class WordLimitGuardTest(VerdictsTestCase):
         }
         self.assertEqual(self.check_limited(self.keep_rest(exact))[0], 0)
 
+    def test_keep_at_exactly_the_word_limit_stays_a_keep(self):
+        write(self.repo, "AGENTS.md", "- " + " ".join(["w"] * 80) + "\n\n- two\n\n- three\n\n- four\n")
+        commit_all(self.repo, "exact")
+        code, out, err = self.check_limited(self.keep_rest())
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)["verdicts"][0]["action"], "keep")
+
+    def test_split_part_pointer_over_the_limit_is_rejected(self):
+        write(self.repo, "docs/architecture.md", "# Arch\n")
+        commit_all(self.repo, "docs")
+        part = {
+            "text": "t",
+            "target": "docs/architecture.md",
+            "target_kind": "doc",
+            "pointer": "- " + " ".join(["p"] * 81),
+        }
+        split = {"blocks": ["b1"], "action": "split", "criterion": "placement", "evidence": ["e"]}
+        self.assertRejected(
+            self.check_limited(self.keep_rest({**split, "parts": [{"text": "- a"}, part]})),
+            "parts[2].pointer holds a rule of 81 words",
+        )
+        short = {**part, "pointer": "- read the page"}
+        self.assertEqual(self.check_limited(self.keep_rest({**split, "parts": [{"text": "- a"}, short]}))[0], 0)
+
     def test_without_the_flag_nothing_is_guarded(self):
         write(self.repo, "AGENTS.md", self.LONG + "\n\n- two\n\n- three\n\n- four\n")
         commit_all(self.repo, "long")
@@ -1378,6 +1402,142 @@ class WordLimitGuardTest(VerdictsTestCase):
         self.assertEqual(self.check_limited(self.keep_rest({**split, "parts": [{"text": "- a"}, comment]}))[0], 0)
         staying = {**split, "parts": [{"text": long}, {"text": "- b"}]}
         self.assertRejected(self.check_limited(self.keep_rest(staying)), "parts[1].text")
+
+
+class WholeRulingTest(VerdictsTestCase):
+    """A rule the user kept whole over the word limit can still be fixed or moved as one unit."""
+
+    check_limited = WordLimitGuardTest.check_limited
+
+    RULE = "- " + " ".join(["w"] * 93) + " `src/x.py`."  # 94 words
+    WHOLE = "Long rule (whole)"
+
+    def setUp(self):
+        super().setUp()
+        write(self.repo, "AGENTS.md", self.RULE + "\n\n- two\n\n- three\n\n- four\n")
+        write(self.repo, "src/AGENTS.md", "- s\n")
+        write(self.repo, "docs/architecture.md", "# Arch\n")
+        commit_all(self.repo, "long")
+
+    def fix(self, **extra):
+        return {
+            "blocks": ["b1"],
+            "action": "fix",
+            "criterion": "accurate",
+            "evidence": ["src/x.py was renamed to src/y.py"],
+            "new_text": self.RULE.replace("src/x.py", "src/y.py"),
+            "rename_only": True,
+            **extra,
+        }
+
+    def move(self, **extra):
+        return {
+            "blocks": ["b1"],
+            "action": "move",
+            "criterion": "level",
+            "evidence": ["names only src/"],
+            "target": "src/AGENTS.md",
+            "target_kind": "agents_md",
+            **extra,
+        }
+
+    def ask(self, proposed, **extra):
+        return {
+            "blocks": ["b1"],
+            "action": "ask",
+            "criterion": "accurate",
+            "evidence": ["e"],
+            "question": "q",
+            "recommendation": "r",
+            "proposed": proposed,
+            **extra,
+        }
+
+    def assertAccepted(self, verdict, action):
+        code, out, err = self.check_limited(self.keep_rest(verdict))
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)["verdicts"][0]["action"], action)
+
+    def test_whole_ruling_lets_the_rule_be_fixed_moved_or_trimmed_as_one_unit(self):
+        trim = {**self.fix(), "action": "trim", "criterion": "brief"}
+        del trim["rename_only"]
+        rows = [
+            ("fix rename_only", self.fix(ruling=self.WHOLE), "fix"),
+            ("trim", {**trim, "ruling": self.WHOLE}, "trim"),
+            ("verbatim move to an AGENTS.md", self.move(ruling=self.WHOLE), "move"),
+            ("move with new_text", self.move(ruling=self.WHOLE, new_text=self.RULE), "move"),
+        ]
+        for name, verdict, action in rows:
+            with self.subTest(name):
+                self.assertAccepted(verdict, action)
+
+    def test_without_the_token_the_same_verdicts_are_rejected(self):
+        trim = {**self.fix(), "action": "trim", "criterion": "brief"}
+        del trim["rename_only"]
+        rows = [
+            ("fix, no ruling", self.fix(), "new_text holds a rule of 94 words"),
+            ("fix, pattern ruling", self.fix(ruling="Long rules are fine."), "new_text holds a rule of 94 words"),
+            ("trim, no ruling", trim, "new_text holds a rule of 94 words"),
+            ("move, no ruling", self.move(), "blocks hold a rule of 94 words"),
+            ("move, quote ruling", self.move(ruling="Long rule"), "blocks hold a rule of 94 words"),
+        ]
+        for name, verdict, expected in rows:
+            with self.subTest(name):
+                self.assertRejected(self.check_limited(self.keep_rest(verdict)), expected)
+
+    def test_whole_ruling_covers_an_asks_proposed(self):
+        fix = {k: v for k, v in self.fix().items() if k not in ("blocks", "criterion", "evidence")}
+        move = {k: v for k, v in self.move().items() if k not in ("blocks", "criterion", "evidence")}
+        rows = [
+            ("ruling on the ask, proposed fix", self.ask(fix, ruling=self.WHOLE)),
+            ("ruling on the ask, proposed move", self.ask(move, ruling=self.WHOLE)),
+            ("ruling in proposed, proposed fix", self.ask({**fix, "ruling": self.WHOLE})),
+            ("ruling in proposed, proposed move", self.ask({**move, "ruling": self.WHOLE})),
+        ]
+        for name, verdict in rows:
+            with self.subTest(name):
+                self.assertAccepted(verdict, "ask")
+        for name, verdict in (("proposed fix", self.ask(fix)), ("proposed move", self.ask(move))):
+            with self.subTest(name + ", no ruling"):
+                self.assertRejected(self.check_limited(self.keep_rest(verdict)), "proposed: ")
+
+    def test_whole_ruling_does_not_lift_the_cap_on_new_rules(self):
+        long = "- " + " ".join(["x"] * 81)
+        split = {
+            "blocks": ["b1"],
+            "action": "split",
+            "criterion": "brief",
+            "evidence": ["e"],
+            "ruling": self.WHOLE,
+            "parts": [{"text": "- a"}, {"text": long}],
+        }
+        doc_move = {
+            "blocks": ["b1"],
+            "action": "move",
+            "criterion": "placement",
+            "evidence": ["e"],
+            "ruling": self.WHOLE,
+            "target": "docs/architecture.md",
+            "target_kind": "doc",
+            "new_text": "t",
+            "pointer": long,
+        }
+        merge = {
+            "blocks": ["b1", "b2"],
+            "action": "merge",
+            "criterion": "brief",
+            "evidence": ["e"],
+            "ruling": self.WHOLE,
+            "new_text": self.RULE + " two",
+        }
+        rows = [
+            ("split part", split, "parts[2].text holds a rule of 81 words"),
+            ("doc move pointer", doc_move, "pointer holds a rule of 81 words"),
+            ("merge", merge, "new_text holds a rule of 95 words"),
+        ]
+        for name, verdict, expected in rows:
+            with self.subTest(name):
+                self.assertRejected(self.check_limited(self.keep_rest(verdict)), expected)
 
 
 if __name__ == "__main__":

@@ -804,6 +804,11 @@ class SizeTest(RepoTestCase):
         self.assertEqual((out["limits"]["source"], out["limits"]["rule_words"]), ("arguments", 60))
         self.assertEqual(out["totals"]["rules_over"], 1)
         self.assertEqual(self.inventory("--no-size-limits")["limits"]["source"], "none")
+        checked = "- Size limits: 80 words per rule, 8 KB per file, 16 KB for the root; checked by tests/t.py."
+        write(self.repo, "AGENTS.md", "## AGENTS.md guidelines\n\n" + checked + "\n\n" + self.LONG)
+        commit_all(self.repo, "checked")
+        unsized = self.inventory("--no-size-limits")["limits"]
+        self.assertEqual((unsized["source"], unsized["test"]), ("none", "tests/t.py"))
         code, _, err = call("inventory", "--repo", str(self.repo), "--no-size-limits", "--file-bytes", "10")
         self.assertEqual(code, 1)
         self.assertIn("error: ", err)
@@ -825,6 +830,7 @@ class DocsAndReferencesTest(RepoTestCase):
         self.assertEqual([p["path"] for p in docs["pages"]], ["docs/architecture.md", "docs/untracked.md"])
         self.assertEqual(docs["pages"][0]["headings"], ["Architecture", "Retry", "Setext"])
         self.assertEqual(docs["readmes"], ["README.md", "src/README.md"])
+        self.assertIs(docs["truncated"], False)
 
     def test_docs_folder_preference_and_absence(self):
         write(self.repo, "AGENTS.md", "- a\n")
@@ -841,7 +847,21 @@ class DocsAndReferencesTest(RepoTestCase):
     def test_no_docs_folder(self):
         write(self.repo, "AGENTS.md", "- a\n")
         commit_all(self.repo, "add")
-        self.assertEqual(self.inventory()["docs"], {"folder": None, "pages": [], "readmes": ["README.md"]})
+        self.assertEqual(
+            self.inventory()["docs"], {"folder": None, "pages": [], "readmes": ["README.md"], "truncated": False}
+        )
+
+    def test_docs_pages_cap_sets_truncated(self):
+        write(self.repo, "AGENTS.md", "- a\n")
+        for number in range(inv.DOCS_PAGES_SHOWN):
+            write(self.repo, f"docs/p{number:03}.md", "# p\n")
+        commit_all(self.repo, "add")
+        docs = self.inventory()["docs"]
+        self.assertEqual((len(docs["pages"]), docs["truncated"]), (200, False))
+        write(self.repo, "docs/p200.md", "# p\n")
+        docs = self.inventory()["docs"]
+        self.assertEqual((len(docs["pages"]), docs["truncated"]), (200, True))
+        self.assertEqual(docs["pages"][-1]["path"], "docs/p199.md")
 
     def test_references_find_mentions_outside_agents_files(self):
         write(self.repo, "AGENTS.md", "- a\n")

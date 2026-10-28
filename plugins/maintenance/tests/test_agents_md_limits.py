@@ -118,6 +118,15 @@ class InForceTest(unittest.TestCase):
         got = lim.limits_in_force(parsed, {"none": True})
         self.assertEqual((got["source"], got["rule_words"], got["file_bytes"]), ("none", 80, 8192))
 
+    def test_none_from_arguments_keeps_the_guidelines_test(self):
+        # Test maintenance keys on `test`: a `none` override must still say which test enforces the old limits.
+        parsed = {"rule_words": 100, "file_bytes": 10240, "root_bytes": 20480, "test": "tests/test_agents.py"}
+        got = lim.limits_in_force(parsed, {"none": True})
+        self.assertEqual((got["source"], got["rule_words"], got["test"]), ("none", 80, "tests/test_agents.py"))
+        self.assertIsNone(lim.limits_in_force({**parsed, "test": None}, {"none": True})["test"])
+        self.assertIsNone(lim.limits_in_force({"none": True}, {"none": True})["test"])
+        self.assertIsNone(lim.limits_in_force(None, {"none": True})["test"])
+
     def test_numbers_from_arguments_beat_guidelines_none(self):
         got = lim.limits_in_force({"none": True}, {"rule_words": 60})
         self.assertEqual((got["source"], got["rule_words"], got["file_bytes"]), ("arguments", 60, 8192))
@@ -132,6 +141,15 @@ class InForceTest(unittest.TestCase):
         self.assertEqual([r["line"] for r in got["rules"]], [1])
         self.assertEqual((got["file"], got["limit"], got["headroom"]), (True, 8192, True))
         self.assertEqual(lim.over_limits(rules, 7000, False, limits)["headroom"], False)
+        at_margin = int(0.9 * 8192)  # 7372, just under 90% (7372.8)
+        self.assertEqual(lim.over_limits(rules, at_margin, False, limits)["headroom"], False)
+        self.assertEqual(lim.over_limits(rules, at_margin + 1, False, limits)["headroom"], True)
+        self.assertEqual(lim.over_limits(rules, int(0.9 * 16384), True, limits)["headroom"], False)
+        self.assertEqual(lim.over_limits(rules, int(0.9 * 16384) + 1, True, limits)["headroom"], True)
+        # 90% of 8192 is not a whole byte count, so `>` and `>=` agree there; 90% of 10240 is exactly 9216.
+        even = lim.limits_in_force(None, {"file_bytes": 10240})
+        self.assertEqual(lim.over_limits(rules, 9216, False, even)["headroom"], False)
+        self.assertEqual(lim.over_limits(rules, 9217, False, even)["headroom"], True)
         self.assertEqual(lim.over_limits(rules, 16384, True, limits)["file"], False)
         none = lim.over_limits(rules, 99999, False, lim.limits_in_force({"none": True}, {}))
         self.assertEqual((none["rules"], none["file"], none["headroom"]), ([], False, False))
