@@ -19,6 +19,10 @@ _THEMATIC = re.compile(r"^ {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$")
 _LIST_MARKER = re.compile(r"^(?:[-*+]|\d{1,9}[.)])(?:[ \t]+|$)")
 _FENCE_OPEN = re.compile(r"^[ \t]*(`{3,}|~{3,})")
 _COMMENT_SPAN = re.compile(r"<!--.*?-->")
+_SETEXT_1 = re.compile(r"^ {0,3}=+[ \t]*$")
+_SETEXT_2 = re.compile(r"^ {0,3}-+[ \t]*$")
+_TABLE_DELIMITER = re.compile(r"^[ \t]*\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$")
+_YAML_KEY = re.compile(r"^[A-Za-z_][\w-]*:")
 
 _LIMITS_LINE = re.compile(r"^[ \t]*(?:(?:[-*+]|\d{1,9}[.)])[ \t]+)?(size limits:.*?)[ \t]*$", re.I)
 _LIMITS_NONE = re.compile(r"^size limits:\s*none\.?$", re.I)
@@ -45,12 +49,35 @@ def _skipped(line: str) -> bool:
     return bool(_ATX_HEADING.match(line) or _THEMATIC.match(line) or stripped.startswith(("|", ">")))
 
 
-def _rule(start: int, text: str) -> dict:
-    return {"line": start, "end_line": start, "text": text}
+def _rule(start: int, text: str, item: bool) -> dict:
+    return {"line": start, "end_line": start, "text": text, "item": item}
 
 
-def measure_rules(text: str) -> list[dict]:
-    """Every rule (list item or paragraph) with its 1-based inclusive lines and word count."""
+def _front_matter_end(lines: list[str]) -> int:
+    """Index of the line after a leading `---` front matter block, or 0 when there is none.
+
+    As in the inventory, the line after the opening `---` must look like a YAML key and a closing `---` must follow,
+    so a thematic break is never read as front matter.
+    """
+    if len(lines) > 1 and lines[0].rstrip() == "---" and _YAML_KEY.match(lines[1]):
+        for j in range(1, len(lines)):
+            if lines[j].rstrip() == "---":
+                return j + 1
+    return 0
+
+
+def _is_table_start(lines: list[str], i: int) -> bool:
+    """A GFM table header: a line holding `|`, then a delimiter row holding `|`, edge pipes optional."""
+    return (
+        i + 1 < len(lines)
+        and "|" in lines[i]
+        and "|" in lines[i + 1]
+        and _TABLE_DELIMITER.match(lines[i + 1]) is not None
+    )
+
+
+def _scan_rules(text: str) -> list[dict]:
+    """Every rule with its 1-based inclusive lines and its text: wrapped lines joined, list marker dropped."""
     lines = text.replace("\r\n", "\n").split("\n")
     if lines and lines[-1] == "":
         lines.pop()
@@ -58,15 +85,8 @@ def measure_rules(text: str) -> list[dict]:
     open_rule = None
     fence = None  # (character, length) while inside a fenced block
     comment = False
-    index = 0
-    if lines and lines[0].strip() == "---":
-        for index in range(1, len(lines)):
-            if lines[index].strip() == "---":
-                index += 1
-                break
-        else:
-            index = len(lines)
-    for number in range(index + 1, len(lines) + 1):
+    table = False  # inside a table: each following non-blank line holding `|` is a row
+    for number in range(_front_matter_end(lines) + 1, len(lines) + 1):
         line = lines[number - 1]
         stripped = line.strip()
         if fence is not None:
@@ -79,10 +99,20 @@ def measure_rules(text: str) -> list[dict]:
         opened = _FENCE_OPEN.match(line)
         if opened:
             fence = (opened.group(1)[0], len(opened.group(1)))
-            open_rule = None
+            open_rule, table = None, False
             continue
         if stripped.startswith("<!--") and "-->" not in stripped[4:]:
             comment = True
+            open_rule, table = None, False
+            continue
+        if table and "|" in line:
+            continue
+        table = False
+        if _is_table_start(lines, number - 1):
+            open_rule, table = None, True
+            continue
+        if open_rule is not None and not open_rule["item"] and (_SETEXT_1.match(line) or _SETEXT_2.match(line)):
+            rules.remove(open_rule)  # a setext heading: the paragraph above its underline is its title
             open_rule = None
             continue
         line = _COMMENT_SPAN.sub("", line)
@@ -92,14 +122,24 @@ def measure_rules(text: str) -> list[dict]:
             continue
         marker = _LIST_MARKER.match(stripped)
         if marker:
-            open_rule = _rule(number, stripped[marker.end() :])
+            open_rule = _rule(number, stripped[marker.end() :], True)
             rules.append(open_rule)
         elif open_rule is not None:
             open_rule["end_line"] = number
             open_rule["text"] += " " + stripped
         else:
-            open_rule = _rule(number, stripped)
+            open_rule = _rule(number, stripped, False)
             rules.append(open_rule)
+    return rules
+
+
+def measure_rules(text: str) -> list[dict]:
+    """Every rule (list item or paragraph) with its 1-based inclusive lines and word count.
+
+    Fenced code, headings (setext ones included), tables (header, delimiter and rows, edge pipes optional), quote
+    lines, thematic breaks, HTML comments and front matter are never rules.
+    """
+    rules = _scan_rules(text)
     return [
         {
             "line": r["line"],
@@ -112,9 +152,12 @@ def measure_rules(text: str) -> list[dict]:
 
 
 def parse_limits_line(text: str) -> dict | None:
-    """Parse the `Size limits:` line in a guidelines section; None when absent, ValueError when malformed."""
-    for line in text.replace("\r\n", "\n").split("\n"):
-        found = _LIMITS_LINE.match(line)
+    """Parse the `Size limits:` line in a guidelines section; None when absent, ValueError when malformed.
+
+    The line is a rule as `measure_rules` reads one, so a bullet wrapped onto several lines parses as one line.
+    """
+    for rule in _scan_rules(text):
+        found = _LIMITS_LINE.match(rule["text"])
         if not found:
             continue
         body = found.group(1)

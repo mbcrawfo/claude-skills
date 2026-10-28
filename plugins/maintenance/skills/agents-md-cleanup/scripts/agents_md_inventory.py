@@ -43,6 +43,8 @@ DOCS_FOLDERS = ("docs", "doc", "documentation")  # in order of preference
 DOCS_PAGES_SHOWN = 200  # pages listed in `docs`
 REFERENCES_SHOWN = 50  # hits listed per file in `references`
 REFERENCE_TEXT_CHARS = 200
+# Blocks that are parts of a table: never a rule, though a lone row without edge pipes reads as a paragraph.
+TABLE_KINDS = ("table_header", "table_row")
 
 _ATX_HEADING = re.compile(r"^ {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t]*$")
 _ATX_CLOSING = re.compile(r"(?:^|[ \t]+)#+[ \t]*$")
@@ -1054,6 +1056,7 @@ def _guard_length(verdict: dict, blocks: list[dict], file: str, rule_words: int 
     evidence = [
         f"{file}:{block['start_line'] + rule['line'] - 1}: {rule['words']} words"
         for block in blocks
+        if block["kind"] not in TABLE_KINDS
         for rule in agents_md_limits.measure_rules(block["text"])
         if rule["words"] > rule_words
     ]

@@ -1352,6 +1352,16 @@ class WordLimitGuardTest(VerdictsTestCase):
         }
         self.assertEqual(self.check_limited(self.keep_rest(exact))[0], 0)
 
+    def test_keep_of_a_long_table_row_stays_a_keep(self):
+        # A table row is not a rule, though a lone row without edge pipes reads as a paragraph on its own.
+        row = " | ".join([" ".join(["w"] * 30)] * 3)
+        write(self.repo, "AGENTS.md", "a | b | c\n--- | --- | ---\n" + row + "\n\n- two\n")
+        commit_all(self.repo, "table")
+        verdicts = [{"blocks": [b], "action": "keep"} for b in ("b1", "b2", "b3")]
+        code, out, err = self.check_limited(verdicts)
+        self.assertEqual(code, 0, err)
+        self.assertEqual([v["action"] for v in json.loads(out)["verdicts"]], ["keep", "keep", "keep"])
+
     def test_keep_at_exactly_the_word_limit_stays_a_keep(self):
         write(self.repo, "AGENTS.md", "- " + " ".join(["w"] * 80) + "\n\n- two\n\n- three\n\n- four\n")
         commit_all(self.repo, "exact")
