@@ -85,7 +85,7 @@ Find the destination in this order, and stop at the first that fits:
 
 Read the candidate page first. A statement the page already states is the duplicate case: `delete` it, or `trim` it to a pointer when it also directs the agent, never a second copy.
 
-The verdict is a `move` with `target_kind: doc`, the page as `target`, `target_heading` if it belongs under one, and `new_text` the text for the page (documentation, not a rule). Add `pointer`, the one-line rule that stays in this file, such as a line telling the agent to read the page before the task; leave it out for pure description that no task needs. A doc `target` ends in `.md`, is never an AGENTS.md, and may be a new file in an existing directory. Always `criterion: placement`.
+The verdict is a `move` with `target_kind: doc`, the page as `target`, `target_heading` if it belongs under one, and `new_text` the text for the page (documentation, not a rule). Add `pointer`, the one-line rule that stays in this file, such as a line telling the agent to read the page before the task; leave it out for pure description that no task needs. A doc `target` ends in `.md`, is never an AGENTS.md, and may be a new file in an existing directory. A real move to docs has `criterion: placement`; a duplicate found while checking placement keeps the existing `valuable` criterion (`delete`, or `trim` to a pointer).
 
 `evidence` accounts for every clause of the original: where each one went (the page and heading, the staying rule, the `pointer`), or `dropped: <path:line> already states it`. A clause with no place is not dropped; the verdict is `ask`.
 
@@ -122,20 +122,20 @@ When `POLICY` gives size limits, aim for every rule under the word limit and the
 
 A `split` makes rules of one bullet; a part that stays or goes to an AGENTS.md, and any `pointer`, must itself be under the word limit. Doc and comment text is not capped.
 
-With `size limits: none`, still split and push out as above, and mention the size in your summary only when `OVER` is not empty.
+With `size limits: none`, still split and push out as above, and mention the size in your summary only when `OVER.rules` is not empty or `OVER.file` or `OVER.headroom` is true.
 
 ### Guidelines section
 
-In the root file, the blocks under a heading containing `AGENTS.md guidelines` change only through `ask`. Judge them like any other block, but the verdict is `keep` or `ask`, never `fix`, `trim`, `delete`, `merge` or `move`.
+In the root file, the blocks under a heading containing `AGENTS.md guidelines` change only through `ask`. Judge them like any other block, but the verdict is `keep` or `ask`, never `fix`, `trim`, `delete`, `merge`, `move` or `split`.
 
 ## Rulings
 
 `RULINGS` lists patterns ("Tool choices are never obvious") and keeps (a file, a short quote of a statement and a reason). Patterns promoted to `GUIDELINES` work the same way as patterns.
 
 - A block that matches a keep (same file, and the quote still says the same thing) is `keep` unless its facts fail (below), with `ruling` set to the quote. The user already chose to keep it there.
-- A block that matches a pattern is `keep`, with `ruling` set to the pattern. A pattern settles only that the statement is not obvious. It never shields a duplicate of another AGENTS.md or a code comment, and the other criteria still apply, so a matching block that needs a `fix`, `trim` or `move` gets that verdict, with `ruling` still set.
+- A block that matches a pattern is `keep`, with `ruling` set to the pattern. A pattern settles only that the statement is not obvious. It never shields a duplicate of another AGENTS.md or a code comment, and the other criteria still apply, so a matching block that needs a `fix`, `trim` or `move` gets that verdict, with `ruling` still set (`split` included).
 - A ruling never vouches for facts. A ruled block whose path or command the evidence shows is gone gets `fix` or `ask` under `accurate`, with `ruling` set.
-- A keep whose quote is marked `whole` keeps that rule as one bullet even over the word limit: `keep`, with `ruling` set to the quote. Without that mark, a rule over the limit is not kept as it is.
+- A keep whose quote is followed by the token `(whole)` in `RULINGS` is marked `whole`; it keeps that rule as one bullet even over the word limit: `keep`, with `ruling` set to the quote. Without that mark, a rule over the limit is not kept as it is.
 
 ## Ancestor role
 
@@ -180,7 +180,7 @@ When one block holds statements that need different actions and the actions are 
 
 ## Example
 
-Inputs: `FILE: AGENTS.md`, `ROLE: full`, `AGENTS_MD_DIRS: ["."]`, `RULINGS` holds the pattern "Tool choices (package managers, linters, test runners) are never obvious.", `POLICY` is new nested AGENTS.md `allowed`, quirks `comment in that file`, push-down `aggressive`, and `size limits: 60 words per rule, 8 KB per file (root 12 KB)`, `BYTES` is 2400, `OVER` is `{"rules": [{"line": 22, "end_line": 22, "words": 90, "first_words": "The retry loop in `billing/client.py` makes at"}], "file": false, "limit": 12288, "headroom": false}`, and `DOCS` is `{"folder": "docs", "pages": [{"path": "docs/architecture.md", "headings": ["Overview", "Billing"]}], "readmes": []}`. The file:
+Inputs: `FILE: AGENTS.md`, `ROLE: full`, `AGENTS_MD_DIRS: ["."]`, `RULINGS` holds the pattern "Tool choices (package managers, linters, test runners) are never obvious.", `POLICY` is new nested AGENTS.md `allowed`, quirks `comment in that file`, push-down `aggressive`, and `size limits: 60 words per rule, 8 KB per file (root 12 KB)`, `BYTES` is 1302, `OVER` is `{"rules": [{"line": 22, "end_line": 22, "words": 90, "first_words": "The retry loop in `billing/client.py` makes at most"}], "file": false, "limit": 12288, "headroom": false}`, and `DOCS` is `{"folder": "docs", "pages": [{"path": "docs/architecture.md", "headings": ["Overview", "Billing"]}], "readmes": []}`. The file:
 
 ```markdown
 # Example app
@@ -277,9 +277,9 @@ The verdicts:
       "action": "split",
       "criterion": "placement",
       "parts": [
-        {"text": "- Retry a billing call at most three times, and never after a 4xx response."},
+        {"text": "- The retry loop in `billing/client.py` makes at most three attempts and never retries a 4xx response."},
         {
-          "text": "Each wait starts at one second and doubles, unless the response carries a `Retry-After` header, which then sets the wait. Up to a quarter of each wait is added as random jitter, so that many workers failing together do not all retry at the same moment. After the third failure the loop raises the last error to the caller unchanged, so callers see the real cause of the failure at once.",
+          "text": "The retry loop in `billing/client.py` waits one second before its first retry and doubles each wait after that, unless the response carries a `Retry-After` header, which then sets the wait. Up to a quarter of each wait is added as random jitter, so that many workers failing together do not all retry at the same moment. After the third failure the loop stops sleeping and raises the last error to the caller unchanged, so callers see the real cause of the failure at once.",
           "target": "docs/architecture.md",
           "target_kind": "doc",
           "target_heading": "Billing",
@@ -288,9 +288,9 @@ The verdicts:
       ],
       "evidence": [
         "AGENTS.md:22 is 90 words: one rule plus how the loop works; the limit is 60",
-        "'at most three attempts', 'never retries a 4xx' -> part 1, the rule that stays",
-        "'wait starts at one second and doubles', 'Retry-After', 'jitter', 'raises the last error' -> part 2, docs/architecture.md under Billing",
-        "docs/architecture.md has a Billing heading (DOCS) and no statement of retry timing; 'the loop stops sleeping' -> dropped: restates the wait described in part 2"
+        "'retry loop in `billing/client.py`', 'at most three attempts', 'never retries a 4xx' -> part 1, the rule that stays",
+        "'wait starts at one second and doubles', 'Retry-After', 'jitter', 'stops sleeping and raises the last error' -> part 2, docs/architecture.md under Billing (it names the loop again)",
+        "docs/architecture.md has a Billing heading (DOCS) and no statement of retry timing, so nothing is a duplicate"
       ]
     }
   ]
