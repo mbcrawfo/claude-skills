@@ -33,7 +33,9 @@ The child's PR description carries the review summary's Escalated, Deferred, Inv
 
 A child asks the owner, through the manager, as soon as it meets a choice the spec does not settle that changes what a test guarantees, behavior users can see or the unit's scope; a plan workflow's own rulings cover implementation choices only. `/branch-review:review` is the child's review, so it skips a plan workflow's per-task code-quality reviews and runs the full validation once the change is complete, unless the repository requires it per commit.
 
-Child notes can be held by the app for hours, so nothing in the protocol waits on one: requests are lines in a file, and the manager learns everything from the run watcher.
+The app sends the manager a note each time a child's turn ends, and a child ends a turn at every subagent dispatch, so notes run to dozens per child and carry nothing the manager acts on. The app can also hold them for hours. So the manager detaches each child once it has recorded the child's branch and worktree, which stops its notes, and nothing in the protocol waits on one: requests are lines in a file, questions and `[blocked]` turns are messages, and the manager learns everything else from the run watcher. Detached children are not nested under the manager in the sidebar, and are not archived with it; the manager offers to archive them by id at the end.
+
+Child sessions run their commands in the foreground (Bash `timeout` 600000), and paste a fixed block into every implementer and fixer brief that says the same, forbids recording tech debt or follow-ups without the owner, and keeps hand-backs short. A subagent waiting on a background command costs the child a turn for nothing. Escalated findings reach the owner with their fix options quoted word for word, and an owner answer applied only in part goes back to the manager before the child asks to push.
 
 ## Push queue
 

@@ -26,6 +26,67 @@ class DecisionTest(LedgerHarness, unittest.TestCase):
         self.assertIn("R1-F1 offers fix options", err)
         return err
 
+    # a follow-up that verifies a developer-decided fix gets the deep model
+    def decided_and_fixed(self):
+        self.seed()
+        self.escalate()
+        self.cli("resolve", "--id", "R1-F1", "--decision", "fix", "--note", "do it the owner's way")
+        self.set_status("R1-F1", "fixed", "--note", "Checked: ran it. Fixed the owner's way.")
+
+    def test_followup_verifying_a_decided_fix_gets_the_deep_model(self):
+        self.decided_and_fixed()
+        result = self.begin("followup", "--deep-model", "opus")
+        self.assertEqual((result["mode"], result["model"], result["model_reason"]), ("followup", "opus", "decided-fix"))
+        saved = self.state()["rounds"][-1]
+        self.assertEqual((saved["mode"], saved["model"], saved["model_reason"]), ("followup", "opus", "decided-fix"))
+
+    def test_decided_fix_not_yet_claimed_keeps_the_model(self):
+        self.seed()
+        self.escalate()
+        self.cli("resolve", "--id", "R1-F1", "--decision", "fix", "--note", "do it the owner's way")
+        result = self.begin("followup", "--deep-model", "opus")
+        self.assertEqual((result["model"], result["model_reason"]), ("m", None))
+
+    def test_claimed_fix_without_a_decision_keeps_the_model(self):
+        self.seed()
+        self.set_status("R1-F1", "fixed", "--note", "Checked: ran it. Fixed.")
+        result = self.begin("followup", "--deep-model", "opus")
+        self.assertEqual((result["model"], result["model_reason"]), ("m", None))
+
+    def test_decided_fix_without_deep_model_keeps_the_given_model(self):
+        self.decided_and_fixed()
+        result = self.begin("followup")
+        self.assertEqual((result["model"], result["model_reason"]), ("m", None))
+
+    def test_decided_fix_already_verified_keeps_the_model(self):
+        self.decided_and_fixed()
+        self.begin("followup", "--deep-model", "opus")
+        self.record(
+            output(findings=[], verdicts=[{"id": "R1-F1", "status": "verified", "reason": "ran it"}]), name="r2.md"
+        )
+        result = self.begin("followup", "--deep-model", "opus")
+        self.assertEqual((result["model"], result["model_reason"]), ("m", None))
+
+    def test_claimed_fix_after_a_non_fix_decision_keeps_the_model(self):
+        self.seed()
+        self.escalate()
+        self.resolve("accept")
+        self.set_status("R1-F1", "open", "--note", "reopened")
+        self.set_status("R1-F1", "fixed", "--note", "Checked: ran it. Fixed.")
+        result = self.begin("followup", "--deep-model", "opus")
+        self.assertEqual((result["model"], result["model_reason"]), ("m", None))
+
+    def test_large_delta_promotion_is_not_a_decided_fix_round(self):
+        self.decided_and_fixed()
+        (self.repo / "big").mkdir()
+        for i in range(40):
+            (self.repo / "big" / f"f{i:03d}.txt").write_text("x\n")
+        result = self.begin("followup", "--deep-model", "opus")
+        self.assertEqual(
+            (result["mode"], result["mode_reason"], result["model"], result["model_reason"]),
+            ("deep", "large-delta", "opus", None),
+        )
+
     # an intent that predates a decision
     def test_begin_round_flags_decisions_the_unchanged_intent_predates(self):
         self.seed()
