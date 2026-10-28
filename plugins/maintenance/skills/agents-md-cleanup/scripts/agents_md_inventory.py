@@ -322,21 +322,25 @@ def find_guidelines(text: str) -> dict | None:
     return None
 
 
+def _git_command(literal: bool, args: tuple[str, ...]) -> list[str]:
+    # Literal pathspecs: a file named `what[1].md` must never match `what1.md`.
+    # The `-c` settings override user config that would change the output.
+    return [
+        "git",
+        *(["--literal-pathspecs"] if literal else []),
+        "-c",
+        "core.quotepath=off",
+        "-c",
+        "color.ui=never",
+        "-c",
+        "grep.column=false",
+        *args,
+    ]
+
+
 def _git(root: Path, *args: str, literal: bool = True, check: bool = True) -> subprocess.CompletedProcess:
     result = subprocess.run(
-        # Literal pathspecs: a file named `what[1].md` must never match `what1.md`.
-        # The `-c` settings override user config that would change the output.
-        [
-            "git",
-            *(["--literal-pathspecs"] if literal else []),
-            "-c",
-            "core.quotepath=off",
-            "-c",
-            "color.ui=never",
-            "-c",
-            "grep.column=false",
-            *args,
-        ],
+        _git_command(literal, args),
         cwd=str(root),
         capture_output=True,
         text=True,
@@ -569,14 +573,21 @@ def _file_entry(root: Path, path: str, resolved: str, aliases: list[str], role: 
 def _references(root: Path, paths: list[str]) -> dict:
     """Lines anywhere in the repo that mention any of `paths`, other than in AGENTS.md files themselves."""
     args = [arg for path in paths for arg in ("-e", path)]
-    result = _git(root, "grep", "-z", "-n", "-I", "-F", *args, "--", ".", check=False)
+    # Bytes, not text: text mode turns a lone CR in a matched line into a record break.
+    result = subprocess.run(
+        _git_command(True, ("grep", "-z", "-n", "-I", "-F", *args, "--", ".")), cwd=str(root), capture_output=True
+    )
     if result.returncode not in (0, 1):  # 1 means no hits
-        raise CliError((result.stderr.strip().splitlines() or ["git grep failed"])[0])
+        stderr = result.stderr.decode("utf-8", errors="replace")
+        raise CliError((stderr.strip().splitlines() or ["git grep failed"])[0])
     hits = []
-    for line in result.stdout.split("\n"):  # not splitlines(): a form feed or U+2028 in a match is not a break
-        if not line:
+    # Records end in LF; a form feed or U+2028 in a match is no break. A file name holding a newline (`-z` quotes
+    # nothing) splits its record, and a fragment without both NULs is skipped.
+    for record in result.stdout.split(b"\n"):
+        parts = record.split(b"\0", 2)
+        if len(parts) != 3 or not parts[1].isdigit():
             continue
-        path, number, text = line.split("\0", 2)
+        path, number, text = (part.decode("utf-8", errors="replace") for part in parts)
         if posixpath.basename(path).lower() != "agents.md":
             hits.append({"path": path, "line": int(number), "text": text.strip()[:REFERENCE_TEXT_CHARS]})
     return {"hits": hits[:REFERENCES_SHOWN], "truncated": len(hits) > REFERENCES_SHOWN}

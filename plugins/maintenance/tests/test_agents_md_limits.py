@@ -43,6 +43,16 @@ class RuleScannerTest(unittest.TestCase):
     def test_crlf_text_measures_like_lf(self):
         self.assertEqual(self.rules("- one two\r\n  three\r\n"), [(1, 3)])
 
+    def test_inline_comment_opener_in_backticks_hides_nothing(self):
+        long_rule = "- " + " ".join(["w"] * 120) + "\n"
+        self.assertEqual(self.rules("- Never put `<!--` in templates.\n" + long_rule), [(1, 5), (2, 120)])
+
+    def test_complete_inline_comment_is_stripped_from_its_line(self):
+        self.assertEqual(self.rules("text <!-- c --> more\n"), [(1, 2)])
+
+    def test_multi_line_comment_at_line_start_still_skips(self):
+        self.assertEqual(self.rules("- one\n\n  <!-- a\nb c d -->\n\n- two three\n"), [(1, 1), (6, 2)])
+
 
 class BytesTest(unittest.TestCase):
     def test_normalised_bytes_ignores_crlf(self):
@@ -53,6 +63,9 @@ class BytesTest(unittest.TestCase):
 class LimitsLineTest(unittest.TestCase):
     def test_none(self):
         self.assertEqual(lim.parse_limits_line("- Push-down: aggressive.\n- Size limits: none.\n"), {"none": True})
+
+    def test_none_without_a_period(self):
+        self.assertEqual(lim.parse_limits_line("- Size limits: none\n"), {"none": True})
 
     def test_checked_by_a_test(self):
         got = lim.parse_limits_line(
@@ -81,9 +94,11 @@ class LimitsLineTest(unittest.TestCase):
     def test_format_round_trips(self):
         line = lim.format_limits_line(80, 8192, 16384, "t/test_a.py")
         self.assertEqual(
-            line, "Size limits: 80 words per rule, 8 KB per file, 16 KB for the root; checked by `t/test_a.py`."
+            line, "Size limits: 80 words per rule, 8 KB per file, 16 KB for the root; checked by t/test_a.py."
         )
         self.assertEqual(lim.parse_limits_line(line)["test"], "t/test_a.py")
+        backticked = line.replace("by t/test_a.py", "by `t/test_a.py`")
+        self.assertEqual(lim.parse_limits_line(backticked)["test"], "t/test_a.py")
         self.assertEqual(lim.format_limits_line(80, 8192, 16384, None).split("; ")[1], "not checked by a test.")
 
 

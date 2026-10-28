@@ -18,9 +18,10 @@ _ATX_HEADING = re.compile(r"^ {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t]*$")
 _THEMATIC = re.compile(r"^ {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$")
 _LIST_MARKER = re.compile(r"^(?:[-*+]|\d{1,9}[.)])(?:[ \t]+|$)")
 _FENCE_OPEN = re.compile(r"^[ \t]*(`{3,}|~{3,})")
+_COMMENT_SPAN = re.compile(r"<!--.*?-->")
 
 _LIMITS_LINE = re.compile(r"^[ \t]*(?:(?:[-*+]|\d{1,9}[.)])[ \t]+)?(size limits:.*?)[ \t]*$", re.I)
-_LIMITS_NONE = re.compile(r"^size limits:\s*none\.$", re.I)
+_LIMITS_NONE = re.compile(r"^size limits:\s*none\.?$", re.I)
 _LIMITS_FULL = re.compile(
     r"^size limits:\s*(\d+)\s+words per rule,\s*(\d+)\s*KB per file,\s*(\d+)\s*KB for the root;"
     r"\s*(?:checked by\s+`?([^`]+?)`?|not checked by a test)\.$",
@@ -80,10 +81,12 @@ def measure_rules(text: str) -> list[dict]:
             fence = (opened.group(1)[0], len(opened.group(1)))
             open_rule = None
             continue
-        if "<!--" in line:
-            comment = "-->" not in line.split("<!--", 1)[1]
+        if stripped.startswith("<!--") and "-->" not in stripped[4:]:
+            comment = True
             open_rule = None
             continue
+        line = _COMMENT_SPAN.sub("", line)
+        stripped = line.strip()
         if not stripped or _skipped(line):
             open_rule = None
             continue
@@ -131,7 +134,7 @@ def parse_limits_line(text: str) -> dict | None:
 
 def format_limits_line(rule_words: int, file_bytes: int, root_bytes: int, test: str | None) -> str:
     """The guidelines line recording these limits."""
-    checked = f"checked by `{test}`" if test else "not checked by a test"
+    checked = f"checked by {test}" if test else "not checked by a test"
     return (
         f"Size limits: {rule_words} words per rule, {file_bytes // 1024} KB per file, "
         f"{root_bytes // 1024} KB for the root; {checked}."

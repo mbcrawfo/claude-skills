@@ -883,6 +883,22 @@ class DocsAndReferencesTest(RepoTestCase):
         hits = by_path(self.inventory(), "AGENTS.md")["references"]["hits"]
         self.assertIn(("n.txt", 1), [(h["path"], h["line"]) for h in hits])
 
+    def test_references_survive_a_carriage_return_in_a_matching_line(self):
+        write(self.repo, "AGENTS.md", "- a\n")
+        write(self.repo, "src/AGENTS.md", "- b\n")
+        (self.repo / "notes.txt").write_bytes(b"see src/AGENTS.md here\rand more src/AGENTS.md\n")
+        commit_all(self.repo, "add")
+        hits = by_path(self.inventory(), "src/AGENTS.md")["references"]["hits"]
+        self.assertEqual([(h["path"], h["line"]) for h in hits], [("notes.txt", 1)])
+
+    def test_references_survive_a_newline_in_a_file_name(self):
+        write(self.repo, "AGENTS.md", "- a\n")
+        (self.repo / "odd\nname.txt").write_text("AGENTS.md\n")
+        write(self.repo, "sane.txt", "see AGENTS.md\n")
+        commit_all(self.repo, "add")
+        hits = by_path(self.inventory(), "AGENTS.md")["references"]["hits"]
+        self.assertIn(("sane.txt", 1), [(h["path"], h["line"]) for h in hits])
+
 
 if __name__ == "__main__":
     unittest.main()
