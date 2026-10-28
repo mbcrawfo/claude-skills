@@ -139,7 +139,11 @@ def format_limits_line(rule_words: int, file_bytes: int, root_bytes: int, test: 
 
 
 def limits_in_force(parsed: dict | None, overrides: dict) -> dict:
-    """Resolve the limits: arguments over the guidelines line over the defaults."""
+    """Resolve the limits. Arguments always win over the guidelines line, which wins over the defaults.
+
+    `overrides["none"]` gives source `none` with the default numbers, whatever the guidelines line says. Numeric
+    overrides over a guidelines `none` give source `arguments`, the other numbers coming from the defaults.
+    """
     limits = {
         "source": "default",
         "rule_words": DEFAULT_RULE_WORDS,
@@ -147,15 +151,18 @@ def limits_in_force(parsed: dict | None, overrides: dict) -> dict:
         "root_bytes": DEFAULT_ROOT_BYTES,
         "test": None,
     }
-    if parsed and not parsed.get("none"):
+    if overrides.get("none"):
+        limits["source"] = "none"
+        return limits
+    given = {k: overrides[k] for k in ("rule_words", "file_bytes", "root_bytes") if overrides.get(k) is not None}
+    if parsed and parsed.get("none"):
+        limits["source"] = "none"
+    elif parsed:
         limits.update({k: parsed[k] for k in ("rule_words", "file_bytes", "root_bytes", "test")})
         limits["source"] = "guidelines"
-    given = {k: overrides[k] for k in ("rule_words", "file_bytes", "root_bytes") if overrides.get(k) is not None}
     if given:
         limits.update(given)
         limits["source"] = "arguments"
-    if overrides.get("none") or (parsed and parsed.get("none") and not given):
-        limits["source"] = "none"
     return limits
 
 

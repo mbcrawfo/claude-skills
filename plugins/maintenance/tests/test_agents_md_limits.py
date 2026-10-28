@@ -74,8 +74,9 @@ class LimitsLineTest(unittest.TestCase):
         self.assertIsNone(lim.parse_limits_line("- Push-down: aggressive.\n"))
 
     def test_malformed_raises(self):
-        with self.assertRaises(ValueError):
+        with self.assertRaises(ValueError) as cm:
             lim.parse_limits_line("- Size limits: 80 words, 8 KB.\n")
+        self.assertEqual(str(cm.exception), "Size limits: 80 words, 8 KB.")
 
     def test_format_round_trips(self):
         line = lim.format_limits_line(80, 8192, 16384, "t/test_a.py")
@@ -96,6 +97,15 @@ class InForceTest(unittest.TestCase):
         self.assertEqual(lim.limits_in_force(parsed, {})["source"], "guidelines")
         got = lim.limits_in_force(parsed, {"rule_words": 60})
         self.assertEqual((got["source"], got["rule_words"], got["file_bytes"]), ("arguments", 60, 10240))
+
+    def test_none_from_arguments_beats_guidelines_numbers(self):
+        parsed = {"rule_words": 100, "file_bytes": 10240, "root_bytes": 20480, "test": None}
+        got = lim.limits_in_force(parsed, {"none": True})
+        self.assertEqual((got["source"], got["rule_words"], got["file_bytes"]), ("none", 80, 8192))
+
+    def test_numbers_from_arguments_beat_guidelines_none(self):
+        got = lim.limits_in_force({"none": True}, {"rule_words": 60})
+        self.assertEqual((got["source"], got["rule_words"], got["file_bytes"]), ("arguments", 60, 8192))
 
     def test_over_limits(self):
         limits = lim.limits_in_force(None, {})
