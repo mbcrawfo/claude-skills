@@ -59,7 +59,7 @@ Examines each statement in the `AGENTS.md` files of a repo. Each statement must 
 - It moves down to a nested `AGENTS.md` file or to a code comment.
 - It moves out to the docs of the repo.
 - It becomes shorter.
-- It is removed.
+- The skill removes it.
 
 The skill can also keep rules and files in size limits that you choose.
 
