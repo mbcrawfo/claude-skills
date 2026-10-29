@@ -32,7 +32,7 @@ During the run:
 
 - Each child does the work for its unit and reviews it with `/branch-review:review`.
 - A child must get approval from the manager before each push. The manager gives approval only when a clean review covers the commit.
-- By default, only one PR is open for review and CI at a time. The other children wait in a queue. Tell the manager if you want parallel PRs.
+- By default, only one child at a time can push to its PR. The other children wait in a queue. Tell the manager if you want parallel pushes.
 - When a child has a question that only you can answer, the manager sends it to you. If the question blocks the merge, the PR of that unit does not merge until you answer. An escalated review finding always blocks the merge.
 - At the end, the manager offers to archive the child sessions.
 

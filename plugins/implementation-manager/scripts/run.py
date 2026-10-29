@@ -6,7 +6,9 @@ The run folder is always the first argument after the subcommand:
   init <dir> --repo O/R --base B --method merge|squash|rebase [--wip N] [--queue serial|parallel]
        [--integration BRANCH --final-merge manager|owner --feature-review yes|no]   (not with rebase)
   unit <dir> <name> [--prereq U ...] [--after U ...|none] [--branch B] [--worktree P] [--specs] [--title T]
-       [--integration]              the run's one integration unit (needs init --integration)
+       [--integration]              the run's one integration unit (needs init --integration): its branch is the
+                                    integration branch; no --prereq or --after, and no unit may name it in either;
+                                    open-ready opens its gate at once, outside the WIP limit
                                     names use letters, digits, '-' and '_', starting with a letter or digit;
                                     each --prereq and --after unit must already exist; --prereq gates the start,
                                     --after only the merge; an --after unit that has neither merged nor stopped,
