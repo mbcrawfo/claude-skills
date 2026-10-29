@@ -36,19 +36,35 @@ Save as `doccheck.py` outside the repo (for example in the session scratchpad); 
 ```python
 #!/usr/bin/env python3
 """Throwaway checks for the README cleanup: STE sentence rules, links, lost code blocks."""
+
 import re
 import sys
 from pathlib import Path
 
 FENCE = re.compile(r"^```.*?^```", re.S | re.M)
-ING_OK = {"string", "thing", "nothing", "something", "everything", "anything", "during", "bring",
-          "pending", "existing", "missing", "warning", "setting", "settings", "remaining", "following"}
+ING_OK = {
+    "string",
+    "thing",
+    "nothing",
+    "something",
+    "everything",
+    "anything",
+    "during",
+    "bring",
+    "pending",
+    "existing",
+    "missing",
+    "warning",
+    "setting",
+    "settings",
+    "remaining",
+    "following",
+}
 
 
 def prose(text):
     text = FENCE.sub("", text)
-    lines = [ln for ln in text.splitlines()
-             if ln.strip() and not ln.lstrip().startswith(("#", "|", ">"))]
+    lines = [ln for ln in text.splitlines() if ln.strip() and not ln.lstrip().startswith(("#", "|", ">"))]
     text = "\n".join(re.sub(r"^\s*(?:[-*]|\d+\.)\s+", "", ln) for ln in lines)
     text = re.sub(r"`[^`]*`", "X", text)
     return re.sub(r"\]\([^)]*\)", "]", text)
@@ -76,8 +92,10 @@ def links(paths):
             dest = (p.parent / file).resolve() if file else p
             ok = dest.exists()
             if ok and anchor and dest.suffix == ".md":
-                heads = {re.sub(r"[^\w\- ]", "", h).strip().lower().replace(" ", "-")
-                         for h in re.findall(r"^#+\s+(.*)$", dest.read_text(), re.M)}
+                heads = {
+                    re.sub(r"[^\w\- ]", "", h).strip().lower().replace(" ", "-")
+                    for h in re.findall(r"^#+\s+(.*)$", dest.read_text(), re.M)
+                }
                 ok = anchor in heads
             if not ok:
                 bad += 1
@@ -94,8 +112,9 @@ def blocks(old, news):
 
 
 cmd, *args = sys.argv[1:]
-n = {"sentences": lambda: sentences(args), "links": lambda: links(args),
-     "blocks": lambda: blocks(args[0], args[1:])}[cmd]()
+n = {"sentences": lambda: sentences(args), "links": lambda: links(args), "blocks": lambda: blocks(args[0], args[1:])}[
+    cmd
+]()
 print(f"{cmd}: {n} problem(s)")
 sys.exit(1 if n else 0)
 ```

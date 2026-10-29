@@ -29,7 +29,7 @@ The review keeps most options for later runs on the same branch. Each option bel
 - `--intent TEXT` or `--intent-file PATH`: The PR description. Say what the change is for, what it does, and what it does not do. Later runs keep it.
 - `--paths GLOB...`: Review only the files that match. Use it for a change set that is too large for one review. A directory, or a pattern that ends in `/`, includes all files below it. `.` includes the full repo. A change to `--paths` causes a new deep review.
 - `--generated GLOB...`: Patterns for more generated files. The review also uses files that `.gitattributes` marks `linguist-generated` or `-diff`. The reviewer still examines generated files, but they do not make a follow-up into a deep review. Later runs keep the patterns. `--generated .` removes them.
-- `--second-opinion`: Do a second deep review when no findings are open. The review also does this automatically when the change has a high risk.
+- `--second-opinion`: Do a second deep review when no findings are open. The review also does this automatically when a deep review rates the merge risk moderate or high. It also does this when a review finds a critical or major issue.
 - `--no-second-opinion`: Do not do the automatic second review on this branch. Later runs keep this setting until you give `--second-opinion`.
 - `--notes-file PATH`: Notes from earlier reviews of single tasks, for the full-branch review. Deep reviews examine each note. Later runs keep them. An empty file removes them.
 - `--related-branch REF...`: Branches that make the same change in a different place, for example the same feature for a different engine. The reviewer compares the files. Later runs keep them. `--related-branch .` removes them.
@@ -40,7 +40,7 @@ The review keeps most options for later runs on the same branch. Each option bel
 1. **Set up.** The review finds the earlier rounds of this branch. The first round is a deep review of the full change set. Later rounds examine only the new changes and the earlier findings.
 2. **Round.** A new reviewer agent examines the change against your intent. It writes a report.
 3. **Triage.** Claude examines each finding. Claude fixes it with a regression test, disputes it with evidence, or sends it to you. A finding that needs your choice always comes to you.
-4. **Second opinion.** When the risk is high, a new reviewer examines the full change one more time.
+4. **Second opinion.** A new reviewer examines the full change one more time when the merge risk is moderate or high. It also does this after a critical or major finding.
 5. **Report.** A summary shows the rounds, the merge risk and each finding. The agent that opens the PR adds a "Review notes" block to the PR description.
 
 The loop continues until no findings are open and all fixes are verified. It stops after six rounds.

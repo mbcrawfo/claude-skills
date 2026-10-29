@@ -9,7 +9,8 @@ The run folder is always the first argument after the subcommand:
        [--integration]              the run's one integration unit (needs init --integration)
                                     names use letters, digits, '-' and '_', starting with a letter or digit;
                                     each --prereq and --after unit must already exist; --prereq gates the start,
-                                    --after only the merge; an --after unit given to the slot holder frees the slot
+                                    --after only the merge; an --after unit that has neither merged nor stopped,
+                                    given to the slot holder, frees the slot
   set <dir> wip <N|none> | set <dir> queue <serial|parallel>
                                     in parallel mode, print each request still queued: queued <unit> <sha>
   set <dir> final-merge <manager|owner> | set <dir> feature-review <yes|no>
@@ -19,8 +20,8 @@ The run folder is always the first argument after the subcommand:
                                     final gate's gates.log line when it opens (integration mode)
   stop <dir> <unit> <reason...>     the unit never opens, gets go or queues again, and gives up the slot
   go <dir> <unit> <sha>             serial mode: take the push slot, or refuse while another unit holds it, while
-                                    another unit heads the queue, or while an --after unit is unmerged and not
-                                    stopped; refuses a held unit in either mode
+                                    the slot is free and another unit heads the queue, or while an --after unit
+                                    is unmerged and not stopped; refuses a held unit in either mode
   redo <dir> <unit> <sha> <reasons...>
   hold <dir> <unit> <reason...>     hold the unit's merge: no READY or REMIND, no go, not first in the queue;
                                     frees the slot, drops the queue entry, answers waiting requests redo <sha> held;
