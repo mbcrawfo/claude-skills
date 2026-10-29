@@ -1,7 +1,7 @@
 {
   "name": "maintenance",
-  "version": "0.3.0",
-  "description": "Repo maintenance skills. superpowers-cleanup removes old superpowers spec, plan and research files; agents-md-cleanup keeps AGENTS.md files accurate, brief and at the right level.",
+  "version": "0.4.0",
+  "description": "Repo maintenance skills. superpowers-cleanup removes old superpowers spec, plan and research files; agents-md-cleanup keeps AGENTS.md files accurate, brief, at the right level and within size limits.",
   "author": {
     "name": "Michael Crawford",
     "url": "https://github.com/mbcrawfo"

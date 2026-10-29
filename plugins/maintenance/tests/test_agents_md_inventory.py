@@ -4,6 +4,7 @@ import unittest
 
 from agents_helpers import agents_md_inventory as inv
 from agents_helpers import call, commit_all, git, make_repo, run, write
+from helpers import by_path
 
 USAGE_ERRORS = (
     [],
@@ -425,7 +426,19 @@ class InventoryTest(RepoTestCase):
         out = self.inventory()
         self.assertEqual(out["files"], [])
         self.assertEqual(out["agents_md_dirs"], [])
-        self.assertEqual(out["totals"], {"files": 0, "full": 0, "ancestor": 0, "blocks": 0, "agents": 0})
+        self.assertEqual(
+            out["totals"],
+            {
+                "files": 0,
+                "full": 0,
+                "ancestor": 0,
+                "blocks": 0,
+                "agents": 0,
+                "rules": 0,
+                "rules_over": 0,
+                "files_over": 0,
+            },
+        )
         self.assertIsNone(out["guidelines"])
 
     def test_invalid_utf8_does_not_crash(self):
@@ -596,7 +609,19 @@ class LinkedFileTest(RepoTestCase):
             [(f["path"], f["resolved"], f["aliases"]) for f in out["files"]],
             [("AGENTS.md", "AGENTS.md", ["docs/AGENTS.md", "web/AGENTS.md"]), ("src/AGENTS.md", "src/AGENTS.md", [])],
         )
-        self.assertEqual(out["totals"], {"files": 2, "full": 2, "ancestor": 0, "blocks": 3, "agents": 2})
+        self.assertEqual(
+            out["totals"],
+            {
+                "files": 2,
+                "full": 2,
+                "ancestor": 0,
+                "blocks": 3,
+                "agents": 2,
+                "rules": 3,
+                "rules_over": 0,
+                "files_over": 0,
+            },
+        )
         self.assertEqual(out["agents_md_dirs"], [".", "docs", "src", "web"])
 
     def test_two_links_to_one_other_file_merge(self):
@@ -697,6 +722,213 @@ class ErrorPathTest(unittest.TestCase):
                 code, out, err = call(*argv)
                 self.assertEqual((code, err), (0, ""))
                 self.assertIn("usage:", out)
+
+
+class SizeTest(RepoTestCase):
+    LONG = "- " + " ".join(["w"] * 81) + "\n"
+
+    def test_file_entry_measures_rules_and_bytes(self):
+        write(self.repo, "AGENTS.md", "- a b\n  - c\n\n```\nx\n```\n" + self.LONG)
+        commit_all(self.repo, "add")
+        out = self.inventory()
+        (f,) = out["files"]
+        self.assertEqual([(r["line"], r["words"]) for r in f["rules"]], [(1, 2), (2, 1), (7, 81)])
+        self.assertEqual(f["bytes_normalised"], f["bytes"])
+        self.assertEqual([r["line"] for r in f["over"]["rules"]], [7])
+        self.assertEqual(f["over"]["file"], False)
+        self.assertEqual(out["totals"]["rules"], 3)
+        self.assertEqual(out["totals"]["rules_over"], 1)
+        self.assertEqual(out["totals"]["files_over"], 0)
+        self.assertEqual(
+            out["limits"],
+            {
+                "source": "default",
+                "rule_words": 80,
+                "file_bytes": 8192,
+                "root_bytes": 16384,
+                "test": None,
+                "malformed": None,
+            },
+        )
+
+    def test_crlf_file_normalised(self):
+        write(self.repo, "AGENTS.md", b"- a\r\n- b\r\n")
+        commit_all(self.repo, "add")
+        (f,) = self.inventory()["files"]
+        self.assertEqual((f["bytes"], f["bytes_normalised"]), (10, 8))
+
+    def test_root_gets_the_root_limit(self):
+        write(self.repo, "AGENTS.md", "- a\n" * 2300)  # 9200 bytes
+        write(self.repo, "src/AGENTS.md", "- a\n" * 2300)
+        commit_all(self.repo, "add")
+        out = self.inventory()
+        root, src = out["files"]
+        self.assertEqual((root["over"]["file"], root["over"]["limit"]), (False, 16384))
+        self.assertEqual((src["over"]["file"], src["over"]["limit"]), (True, 8192))
+        self.assertEqual(out["totals"]["files_over"], 1)
+
+    def test_limits_from_the_guidelines_line(self):
+        write(
+            self.repo,
+            "AGENTS.md",
+            "## AGENTS.md guidelines\n\n"
+            "- Size limits: 100 words per rule, 1 KB per file, 2 KB for the root; not checked by a test.\n"
+            + "- a\n"
+            * 600,
+        )
+        commit_all(self.repo, "add")
+        out = self.inventory()
+        self.assertEqual(out["limits"]["source"], "guidelines")
+        self.assertEqual(out["limits"]["root_bytes"], 2048)
+        self.assertTrue(out["files"][0]["over"]["file"])
+
+    def test_limits_none_measures_but_marks_nothing(self):
+        write(self.repo, "AGENTS.md", "## AGENTS.md guidelines\n\n- Size limits: none.\n\n" + self.LONG)
+        commit_all(self.repo, "add")
+        out = self.inventory()
+        self.assertEqual(out["limits"]["source"], "none")
+        self.assertEqual(out["files"][0]["rules"][-1]["words"], 81)
+        self.assertEqual(out["totals"]["rules_over"], 0)
+
+    def test_malformed_limits_line_is_reported(self):
+        write(self.repo, "AGENTS.md", "## AGENTS.md guidelines\n\n- Size limits: 80 words.\n")
+        commit_all(self.repo, "add")
+        out = self.inventory()
+        self.assertEqual(out["limits"]["source"], "default")
+        self.assertEqual(out["limits"]["malformed"], "Size limits: 80 words.")
+
+    def test_argument_overrides(self):
+        write(self.repo, "AGENTS.md", "## AGENTS.md guidelines\n\n- Size limits: none.\n\n" + self.LONG)
+        commit_all(self.repo, "add")
+        out = self.inventory("--rule-words", "60")
+        self.assertEqual((out["limits"]["source"], out["limits"]["rule_words"]), ("arguments", 60))
+        self.assertEqual(out["totals"]["rules_over"], 1)
+        self.assertEqual(self.inventory("--no-size-limits")["limits"]["source"], "none")
+        checked = "- Size limits: 80 words per rule, 8 KB per file, 16 KB for the root; checked by tests/t.py."
+        write(self.repo, "AGENTS.md", "## AGENTS.md guidelines\n\n" + checked + "\n\n" + self.LONG)
+        commit_all(self.repo, "checked")
+        unsized = self.inventory("--no-size-limits")["limits"]
+        self.assertEqual((unsized["source"], unsized["test"]), ("none", "tests/t.py"))
+        code, _, err = call("inventory", "--repo", str(self.repo), "--no-size-limits", "--file-bytes", "10")
+        self.assertEqual(code, 1)
+        self.assertIn("error: ", err)
+        code, _, err = call("inventory", "--repo", str(self.repo), "--rule-words", "0")
+        self.assertEqual(code, 1)
+
+
+class DocsAndReferencesTest(RepoTestCase):
+    def test_docs_folder_pages_and_readmes(self):
+        write(self.repo, "AGENTS.md", "- a\n")
+        write(self.repo, "src/AGENTS.md", "- b\n")
+        write(self.repo, "src/README.md", "# src\n")
+        write(self.repo, "lib/README.md", "# lib, with no AGENTS.md beside it\n")
+        write(self.repo, "docs/architecture.md", "# Architecture\n\n## Retry\n\ntext\n\nSetext\n------\n")
+        write(self.repo, "docs/notes.txt", "not a page\n")
+        commit_all(self.repo, "add")
+        write(self.repo, "docs/untracked.md", "# New\n")
+        docs = self.inventory()["docs"]
+        self.assertEqual(docs["folder"], "docs")
+        self.assertEqual([p["path"] for p in docs["pages"]], ["docs/architecture.md", "docs/untracked.md"])
+        self.assertEqual(docs["pages"][0]["headings"], ["Architecture", "Retry", "Setext"])
+        self.assertEqual(docs["readmes"], ["README.md", "src/README.md"])
+        self.assertIs(docs["truncated"], False)
+
+    def test_docs_folder_preference_and_absence(self):
+        write(self.repo, "AGENTS.md", "- a\n")
+        write(self.repo, "documentation/x.md", "# x\n")
+        write(self.repo, "Doc/y.md", "# y\n")
+        commit_all(self.repo, "add")
+        self.assertEqual(self.inventory()["docs"]["folder"], "Doc")
+        (self.repo / "Doc" / "y.md").unlink()
+        (self.repo / "Doc").rmdir()
+        self.assertEqual(self.inventory()["docs"]["folder"], "documentation")
+        write(self.repo, "docs/.keep", "")
+        self.assertEqual(self.inventory()["docs"]["folder"], "docs")
+
+    def test_no_docs_folder(self):
+        write(self.repo, "AGENTS.md", "- a\n")
+        commit_all(self.repo, "add")
+        self.assertEqual(
+            self.inventory()["docs"], {"folder": None, "pages": [], "readmes": ["README.md"], "truncated": False}
+        )
+
+    def test_docs_pages_cap_sets_truncated(self):
+        write(self.repo, "AGENTS.md", "- a\n")
+        for number in range(inv.DOCS_PAGES_SHOWN):
+            write(self.repo, f"docs/p{number:03}.md", "# p\n")
+        commit_all(self.repo, "add")
+        docs = self.inventory()["docs"]
+        self.assertEqual((len(docs["pages"]), docs["truncated"]), (200, False))
+        write(self.repo, "docs/p200.md", "# p\n")
+        docs = self.inventory()["docs"]
+        self.assertEqual((len(docs["pages"]), docs["truncated"]), (200, True))
+        self.assertEqual(docs["pages"][-1]["path"], "docs/p199.md")
+
+    def test_references_find_mentions_outside_agents_files(self):
+        write(self.repo, "AGENTS.md", "- a\n")
+        write(self.repo, "src/AGENTS.md", "- b\n")
+        write(self.repo, "src/x.py", "# see src/AGENTS.md for the rule\n")
+        write(self.repo, "docs/td.md", "`src/AGENTS.md` says so\n")
+        write(self.repo, "nested/AGENTS.md", "- src/AGENTS.md is elsewhere\n")
+        commit_all(self.repo, "add")
+        out = self.inventory()
+        src = by_path(out, "src/AGENTS.md")
+        self.assertEqual(
+            [(h["path"], h["line"]) for h in src["references"]["hits"]], [("docs/td.md", 1), ("src/x.py", 1)]
+        )
+        self.assertEqual(src["references"]["hits"][1]["text"], "# see src/AGENTS.md for the rule")
+        self.assertFalse(src["references"]["truncated"])
+
+    def test_references_are_capped_and_flagged(self):
+        write(self.repo, "AGENTS.md", "- a\n")
+        write(self.repo, "notes.txt", "AGENTS.md\n" * 60)
+        commit_all(self.repo, "add")
+        refs = by_path(self.inventory(), "AGENTS.md")["references"]
+        self.assertEqual(len(refs["hits"]), 50)
+        self.assertTrue(refs["truncated"])
+
+    def test_references_at_exactly_the_cap_are_not_truncated(self):
+        write(self.repo, "AGENTS.md", "- a\n")
+        write(self.repo, "notes.txt", "AGENTS.md\n" * inv.REFERENCES_SHOWN)
+        commit_all(self.repo, "add")
+        refs = by_path(self.inventory(), "AGENTS.md")["references"]
+        self.assertEqual((len(refs["hits"]), refs["truncated"]), (50, False))
+        write(self.repo, "notes.txt", "AGENTS.md\n" * (inv.REFERENCES_SHOWN + 1))
+        refs = by_path(self.inventory(), "AGENTS.md")["references"]
+        self.assertEqual((len(refs["hits"]), refs["truncated"]), (50, True))
+
+    def test_references_include_aliases(self):
+        write(self.repo, "AGENTS.md", "- a\n")
+        (self.repo / "docs").mkdir()
+        (self.repo / "docs" / "AGENTS.md").symlink_to("../AGENTS.md")
+        write(self.repo, "notes.txt", "read docs/AGENTS.md\n")
+        commit_all(self.repo, "add")
+        entry = by_path(self.inventory(), "AGENTS.md")
+        self.assertEqual(entry["aliases"], ["docs/AGENTS.md"])
+        self.assertIn(("notes.txt", 1), [(h["path"], h["line"]) for h in entry["references"]["hits"]])
+
+    def test_references_survive_a_form_feed_in_a_matching_line(self):
+        write(self.repo, "AGENTS.md", "- a\n")
+        write(self.repo, "n.txt", "see AGENTS.md\x0cmore\n")
+        commit_all(self.repo, "add")
+        hits = by_path(self.inventory(), "AGENTS.md")["references"]["hits"]
+        self.assertIn(("n.txt", 1), [(h["path"], h["line"]) for h in hits])
+
+    def test_references_survive_a_carriage_return_in_a_matching_line(self):
+        write(self.repo, "AGENTS.md", "- a\n")
+        write(self.repo, "src/AGENTS.md", "- b\n")
+        (self.repo / "notes.txt").write_bytes(b"see src/AGENTS.md here\rand more src/AGENTS.md\n")
+        commit_all(self.repo, "add")
+        hits = by_path(self.inventory(), "src/AGENTS.md")["references"]["hits"]
+        self.assertEqual([(h["path"], h["line"]) for h in hits], [("notes.txt", 1)])
+
+    def test_references_survive_a_newline_in_a_file_name(self):
+        write(self.repo, "AGENTS.md", "- a\n")
+        (self.repo / "odd\nname.txt").write_text("AGENTS.md\n")
+        write(self.repo, "sane.txt", "see AGENTS.md\n")
+        commit_all(self.repo, "add")
+        hits = by_path(self.inventory(), "AGENTS.md")["references"]["hits"]
+        self.assertIn(("sane.txt", 1), [(h["path"], h["line"]) for h in hits])
 
 
 if __name__ == "__main__":

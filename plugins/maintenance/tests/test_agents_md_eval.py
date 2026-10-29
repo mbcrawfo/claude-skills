@@ -11,6 +11,8 @@ from agents_helpers import git, run
 EVALS = Path(__file__).resolve().parent.parent / "evals"
 FIRST = EVALS / "agents-md-cleanup-first-run"
 REVIEW = EVALS / "agents-md-cleanup-review"
+SIZE_ASK = EVALS / "agents-md-cleanup-size-ask"
+SIZE_REVIEW = EVALS / "agents-md-cleanup-size-review"
 # The block count the first-run fixture's inventory reports; the pre-dispatch grader states it too.
 FIRST_RUN_BLOCKS = 7
 
@@ -118,8 +120,26 @@ class FixtureTest(FixtureTestCase):
         self.assertIn("class Result", handlers)
         self.assertIn("return Result(", handlers)
 
+    def test_size_fixtures_are_identical_and_measure_one_long_rule(self):
+        ask = self.scaffold_ok(SIZE_ASK, "ask")
+        review = self.scaffold_ok(SIZE_REVIEW, "review")
+        self.assertEqual((SIZE_ASK / "scaffold.sh").read_bytes(), (SIZE_REVIEW / "scaffold.sh").read_bytes())
+        out = run("inventory", "--repo", str(ask))
+        self.assertEqual(out["limits"]["source"], "default")
+        self.assertEqual((out["totals"]["rules_over"], out["totals"]["files_over"]), (1, 0))
+        root = next(f for f in out["files"] if f["path"] == "AGENTS.md")
+        (long,) = root["over"]["rules"]
+        self.assertGreater(long["words"], 200)
+        self.assertIn("docs/architecture.md", [p["path"] for p in out["docs"]["pages"]])
+        page = next(p for p in out["docs"]["pages"] if p["path"] == "docs/architecture.md")
+        self.assertIn("Retry", page["headings"])
+        self.assertIn("doubling the wait each time", (ask / "docs" / "architecture.md").read_text())
+        self.assertTrue((ask / "tests" / "test_retry.py").is_file())
+        self.assertIn("def log_retry", (ask / "src" / "payments" / "retry.py").read_text())
+        self.assertEqual(git(review, "status", "--porcelain"), "")
+
     def test_refuses_to_overwrite(self):
-        for case in (FIRST, REVIEW):
+        for case in (FIRST, REVIEW, SIZE_ASK, SIZE_REVIEW):
             ws = self.scaffold_ok(case, case.name)
             second = self.scaffold(case, ws)
             self.assertNotEqual(second.returncode, 0)
@@ -262,6 +282,21 @@ class GraderTest(unittest.TestCase):
             self.assertIn(f"max_turns: {turns}", front)
             self.assertIn(f"timeout_seconds: {timeout}", front)
             self.assertEqual((case / "prompt.md").read_text().splitlines()[-1], prompt)
+
+    def test_size_case_files(self):
+        for case, graders in (
+            (SIZE_ASK, {"skill-ran", "no-dispatch", "nothing-changed", "size-question"}),
+            (SIZE_REVIEW, {"skill-ran", "nothing-changed", "no-repo-write", "table"}),
+        ):
+            self.assertEqual({p.stem for p in (case / "graders").iterdir()}, graders)
+            self.assertIn("scaffold_script: scaffold.sh", (case / "case.yaml").read_text())
+        self.assertIn("no size limits", (SIZE_REVIEW / "prompt.md").read_text())
+        self.assertNotIn("size", (SIZE_ASK / "prompt.md").read_text().lower())
+        for name in ("no-dispatch", "nothing-changed", "skill-ran"):
+            self.assertEqual(
+                (SIZE_ASK / "graders" / f"{name}.md").read_bytes(),
+                ((FIRST if name == "no-dispatch" else REVIEW) / "graders" / f"{name}.md").read_bytes(),
+            )
 
 
 if __name__ == "__main__":

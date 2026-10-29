@@ -8,7 +8,7 @@ import tempfile
 import unittest
 
 from agents_helpers import agents_md_inventory as inv
-from agents_helpers import call, commit_all, make_repo, write
+from agents_helpers import agents_md_limits, call, commit_all, make_repo, write
 
 PLUGIN = Path(__file__).resolve().parent.parent
 AGENT = PLUGIN / "agents" / "agents-md-reviewer.md"
@@ -55,8 +55,10 @@ class ReviewerAgentTest(unittest.TestCase):
             "`merge`",
             "`move`",
             "`ask`",
+            "`split`",
             "`accurate`",
             "`valuable`",
+            "`placement`",
             "`brief`",
             "`level`",
             "`rename_only`",
@@ -80,6 +82,9 @@ class ReviewerAgentTest(unittest.TestCase):
             "POLICY",
             "RULINGS",
             "AGENTS_MD_DIRS",
+            "DOCS",
+            "BYTES",
+            "OVER",
         ):
             self.assertIn(f"`{key}`", text)
         self.assertIn("python3 '<SCRIPT>' blocks --repo '<REPO>' '<FILE>'", text)
@@ -107,8 +112,9 @@ class ReviewerAgentTest(unittest.TestCase):
                 self.assertIn(verdict["action"], inv.ACTIONS)
                 if "criterion" in verdict:
                     self.assertIn(verdict["criterion"], inv.CRITERIA)
-                if "target_kind" in verdict:
-                    self.assertIn(verdict["target_kind"], inv.TARGET_KINDS)
+                for item in (verdict, *verdict.get("parts", [])):
+                    if "target_kind" in item:
+                        self.assertIn(item["target_kind"], inv.TARGET_KINDS)
                 actions.add(verdict["action"])
         self.assertEqual(actions, set(inv.ACTIONS))
 
@@ -135,8 +141,11 @@ class ReviewerAgentTest(unittest.TestCase):
             repo = make_repo(Path(tmp))
             write(repo, data["file"], sample + "\n")
             for verdict in data["verdicts"]:
-                if verdict.get("target_kind") == "comment":
-                    write(repo, verdict["target"], "// placeholder\n")
+                for item in (verdict, *verdict.get("parts", [])):
+                    if item.get("target_kind") == "comment":
+                        write(repo, item["target"], "// placeholder\n")
+                    if item.get("target_kind") == "doc":
+                        write(repo, item["target"], "# Placeholder\n")
             commit_all(repo, "add")
             message = Path(tmp) / "message.txt"
             message.write_text("Summary.\n\n```json\n" + example + "\n```\n", encoding="utf-8")
@@ -153,6 +162,48 @@ class ReviewerAgentTest(unittest.TestCase):
             )
         self.assertEqual(code, 0, err)
         self.assertEqual(json.loads(out)["verdicts"], data["verdicts"])
+
+    def test_placement_criterion_and_order(self):
+        text = AGENT.read_text(encoding="utf-8")
+        order = [text.index(h) for h in ("### Accurate", "### Valuable", "### Placement", "### Brief", "### Level")]
+        self.assertEqual(order, sorted(order))
+        placement = text[text.index("### Placement") : text.index("### Brief")]
+        for phrase in (
+            "describes the project rather than directs the agent",
+            "only for some tasks",
+            "`target_kind: doc`",
+            "`pointer`",
+            "never a second copy",
+            "`docs/<name>.md`",
+            "every clause",
+        ):
+            self.assertIn(phrase, placement)
+
+    def test_split_and_limits_are_described(self):
+        text = AGENT.read_text(encoding="utf-8")
+        brief = text[text.index("### Brief") : text.index("### Level")]
+        for phrase in ("`split`", "`parts`", "one rule each"):
+            self.assertIn(phrase, brief)
+        for phrase in ("size limits:", "90%", "never drop a clause", "`whole`", "`BYTES`", "`OVER`", "`DOCS`"):
+            self.assertIn(phrase, text)
+
+    def test_docs_truncated_sends_the_reviewer_to_git(self):
+        text = AGENT.read_text(encoding="utf-8")
+        inputs = text[text.index("## Inputs") : text.index("## Start")]
+        for phrase in ('"truncated": <bool>', "When `truncated` is true", "git ls-files -- '<folder>'"):
+            self.assertIn(phrase, inputs)
+
+    def test_whole_keep_ruling_carries_the_token(self):
+        text = AGENT.read_text(encoding="utf-8")
+        rulings = text[text.index("## Rulings") : text.index("## Ancestor role")]
+        self.assertIn("`<quote> (whole)`", rulings)
+        self.assertIn("The token must come from `RULINGS`", rulings)
+        (lifted,) = [line for line in rulings.splitlines() if "lifts the word limit" in line]
+        for phrase in ("`fix`", "`trim`", "`move`", "`proposed`", "`pointer`", "`merge`", "`split`"):
+            self.assertIn(phrase, lifted)
+        inputs = text[text.index("## Inputs") : text.index("## Start")]
+        self.assertIn("last clause", inputs)
+        self.assertNotIn("a last line", inputs)
 
 
 class SkillMdTest(unittest.TestCase):
@@ -286,6 +337,126 @@ class SkillMdTest(unittest.TestCase):
         ):
             self.assertIn(phrase, text)
 
+    def _section(self, start, end=None):
+        text = SKILL.read_text(encoding="utf-8")
+        return text[text.index(start) : text.index(end)] if end else text[text.index(start) :]
+
+    def test_size_question_in_confirm_step(self):
+        confirm = self._section("## 2. Confirm before dispatch", "## 3. Dispatch")
+        for phrase in (
+            "no size question is due",
+            "`limits.source`",
+            "`rules_over`",
+            "`files_over`",
+            "Adopt size limits?",
+            "80 words per rule, 8 KB per file, 16 KB for the root",
+            "answer none",
+        ):
+            self.assertIn(phrase, confirm)
+
+    def test_malformed_limits_line_makes_the_size_question_due(self):
+        inventory = self._section("## 1. Inventory", "## 2. Confirm before dispatch")
+        (malformed,) = [line for line in inventory.splitlines() if "`limits.malformed`" in line]
+        self.assertIn("even with nothing over", malformed)
+        confirm = self._section("## 2. Confirm before dispatch", "## 3. Dispatch")
+        self.assertIn("or `limits.malformed` is set", confirm)
+
+    def test_default_limits_are_not_in_force(self):
+        dispatch = self._section("## 3. Dispatch", "## 4. Merge")
+        for phrase in ("`guidelines` or `arguments`", "is `default`", "no `--rule-words`"):
+            self.assertIn(phrase, dispatch)
+
+    def test_adopted_limits_rerun_inventory_and_are_in_force(self):
+        confirm = self._section("## 2. Confirm before dispatch", "## 3. Dispatch")
+        for phrase in (
+            "After every size answer, re-run `inventory`",
+            "even when the numbers equal `limits`",
+            "`--rule-words`, `--file-bytes` and `--root-bytes` with the adopted numbers",
+            "`--no-size-limits` for none",
+            "`limits.source` is `arguments`",
+        ):
+            self.assertIn(phrase, confirm)
+        self.assertNotIn("If they differ from `limits`", confirm)
+        dispatch = self._section("## 3. Dispatch", "## 4. Merge")
+        self.assertIn("Limits adopted this run are in force", dispatch)
+
+    def test_rulings_file_names_five_criteria(self):
+        text = SKILL.read_text(encoding="utf-8")
+        self.assertIn("by the five criteria", text)
+        self.assertNotIn("four criteria", text)
+
+    def test_test_maintenance_covers_a_none_line(self):
+        maintenance = self._section("**Test maintenance", "**Not reviewed")
+        self.assertIn("`Size limits: none.`", maintenance)
+        self.assertIn("remove the test", maintenance)
+
+    def test_size_test_ports_the_limits_module(self):
+        for section in (self._section("**The test question", "**Test maintenance"), self._section("## 7. Apply")):
+            for phrase in (
+                '"${CLAUDE_SKILL_DIR}/scripts/agents_md_limits.py"',
+                "`measure_rules`",
+                "`normalised_bytes`",
+            ):
+                self.assertIn(phrase, section)
+        question = self._section("**The test question", "**Test maintenance")
+        for phrase in ("at any depth", "marker excluded", "whitespace tokens", "HTML comments", "front matter"):
+            self.assertIn(phrase, question)
+
+    def test_limits_line_grammar_in_skill(self):
+        text = SKILL.read_text(encoding="utf-8")
+        for line in ("Size limits: none.", "; checked by ", "; not checked by a test."):
+            self.assertIn(line, text)
+
+    def test_dispatch_carries_docs_bytes_over_and_limits(self):
+        dispatch = self._section("## 3. Dispatch", "## 4. Merge")
+        for phrase in ("DOCS:", "BYTES:", "OVER:", "size limits:", "--rule-words"):
+            self.assertIn(phrase, dispatch)
+
+    def test_merge_reconciles_repoints_and_backstops(self):
+        merge = self._section("## 4. Merge", "## 5. Sort")
+        for bullet in ("- **Reconcile destinations.**", "- **Re-point references.**", "- **Size accounting.**"):
+            self.assertIn(bullet, merge)
+        (size,) = [line for line in merge.splitlines() if line.startswith("- **Size accounting.**")]
+        for phrase in ("at most once per file", "file-level", "exception list", "leaving those moves out"):
+            self.assertIn(phrase, size)
+        (refs,) = [line for line in merge.splitlines() if line.startswith("- **Re-point references.**")]
+        for phrase in ("`references`", "backticked", "`truncated`"):
+            self.assertIn(phrase, refs)
+
+    def test_approval_message_sections(self):
+        approval = self._section("## 6. Approval message", "## 7. Apply")
+        for phrase in (
+            "**Documentation moves",
+            "**Splits",
+            "**Size",
+            "**The limits line",
+            "**The test question",
+            "**Test maintenance",
+            "boundary cases",
+            "exception list",
+            "not checked by a test",
+        ):
+            self.assertIn(phrase, approval)
+
+    def test_apply_writes_docs_and_runs_only_the_new_test(self):
+        apply = self._section("## 7. Apply", "## 8. Commit")
+        for phrase in (
+            "`# <title>`",
+            "`pointer`",
+            "`parts`",
+            "never the whole suite",
+            "`dotnet test --filter`",
+            "nothing is committed",
+            "uncommitted",
+        ):
+            self.assertIn(phrase, apply)
+        self.assertIn("could not be run", self._section("## 8. Commit"))
+
+    def test_script_calls_accept_size_flags(self):
+        text = SKILL.read_text(encoding="utf-8")
+        for flag in ("--rule-words", "--file-bytes", "--root-bytes", "--no-size-limits"):
+            self.assertIn(flag, text[text.index("## The script") : text.index("## 1. Inventory")])
+
     def test_manifest_descriptions_match(self):
         repo = PLUGIN.parent.parent
         plugin = json.loads((PLUGIN / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
@@ -408,6 +579,7 @@ class QuotedPathsTest(unittest.TestCase):
         self.skill_dir = self.tmp / "plugin cache" / "agents-md-cleanup"
         (self.skill_dir / "scripts").mkdir(parents=True)
         shutil.copy(inv.__file__, self.skill_dir / "scripts" / "agents_md_inventory.py")
+        shutil.copy(agents_md_limits.__file__, self.skill_dir / "scripts" / "agents_md_limits.py")
 
     def bash(self, command: str) -> dict:
         env = {**os.environ, "CLAUDE_SKILL_DIR": str(self.skill_dir)}
@@ -424,7 +596,17 @@ class QuotedPathsTest(unittest.TestCase):
         repo = {"repo root": str(self.repo)}
         inventory = lines["inventory"].replace(" [--scope '<dir>' ...]", " --scope '<dir>'")
         inventory = inventory.replace(" [--base '<ref>']", "")
-        out = self.bash(fill(inventory, {**repo, "dir": "my docs"}))
+        # Run each documented optional flag with a real value; --no-size-limits can't join the numbers, so runs alone.
+        self.assertIn(" [--no-size-limits]", inventory)
+        sized = re.sub(r" \[(--[\w-]+) N\]", r" \1 81", inventory.replace(" [--no-size-limits]", ""))
+        self.assertNotIn("[", sized)
+        out = self.bash(fill(sized, {**repo, "dir": "my docs"}))
+        self.assertEqual(out["limits"]["source"], "arguments")
+        self.assertEqual(
+            [out["limits"][k] for k in ("rule_words", "file_bytes", "root_bytes")], [81, 81, 81], "every flag reached"
+        )
+        unsized = re.sub(r" \[--[\w-]+ N\]", "", inventory).replace(" [--no-size-limits]", " --no-size-limits")
+        self.assertEqual(self.bash(fill(unsized, {**repo, "dir": "my docs"}))["limits"]["source"], "none")
         self.assertEqual(out["scope"], ["my docs"])
         self.assertEqual([f["path"] for f in out["files"]], ["AGENTS.md", "my docs/AGENTS.md"])
         out = self.bash(fill(lines["blocks"], {**repo, "path": "my docs/AGENTS.md"}))
@@ -434,8 +616,24 @@ class QuotedPathsTest(unittest.TestCase):
         payload = {"file": "my docs/AGENTS.md", "verdicts": [{"blocks": ["b1", "b2"], "action": "keep"}]}
         message.write_text("```json\n" + json.dumps(payload) + "\n```\n", encoding="utf-8")
         check = lines["check-verdicts"].replace("full|ancestor", "full").replace(" [--scope '<dir>' ...]", "")
+        self.assertIn(" [--rule-words N]", check)
+        check = check.replace(" [--rule-words N]", " --rule-words 80")
         out = self.bash(fill(check, {**repo, "path": "my docs/AGENTS.md", "message file": str(message)}))
         self.assertEqual(out["counts"], {"keep": 1})
+
+    def test_measurement_command(self):
+        # The documented measurement runs on a quoted path and applies the script's definitions, CRLF included.
+        text = SKILL.read_text(encoding="utf-8")
+        (command,) = re.findall(r"`(python3 -c 'import json, sys;[^`]*)`", text)
+        sample = self.tmp / "size 'x' dir" / "AGENTS.md"
+        sample.parent.mkdir()
+        raw = ("# T\r\n\r\n- " + " ".join(["w"] * 81) + "\r\n").encode("utf-8")
+        sample.write_bytes(raw)
+        out = self.bash(fill(command, {"text file": str(sample), "word limit": "80", "byte limit": "8192"}))
+        self.assertEqual(out["bytes_normalised"], len(raw.replace(b"\r\n", b"\n")))
+        self.assertEqual(out["longest"], 81)
+        self.assertEqual([r["words"] for r in out["over"]["rules"]], [81])
+        self.assertFalse(out["over"]["file"])
 
     def test_reviewer_start_command(self):
         agent = AGENT.read_text(encoding="utf-8")

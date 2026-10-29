@@ -17,6 +17,7 @@ quote-style = "double"
 known-first-party = [
     "agents_helpers",
     "agents_md_inventory",
+    "agents_md_limits",
     "docs_inventory",
     "helpers",
     "review_state",

@@ -8,11 +8,16 @@ Commands:
   inventory  every AGENTS.md in scope (and the ancestors of a partial run), split into blocks,
              with git state, the repo's uncommitted work, the root file's guidelines section and any
              saved rulings; paths that are one file through symlinks merge into one entry, with the
-             file's `resolved` path
+             file's `resolved` path; each file also carries its rules' word counts, its normalised byte count and
+             what is over the size limits (from the guidelines' `Size limits:` line, the defaults or the
+             `--rule-words`, `--file-bytes`, `--root-bytes` and `--no-size-limits` arguments)
   blocks     one file's blocks and content hash, to check it before an edit is applied
   check-verdicts
              validate a reviewer's verdicts for one file against that file's blocks; a deletion that may
-             drop a project choice comes back as an `ask`
+             drop a project choice comes back as an `ask`; with `--rule-words`, so does a `keep` of a rule over
+             that many words whose ruling lacks `(whole)`, and any text over it is rejected, except a rule
+             kept `(whole)` that a fix, trim or move carries as one unit; `(whole)` counts only when a line of
+             the rulings file holds the ruling
 
 `split_blocks` cuts a markdown file into the addressable blocks the skill's verdicts refer to.
 """
@@ -30,8 +35,17 @@ import subprocess
 import sys
 from typing import NoReturn
 
+import agents_md_limits
+
 RULINGS_PATH = ".claude/agents-md-cleanup.md"
+WHOLE_TOKEN = "(whole)"
 UNCOMMITTED_SHOWN = 10  # paths listed in `uncommitted`; `count` has them all
+DOCS_FOLDERS = ("docs", "doc", "documentation")  # in order of preference
+DOCS_PAGES_SHOWN = 200  # pages listed in `docs`
+REFERENCES_SHOWN = 50  # hits listed per file in `references`
+REFERENCE_TEXT_CHARS = 200
+# Blocks that are parts of a table: never a rule, though a lone row without edge pipes reads as a paragraph.
+TABLE_KINDS = ("table_header", "table_row")
 
 _ATX_HEADING = re.compile(r"^ {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t]*$")
 _ATX_CLOSING = re.compile(r"(?:^|[ \t]+)#+[ \t]*$")
@@ -50,6 +64,16 @@ _TABLE_DELIMITER = re.compile(r"^[ \t]*\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \
 
 class CliError(Exception):
     pass
+
+
+def _positive_int(value: str) -> int:
+    try:
+        number = int(value)
+    except ValueError:
+        number = 0
+    if number < 1:
+        raise argparse.ArgumentTypeError(f"expected a positive integer, got {value!r}")
+    return number
 
 
 class _Parser(argparse.ArgumentParser):
@@ -303,21 +327,25 @@ def find_guidelines(text: str) -> dict | None:
     return None
 
 
+def _git_command(literal: bool, args: tuple[str, ...]) -> list[str]:
+    # Literal pathspecs: a file named `what[1].md` must never match `what1.md`.
+    # The `-c` settings override user config that would change the output.
+    return [
+        "git",
+        *(["--literal-pathspecs"] if literal else []),
+        "-c",
+        "core.quotepath=off",
+        "-c",
+        "color.ui=never",
+        "-c",
+        "grep.column=false",
+        *args,
+    ]
+
+
 def _git(root: Path, *args: str, literal: bool = True, check: bool = True) -> subprocess.CompletedProcess:
     result = subprocess.run(
-        # Literal pathspecs: a file named `what[1].md` must never match `what1.md`.
-        # The `-c` settings override user config that would change the output.
-        [
-            "git",
-            *(["--literal-pathspecs"] if literal else []),
-            "-c",
-            "core.quotepath=off",
-            "-c",
-            "color.ui=never",
-            "-c",
-            "grep.column=false",
-            *args,
-        ],
+        _git_command(literal, args),
         cwd=str(root),
         capture_output=True,
         text=True,
@@ -383,18 +411,26 @@ def _is_inside(root: Path, path: Path) -> bool:
         return False
 
 
-def discover(root: Path) -> list[str]:
-    """Repo-relative paths of every AGENTS.md (any case) that git knows and that exists, sorted.
+def _known_files(root: Path, basename: str | None = None, suffix: str | None = None) -> list[str]:
+    """Repo-relative paths git knows (tracked, or untracked and not ignored) that exist, sorted.
 
-    Asking git skips `.git` and ignored paths for free.
+    Asking git skips `.git` and ignored paths for free. `basename` and `suffix` filter, ignoring case.
     """
     listing = _git(root, "ls-files", "-z", "--cached", "--others", "--exclude-standard").stdout
     found = {
         path
         for path in listing.split("\0")
-        if path and posixpath.basename(path).lower() == "agents.md" and _is_inside(root, root / path)
+        if path
+        and (basename is None or posixpath.basename(path).lower() == basename)
+        and (suffix is None or path.lower().endswith(suffix))
+        and _is_inside(root, root / path)
     }
     return sorted(found)
+
+
+def discover(root: Path) -> list[str]:
+    """Repo-relative paths of every AGENTS.md (any case) that git knows and that exists, sorted."""
+    return _known_files(root, basename="agents.md")
 
 
 def resolve_scope(root: Path, scope: list[str]) -> list[str]:
@@ -515,9 +551,12 @@ def _uncommitted(root: Path) -> dict:
     return {"count": len(entries), "paths": [path for _, path in entries[:UNCOMMITTED_SHOWN]]}
 
 
-def _file_entry(root: Path, path: str, resolved: str, aliases: list[str], role: str) -> dict:
+def _file_entry(root: Path, path: str, resolved: str, aliases: list[str], role: str, limits: dict) -> dict:
     raw = _read_bytes(root, path)
     tracked, dirty = _git_state(root, resolved, [path, *aliases])
+    text = _decode(raw)
+    rules = agents_md_limits.measure_rules(text)
+    size = agents_md_limits.normalised_bytes(raw)
     return {
         "path": path,
         "resolved": resolved,
@@ -528,11 +567,38 @@ def _file_entry(root: Path, path: str, resolved: str, aliases: list[str], role: 
         "dirty": dirty,
         "bytes": len(raw),
         "sha256": hashlib.sha256(raw).hexdigest(),
-        "blocks": split_blocks(_decode(raw)),
+        "bytes_normalised": size,
+        "blocks": split_blocks(text),
+        "rules": rules,
+        "over": agents_md_limits.over_limits(rules, size, _dir_of(path) == ".", limits),
+        "references": _references(root, [path, *aliases]),
     }
 
 
-def _entries(root: Path, all_paths: list[str], scopes: list[str]) -> list[dict]:
+def _references(root: Path, paths: list[str]) -> dict:
+    """Lines anywhere in the repo that mention any of `paths`, other than in AGENTS.md files themselves."""
+    args = [arg for path in paths for arg in ("-e", path)]
+    # Bytes, not text: text mode turns a lone CR in a matched line into a record break.
+    result = subprocess.run(
+        _git_command(True, ("grep", "-z", "-n", "-I", "-F", *args, "--", ".")), cwd=str(root), capture_output=True
+    )
+    if result.returncode not in (0, 1):  # 1 means no hits
+        stderr = result.stderr.decode("utf-8", errors="replace")
+        raise CliError((stderr.strip().splitlines() or ["git grep failed"])[0])
+    hits = []
+    # Records end in LF; a form feed or U+2028 in a match is no break. A file name holding a newline (`-z` quotes
+    # nothing) splits its record, and a fragment without both NULs is skipped.
+    for record in result.stdout.split(b"\n"):
+        parts = record.split(b"\0", 2)
+        if len(parts) != 3 or not parts[1].isdigit():
+            continue
+        path, number, text = (part.decode("utf-8", errors="replace") for part in parts)
+        if posixpath.basename(path).lower() != "agents.md":
+            hits.append({"path": path, "line": int(number), "text": text.strip()[:REFERENCE_TEXT_CHARS]})
+    return {"hits": hits[:REFERENCES_SHOWN], "truncated": len(hits) > REFERENCES_SHOWN}
+
+
+def _entries(root: Path, all_paths: list[str], scopes: list[str], limits: dict) -> list[dict]:
     """One entry per file: paths that resolve to the same file merge, so it is reviewed and edited once.
 
     The entry's `path` is the shallowest of its paths in scope, since agents load the file at every path and the
@@ -549,7 +615,7 @@ def _entries(root: Path, all_paths: list[str], scopes: list[str]) -> list[dict]:
             continue
         lead = min(in_scope, key=lambda path: (path.count("/"), path))
         role = "full" if "full" in roles.values() else "ancestor"
-        files.append(_file_entry(root, lead, resolved, [path for path in paths if path != lead], role))
+        files.append(_file_entry(root, lead, resolved, [path for path in paths if path != lead], role, limits))
     return sorted(files, key=lambda entry: entry["path"])
 
 
@@ -561,18 +627,62 @@ def _guidelines(root: Path, all_paths: list[str]) -> dict | None:
     return None
 
 
+def _docs(root: Path, all_paths: list[str]) -> dict:
+    """The docs folder (first of DOCS_FOLDERS at the root), its pages with their headings, and the READMEs."""
+    on_disk = {entry.name.lower(): entry.name for entry in root.iterdir() if entry.is_dir()}
+    folder = next((on_disk[name] for name in DOCS_FOLDERS if name in on_disk), None)
+    pages = []
+    if folder:
+        for path in _known_files(root, suffix=".md"):
+            if path.startswith(folder + "/"):
+                _, headings = _parse(_decode(_read_bytes(root, path)))
+                pages.append({"path": path, "headings": [heading["title"] for heading in headings]})
+    directories = {_dir_of(path) for path in all_paths}
+    readmes = [path for path in _known_files(root, basename="readme.md") if _dir_of(path) in directories]
+    return {
+        "folder": folder,
+        "pages": pages[:DOCS_PAGES_SHOWN],
+        "readmes": readmes,
+        "truncated": len(pages) > DOCS_PAGES_SHOWN,
+    }
+
+
+def _rulings_text(root: Path) -> str | None:
+    """The rulings file's text, or None when it does not exist.
+
+    Like every other file the script reads, the rulings count only when they resolve to a file inside the repo.
+    """
+    return _decode(_read_bytes(root, RULINGS_PATH)) if _is_inside(root, root / RULINGS_PATH) else None
+
+
 def _rulings(root: Path) -> dict:
     if (root / RULINGS_PATH).parent.is_symlink():
         raise CliError(".claude is a symlink; git can't track the rulings file through it")
-    # Like every other file the script reads, the rulings count only when they resolve to a file inside the repo.
-    exists = _is_inside(root, root / RULINGS_PATH)
     # `check-ignore` rejects --literal-pathspecs, so it runs without it; the path is a fixed literal anyway.
     result = _git(root, "check-ignore", "-q", RULINGS_PATH, literal=False, check=False)
     if result.returncode not in (0, 1):
         raise CliError((result.stderr.strip().splitlines() or ["git check-ignore failed"])[0])
     ignored = result.returncode == 0
-    text = _decode(_read_bytes(root, RULINGS_PATH)) if exists else None
-    return {"path": RULINGS_PATH, "exists": exists, "ignored": ignored, "text": text}
+    text = _rulings_text(root)
+    return {"path": RULINGS_PATH, "exists": text is not None, "ignored": ignored, "text": text}
+
+
+def _limits(args: argparse.Namespace, guidelines: dict | None) -> dict:
+    """The size limits in force, plus `malformed`: a `Size limits:` line that failed to parse, else None."""
+    overrides = {
+        "rule_words": args.rule_words,
+        "file_bytes": args.file_bytes,
+        "root_bytes": args.root_bytes,
+        "none": args.no_size_limits,
+    }
+    if args.no_size_limits and any(overrides[k] is not None for k in ("rule_words", "file_bytes", "root_bytes")):
+        raise CliError("--no-size-limits cannot be combined with --rule-words, --file-bytes or --root-bytes")
+    parsed, malformed = None, None
+    try:
+        parsed = agents_md_limits.parse_limits_line(guidelines["text"] if guidelines else "")
+    except ValueError as exc:
+        malformed = str(exc)
+    return {**agents_md_limits.limits_in_force(parsed, overrides), "malformed": malformed}
 
 
 def cmd_inventory(args: argparse.Namespace) -> dict:
@@ -580,7 +690,9 @@ def cmd_inventory(args: argparse.Namespace) -> dict:
     scopes = resolve_scope(root, args.scope)
     base = detect_base(root, args.base)
     all_paths = discover(root)
-    files = _entries(root, all_paths, scopes)
+    guidelines = _guidelines(root, all_paths)
+    limits = _limits(args, guidelines)
+    files = _entries(root, all_paths, scopes, limits)
     full = sum(1 for f in files if f["role"] == "full")
     uncommitted = _uncommitted(root)
     return {
@@ -590,7 +702,9 @@ def cmd_inventory(args: argparse.Namespace) -> dict:
         "uncommitted": uncommitted,
         "files": files,
         "agents_md_dirs": sorted({_dir_of(path) for path in all_paths}),
-        "guidelines": _guidelines(root, all_paths),
+        "guidelines": guidelines,
+        "docs": _docs(root, all_paths),
+        "limits": limits,
         "rulings": _rulings(root),
         "base": base,
         "base_branch": base_branch(root, base),
@@ -601,6 +715,9 @@ def cmd_inventory(args: argparse.Namespace) -> dict:
             "ancestor": len(files) - full,
             "blocks": sum(len(f["blocks"]) for f in files),
             "agents": len(files),
+            "rules": sum(len(f["rules"]) for f in files),
+            "rules_over": sum(len(f["over"]["rules"]) for f in files),
+            "files_over": sum(1 for f in files if f["over"]["file"]),
         },
     }
 
@@ -630,9 +747,9 @@ def cmd_blocks(args: argparse.Namespace) -> dict:
     }
 
 
-ACTIONS = ("keep", "fix", "trim", "delete", "merge", "move", "ask")
-CRITERIA = ("accurate", "valuable", "brief", "level")
-TARGET_KINDS = ("agents_md", "comment")
+ACTIONS = ("keep", "fix", "trim", "delete", "merge", "move", "split", "ask")
+CRITERIA = ("accurate", "valuable", "placement", "brief", "level")
+TARGET_KINDS = ("agents_md", "comment", "doc")
 # The fields a verdict may hold: these on every action, plus those its action takes. Anything else is rejected.
 ALWAYS_KEYS = ("blocks", "action", "criterion", "evidence", "ruling")
 ACTION_KEYS = {
@@ -641,19 +758,51 @@ ACTION_KEYS = {
     "trim": ("new_text",),
     "delete": (),
     "merge": ("new_text",),
-    "move": ("new_text", "target", "target_kind", "target_heading"),
+    "move": ("new_text", "target", "target_kind", "target_heading", "pointer"),
+    "split": ("parts",),
     "ask": ("question", "recommendation", "proposed"),
 }
 TOP_LEVEL_KEYS = ("file", "verdicts")
-# An ask's `proposed` verdict: what it may be, and what it takes from the ask unless it gives its own.
+# A split's parts: `text` is required; the rest name where the part goes, as a move's fields do.
+PART_KEYS = ("text", "target", "target_kind", "target_heading", "pointer")
+PART_MOVE_KEYS = PART_KEYS[1:]
+# An ask's `proposed` verdict: what it may be, and what it takes from the ask unless it gives its own. The ruling
+# comes along so that a rule kept `(whole)` stays exempt from the word cap in the proposed fix or move too.
 PROPOSED_ACTIONS = tuple(action for action in ACTIONS if action != "ask")
-PROPOSED_INHERITS = ("blocks", "criterion", "evidence")
+PROPOSED_INHERITS = ("blocks", "criterion", "evidence", "ruling")
+# The actions that keep a rule as one unit, so a `(whole)` ruling lifts the word cap on its own text.
+WHOLE_ACTIONS = ("fix", "trim", "move")
+# Quote marks a keep's quote may carry in the rulings file but not in a reviewer's ruling, or the other way round.
+_QUOTE_MARKS = re.compile("[\"'`\u201c\u201d\u2018\u2019]")
 _JSON_FENCE = re.compile(r"```json\s*\n(.*?)\n```", re.S)
 # What marks a statement as a possible project choice: a tool, command or path (an inline code span), or an
 # alternative weighed against it.
 _CHOICE = re.compile(r"`[^`]+`|\b(?:rather than|instead of|always|never|not|only|prefer|avoid)\b", re.I)
 _CITATION = re.compile(r"`?([^\s:`'\"()]+)`?:\d+")
 CHOICE_QUESTION = "Delete this statement? It names a tool, command or alternative, so it may record a project choice."
+OVER_LIMIT_QUESTION = (
+    "Keep this rule whole, over the word limit, with an entry in the test's exception list? Or split it?"
+)
+
+
+def _ruling_key(text: str) -> str:
+    """`text` as a ruling is matched against the rulings file: quote marks dropped, spacing and case folded."""
+    return " ".join(_QUOTE_MARKS.sub("", text).split()).casefold()
+
+
+def _is_whole(verdict: dict, rulings: str | None) -> bool:
+    """Whether the verdict's ruling keeps a rule whole: it holds `(whole)` and a line of the rulings file holds it.
+
+    A reviewer can write the token into any ruling; only the user's keep in the rulings file records that the user
+    kept the rule whole. The ruling must name a quote besides the token.
+    """
+    ruling = verdict.get("ruling")
+    if not isinstance(ruling, str) or WHOLE_TOKEN not in ruling or rulings is None:
+        return False
+    key = _ruling_key(ruling)
+    if not _ruling_key(ruling.replace(WHOLE_TOKEN, "")):
+        return False
+    return any(key in _ruling_key(line) for line in rulings.split("\n"))
 
 
 def _text_field(verdict: dict, name: str) -> str:
@@ -714,6 +863,16 @@ def _in_git_dir(root: Path, target: str) -> bool:
     return ".git" in (part.lower() for part in parts)
 
 
+def _check_doc_target(root: Path, target: str) -> None:
+    """A doc target is a markdown page other than an AGENTS.md, at a path a file could be written to."""
+    if not target.lower().endswith(".md"):
+        raise CliError(f"target {target} is not a .md file")
+    if posixpath.basename(target).lower() == "agents.md":
+        raise CliError(f"target {target} is an AGENTS.md file, not a doc page")
+    if not _can_hold_file(root, target):
+        raise CliError(f"target {target} is not a file path inside the repo")
+
+
 def _check_move(verdict: dict, file: str, root: Path) -> None:
     target = _text_field(verdict, "target")
     kind = verdict.get("target_kind")
@@ -735,9 +894,70 @@ def _check_move(verdict: dict, file: str, root: Path) -> None:
             raise CliError(f"target {target} is not a file path inside the repo")
     if kind == "comment" and not _is_inside(root, root / target):
         raise CliError(f"target {target} is not a file in the repo")
+    if kind == "doc":
+        _check_doc_target(root, target)
     _check_stageable(root, target)
     if "target_heading" in verdict and not isinstance(verdict["target_heading"], str):
         raise CliError("target_heading must be a string")
+    if "pointer" in verdict:
+        if kind != "doc":
+            raise CliError("pointer is only for a doc target")
+        _text_field(verdict, "pointer")
+
+
+def _check_part(part: object, file: str, root: Path) -> None:
+    """A split's part: its text, and where it goes if it leaves the block, checked as a move's target is."""
+    if not isinstance(part, dict):
+        raise CliError("must be an object")
+    extra = sorted(set(part) - set(PART_KEYS))
+    if extra:
+        raise CliError(f"does not take {', '.join(extra)}")
+    _text_field(part, "text")
+    if any(key in part for key in PART_MOVE_KEYS):
+        _check_move({key: part[key] for key in PART_MOVE_KEYS if key in part}, file, root)
+
+
+def _check_split(verdict: dict, file: str, root: Path) -> None:
+    parts = verdict.get("parts")
+    if not (isinstance(parts, list) and len(parts) >= 2):
+        raise CliError("parts must be a list of at least 2 parts")
+    for number, part in enumerate(parts, start=1):
+        try:
+            _check_part(part, file, root)
+        except CliError as exc:
+            raise CliError(f"part {number}: {exc}") from exc
+
+
+def _check_text_limits(verdict: dict, rule_words: int, texts: list[str], rulings: str | None = None) -> None:
+    """Refuse text bound for an AGENTS.md that holds a rule over the word limit.
+
+    Measured: a `fix`, `trim` or `merge`'s `new_text`, a move's `new_text` when it targets an AGENTS.md (or, with
+    no `new_text`, the moved blocks' own `texts`, which it carries verbatim), every `pointer`, and a part's `text`
+    when it stays or targets an AGENTS.md. Text that goes to a doc or a code comment is prose, not a rule, and is
+    not capped. A `fix`, `trim` or `move` whose ruling holds `(whole)`, as a line of the `rulings` text does, carries
+    a rule the user kept whole, so its `new_text` and blocks are not capped; its `pointer` is a new rule and still is.
+    """
+    fields = {}
+    whole = verdict["action"] in WHOLE_ACTIONS and _is_whole(verdict, rulings)
+    to_agents_md = verdict["action"] != "move" or verdict.get("target_kind") == "agents_md"
+    if "new_text" in verdict and to_agents_md and not whole:
+        fields["new_text"] = verdict.get("new_text")
+    elif verdict["action"] == "move" and verdict.get("target_kind") == "agents_md" and not whole:
+        for text in texts:
+            for rule in agents_md_limits.measure_rules(text):
+                if rule["words"] > rule_words:
+                    raise CliError(f"blocks hold a rule of {rule['words']} words, over the limit of {rule_words}")
+    if "pointer" in verdict:
+        fields["pointer"] = verdict["pointer"]
+    for number, part in enumerate(verdict.get("parts", []), start=1):
+        if part.get("target_kind", "agents_md") == "agents_md":
+            fields[f"parts[{number}].text"] = part["text"]
+        if "pointer" in part:
+            fields[f"parts[{number}].pointer"] = part["pointer"]
+    for name, text in fields.items():
+        for rule in agents_md_limits.measure_rules(text) if isinstance(text, str) else []:
+            if rule["words"] > rule_words:
+                raise CliError(f"{name} holds a rule of {rule['words']} words, over the limit of {rule_words}")
 
 
 def _check_stageable(root: Path, target: str) -> None:
@@ -762,7 +982,18 @@ def _check_stageable(root: Path, target: str) -> None:
             raise CliError(f"target {target} is inside another git repository: {parent.as_posix()}")
 
 
-def _check_verdict(verdict: dict, file: str, root: Path) -> None:
+def _check_verdict(
+    verdict: dict,
+    file: str,
+    root: Path,
+    rule_words: int | None = None,
+    texts: list[str] | None = None,
+    rulings: str | None = None,
+) -> None:
+    """Check one verdict's shape and text; `texts` are its blocks' texts, measured when a move carries them.
+
+    `rulings` is the rulings file's text, which a `(whole)` ruling must appear in to lift the word cap.
+    """
     action = verdict.get("action")
     if action not in ACTIONS:
         raise CliError(f"unknown action {action!r}; expected one of {', '.join(ACTIONS)}")
@@ -776,7 +1007,8 @@ def _check_verdict(verdict: dict, file: str, root: Path) -> None:
     if action != "keep" or "evidence" in verdict:
         if not (isinstance(evidence, list) and evidence and all(isinstance(e, str) and e.strip() for e in evidence)):
             raise CliError("evidence must be a non-empty list of non-empty strings")
-    if action in ("fix", "trim", "merge") or (action == "move" and "new_text" in verdict):
+    doc_move = action == "move" and verdict.get("target_kind") == "doc"
+    if action in ("fix", "trim", "merge") or (action == "move" and ("new_text" in verdict or doc_move)):
         _text_field(verdict, "new_text")
     if "rename_only" in verdict and not isinstance(verdict["rename_only"], bool):
         raise CliError("rename_only must be a boolean")
@@ -784,6 +1016,10 @@ def _check_verdict(verdict: dict, file: str, root: Path) -> None:
         raise CliError("merge needs at least 2 blocks")
     if action == "move":
         _check_move(verdict, file, root)
+    if action == "split":
+        _check_split(verdict, file, root)
+    if rule_words is not None:
+        _check_text_limits(verdict, rule_words, texts or [], rulings)
     if action == "ask":
         _text_field(verdict, "question")
         _text_field(verdict, "recommendation")
@@ -791,7 +1027,7 @@ def _check_verdict(verdict: dict, file: str, root: Path) -> None:
             if not isinstance(verdict["proposed"], dict):
                 raise CliError("proposed must be an object")
             try:
-                _check_proposed(verdict, file, root)
+                _check_proposed(verdict, file, root, rule_words, texts, rulings)
             except CliError as exc:
                 raise CliError(f"proposed: {exc}") from exc
     if "ruling" in verdict and not isinstance(verdict["ruling"], str):
@@ -803,14 +1039,24 @@ def _proposed(ask: dict) -> dict:
     return {**{key: ask[key] for key in PROPOSED_INHERITS if key in ask}, **ask["proposed"]}
 
 
-def _check_proposed(ask: dict, file: str, root: Path) -> None:
-    """Check an ask's `proposed` like a top-level verdict, since answering as recommended applies it as it is."""
+def _check_proposed(
+    ask: dict,
+    file: str,
+    root: Path,
+    rule_words: int | None = None,
+    texts: list[str] | None = None,
+    rulings: str | None = None,
+) -> None:
+    """Check an ask's `proposed` like a top-level verdict, since answering as recommended applies it as it is.
+
+    It inherits the ask's ruling, so a proposed fix or move of a rule kept `(whole)` is exempt from the word cap.
+    """
     proposed = ask["proposed"]
     if proposed.get("action") not in PROPOSED_ACTIONS:
         raise CliError(f"action must be one of {', '.join(PROPOSED_ACTIONS)}")
     if "blocks" in proposed and proposed["blocks"] != ask["blocks"]:
         raise CliError("blocks must be the ask's blocks")
-    _check_verdict(_proposed(ask), file, root)
+    _check_verdict(_proposed(ask), file, root, rule_words, texts, rulings)
 
 
 def _cites_other_file(evidence: list[str], file: str, root: Path) -> bool:
@@ -841,6 +1087,35 @@ def _guard_choice(verdict: dict, blocks: list[dict], file: str, root: Path) -> d
     }
 
 
+def _guard_length(
+    verdict: dict, blocks: list[dict], file: str, rule_words: int | None, rulings: str | None = None
+) -> dict:
+    """Turn a `keep` of a rule over the word limit into an `ask`, unless its ruling keeps it whole.
+
+    Keeping such a rule whole needs the user's say, and an entry in the test's exception list. Only a ruling holding
+    the token `(whole)` that a line of the `rulings` text also holds records that say; a pattern ruling does not.
+    """
+    if rule_words is None or verdict["action"] != "keep" or _is_whole(verdict, rulings):
+        return verdict
+    evidence = [
+        f"{file}:{block['start_line'] + rule['line'] - 1}: {rule['words']} words"
+        for block in blocks
+        if block["kind"] not in TABLE_KINDS
+        for rule in agents_md_limits.measure_rules(block["text"])
+        if rule["words"] > rule_words
+    ]
+    if not evidence:
+        return verdict
+    return {
+        "blocks": verdict["blocks"],
+        "action": "ask",
+        "criterion": "brief",
+        "evidence": evidence,
+        "question": OVER_LIMIT_QUESTION,
+        "recommendation": "Split it into one rule per bullet.",
+    }
+
+
 def _check_ancestor(verdict: dict, scope: list[str], allowed: tuple[str, ...]) -> None:
     """An ancestor file's blocks change only by moving down into the scope."""
     if verdict["action"] not in allowed:
@@ -857,10 +1132,14 @@ def validate_verdicts(
     file: str,
     root: Path,
     guidelines: dict | None = None,
+    rule_words: int | None = None,
+    rulings: str | None = None,
 ) -> dict:
     """Check a reviewer's verdicts against `file`'s blocks; return the report, or raise CliError.
 
-    The report's verdicts are the reviewer's, except that a deletion that may drop a project choice is an `ask`.
+    The report's verdicts are the reviewer's, except that a deletion that may drop a project choice is an `ask`,
+    and so is a `keep` of a rule over `rule_words` words (when given) whose ruling does not hold `(whole)`. A ruling's
+    `(whole)` counts only when a line of `rulings`, the rulings file's text, holds the ruling.
 
     `guidelines` is the root file's guidelines section ({start_line, end_line}): its blocks take only keep or ask.
     """
@@ -888,7 +1167,7 @@ def validate_verdicts(
                 if block in seen:
                     raise CliError(f"block {block} is in more than one verdict")
                 seen.add(block)
-            _check_verdict(verdict, file, root)
+            _check_verdict(verdict, file, root, rule_words, [by_id[b]["text"] for b in listed], rulings)
             if guidelines and verdict["action"] not in ("keep", "ask"):
                 for block in listed:
                     found = by_id[block]
@@ -909,7 +1188,12 @@ def validate_verdicts(
         for block in blocks:
             if block["id"] not in seen:
                 raise CliError(f"block {block['id']} not covered")
-    verdicts = [_guard_choice(verdict, [by_id[b] for b in verdict["blocks"]], file, root) for verdict in verdicts]
+    guarded = []
+    for verdict in verdicts:
+        covered = [by_id[b] for b in verdict["blocks"]]
+        choice = _guard_choice(verdict, covered, file, root)
+        guarded.append(_guard_length(choice, covered, file, rule_words, rulings))
+    verdicts = guarded
     counts: dict[str, int] = {}
     for verdict in verdicts:
         counts[verdict["action"]] = counts.get(verdict["action"], 0) + 1
@@ -938,7 +1222,12 @@ def cmd_check_verdicts(args: argparse.Namespace) -> dict:
     text = _decode(raw)
     # The root AGENTS.md holds the guidelines section; a nested file's matching heading is ordinary.
     guidelines = find_guidelines(text) if _is_root_file(root, file) else None
-    return validate_verdicts(split_blocks(text), data, args.role, scope, file, root, guidelines)
+    # A `(whole)` ruling must be the user's, recorded in the rulings file. Through a symlinked `.claude` the file
+    # is treated as absent; `inventory` already reported that as an error.
+    rulings = None if (root / RULINGS_PATH).parent.is_symlink() else _rulings_text(root)
+    return validate_verdicts(
+        split_blocks(text), data, args.role, scope, file, root, guidelines, args.rule_words, rulings
+    )
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -949,6 +1238,10 @@ def _parser() -> argparse.ArgumentParser:
     inv.add_argument("--repo", default=".")
     inv.add_argument("--scope", action="append", default=[], help="a directory to review in full; repeatable")
     inv.add_argument("--base", default=None)
+    inv.add_argument("--rule-words", type=_positive_int, default=None, help="most words a rule may have")
+    inv.add_argument("--file-bytes", type=_positive_int, default=None, help="most bytes a non-root file may have")
+    inv.add_argument("--root-bytes", type=_positive_int, default=None, help="most bytes the root file may have")
+    inv.add_argument("--no-size-limits", action="store_true", help="measure but mark nothing over the limits")
     inv.set_defaults(func=cmd_inventory)
 
     blocks = sub.add_parser("blocks", help="split one file into blocks and hash it")
@@ -962,6 +1255,7 @@ def _parser() -> argparse.ArgumentParser:
     verdicts.add_argument("--role", required=True, choices=["full", "ancestor"])
     verdicts.add_argument("--scope", action="append", default=[], help="a reviewed directory; required for ancestor")
     verdicts.add_argument("--input", required=True, help="a file holding the reviewer's whole message")
+    verdicts.add_argument("--rule-words", type=_positive_int, default=None, help="most words a rule may have")
     verdicts.set_defaults(func=cmd_check_verdicts)
     return parser
 

@@ -57,7 +57,7 @@ It looks in `docs/superpowers/specs`, `docs/superpowers/plans` and `docs/superpo
 
 ## agents-md-cleanup
 
-Reviews every statement in the repo's `AGENTS.md` files and removes the ones that don't earn their place. Each statement must be accurate, valuable (non-obvious), brief, and at the deepest level it applies to. Statements that fail move down to a nested `AGENTS.md` or a code comment, shrink, or go.
+Reviews every statement in the repo's `AGENTS.md` files and removes the ones that don't earn their place. Each statement must be accurate, valuable (non-obvious), brief, and at the deepest level it applies to. Statements that fail move down to a nested `AGENTS.md` or a code comment, move out to the repo's docs, shrink, or go. It can also keep rules and files within size limits you choose.
 
 ### Use
 
@@ -78,7 +78,19 @@ What it does:
 - **Protects project choices:** "use `uv`, never pip" looks obvious but is a choice between real alternatives, so it is kept or put to you, never deleted in bulk.
 - **Remembers your rulings:** when you keep a statement the reviewers doubted, the ruling goes in `.claude/agents-md-cleanup.md`, so the next run doesn't ask again. If `.claude/` is git-ignored, the approval message shows the exact `.gitignore` change that lets the file be committed and shared. You can decline, and the file then stays on your machine.
 - **One approval:** a single message holds the questions and a table of every proposed edit. Nothing changes before you approve. A file you edit while it waits is skipped.
+- **One rule per bullet:** a bullet that holds several statements is split, so each statement is judged and moved on its own.
+- **Documentation moves out:** descriptions, procedures, reference material and explanations are documentation, not rules. Each goes to the best-fitting page and heading of the repo's own docs, or to a new file under the docs folder when nothing fits. A one-line pointer stays where the text was when the statement directed the agent. Every destination is shown in the approval message and nothing moves until you approve it.
+- **Measures and offers limits:** it counts words per rule and bytes per file. It warns about a rule over 80 words, a file over 8 KB and a root file over 16 KB. On the first run that finds anything over, it asks whether to adopt limits, recommending those three. Answer with other numbers or `none`, or say so in the arguments (`100 words`, `10 KB`, `20 KB root`, `no size limits`). The answer is recorded in the guidelines section as one `Size limits:` line. Later runs hold the files to it and say when a file is close to its limit.
+- **A test only if you want one:** when limits are adopted, it separately asks whether to enforce them with a test. The test is written in the repo's own test style, covers each limit at its boundary, and has an exception list for rules or files you chose to keep over. It is run alone before the commit. If it can't run, the edits are committed without it and the test file is left uncommitted for you. Declining the test is fine.
 - **Commits but never pushes:** one commit, holding only its own changes.
+
+The limits line takes one of three shapes:
+
+```
+Size limits: none.
+Size limits: 80 words per rule, 8 KB per file, 16 KB for the root; checked by tests/test_agents_md.py.
+Size limits: 80 words per rule, 8 KB per file, 16 KB for the root; not checked by a test.
+```
 
 On a partial run such as `tests/`, only moves and questions touch ancestor files (the root one, for example); their other rules are left alone.
 
