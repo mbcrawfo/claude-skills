@@ -1,6 +1,6 @@
 # Tech debt
 
-Problems that were identified and not resolved, and intentional choices known to be sub-optimal.  Each active item is fully documented in its own file, linked from the ID column.  When an item is resolved, its row is removed and its file deleted in the same PR as the fix.
+This folder records known problems that are not fixed, and intentional choices that are known to be sub-optimal. Each active item has its own file, and the ID column links to it. When a PR fixes an item, that PR removes the row and deletes the file.
 
 Next id: `TD-0010`
 
@@ -19,7 +19,7 @@ Next id: `TD-0010`
 | Column | Contents |
 |----|----|
 | ID | `TD-NNNN`, linked to the item's file in this folder |
-| Status | `Open` (nobody is working on it), `In progress`, or `Blocked` (waiting on something named in the item file) |
-| Added | Date the item was recorded, `YYYY-MM-DD` |
-| Impact | `Low` (cosmetic or local), `Medium` (slows work or risks defects), `High` (risks correctness, security or data) |
+| Status | `Open` (nobody works on it), `In progress`, or `Blocked` (it waits for something that the item file names) |
+| Added | The date when the item was added, `YYYY-MM-DD` |
+| Impact | `Low` (cosmetic or local), `Medium` (makes work slower or can cause defects), `High` (can cause incorrect results, security problems or data loss) |
 | Description | One line: what is wrong |

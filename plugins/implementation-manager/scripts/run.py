@@ -6,7 +6,13 @@ The run folder is always the first argument after the subcommand:
   init <dir> --repo O/R --base B --method merge|squash|rebase [--wip N] [--queue serial|parallel]
        [--integration BRANCH --final-merge manager|owner --feature-review yes|no]   (not with rebase)
   unit <dir> <name> [--prereq U ...] [--after U ...|none] [--branch B] [--worktree P] [--specs] [--title T]
-       [--integration]              the run's one integration unit (needs init --integration)
+       [--integration]              the run's one integration unit (needs init --integration): its branch is the
+                                    integration branch; no --prereq or --after, and no unit may name it in either;
+                                    open-ready opens its gate at once, outside the WIP limit
+                                    names use letters, digits, '-' and '_', starting with a letter or digit;
+                                    each --prereq and --after unit must already exist; --prereq gates the start,
+                                    --after only the merge; an --after unit that has neither merged nor stopped,
+                                    given to the slot holder, frees the slot
   set <dir> wip <N|none> | set <dir> queue <serial|parallel>
                                     in parallel mode, print each request still queued: queued <unit> <sha>
   set <dir> final-merge <manager|owner> | set <dir> feature-review <yes|no>
@@ -15,20 +21,28 @@ The run folder is always the first argument after the subcommand:
   open-ready <dir>                  open every gate that may open; print one unit name per line, then the
                                     final gate's gates.log line when it opens (integration mode)
   stop <dir> <unit> <reason...>     the unit never opens, gets go or queues again, and gives up the slot
-  go <dir> <unit> <sha>             serial mode: take the push slot, or refuse while another unit holds it
+  go <dir> <unit> <sha>             serial mode: take the push slot, or refuse while another unit holds it, while
+                                    the slot is free and another unit heads the queue, or while an --after unit
+                                    is unmerged and not stopped; refuses a held unit in either mode
   redo <dir> <unit> <sha> <reasons...>
-  hold <dir> <unit> <reason...>     hold the unit's merge: no READY or REMIND, no go, not first in the queue
-  release <dir> <unit>              lift the hold
-  queue <dir> <unit> <sha>          line a covered request up behind the slot holder
+  hold <dir> <unit> <reason...>     hold the unit's merge: no READY or REMIND, no go, not first in the queue;
+                                    frees the slot, drops the queue entry, answers waiting requests redo <sha> held;
+                                    no STALLED unless the reason starts with "answer sent:"
+  release <dir> <unit>              lift the hold, restart the stall clock, report a ready PR READY again
+  queue <dir> <unit> <sha>          line a covered request up behind the slot holder; refuses a held unit, and
+                                    the holder unless an --after unit blocks it (it then gives up the slot)
   synced <dir> <unit> <sha>         the integration unit pushed its approved go to the integration branch
   yield <dir> <unit> <reason...>    the slot holder gives the slot up
-  merged <dir> <unit> <pr> [--more] record a merge; print the gates that may open now, one per line
-  closed <dir> <unit> <pr>
+  merged <dir> <unit> <pr> [--more] record a merge and free the slot; print the gates that may open now, one per
+                                    line; --more keeps the unit open for its next part
+  closed <dir> <unit> <pr>          record a PR closed without merging and free the slot
   status <dir>                      the tracker and everything waiting on the manager
   clear-bad <dir>                   forget the bad request lines status lists, once they are handled
-  check <dir> <unit>                one readiness check of the unit's PR, printed as one line; in integration
-                                    mode READY becomes NOT-READY ... blocked: <reason> (also for a PR on the
-                                    wrong base) or FINAL-READY
+  check <dir> <unit>                one readiness check of the unit's PR, printed as one line: READY <pr> <sha>
+                                    (two equal clean polls 30 s apart), NOT-READY <pr> head=<sha7><reasons>,
+                                    NOT-READY - no open PR from <branch>, MERGED <pr>, CLOSED <pr> or ERROR;
+                                    in integration mode READY becomes NOT-READY ... blocked: <reason>
+                                    (also for a PR on the wrong base) or FINAL-READY
   wait <dir> [--stall-hours N]      block until one event, print it as one line, exit 0 (also on error)
 
 Exit codes: 0 on success, 1 for a refused command (one line on stderr), 2 for a usage error.

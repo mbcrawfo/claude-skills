@@ -465,7 +465,9 @@ class SkillMdTest(unittest.TestCase):
         self.assertEqual(entry["description"], plugin["description"])
         self.assertIn("agents-md-cleanup", plugin["description"])
         readme = (repo / "README.md").read_text(encoding="utf-8")
-        line = next(x for x in readme.splitlines() if x.startswith("- [`maintenance`]"))
+        lines = readme.splitlines()
+        heading = next(i for i, x in enumerate(lines) if x.startswith("### [`maintenance`]"))
+        line = next(x for x in lines[heading + 1 :] if x.strip())
         for skill in ("superpowers-cleanup", "agents-md-cleanup"):
             self.assertIn(f"`{skill}`", line)
         self.assertRegex(plugin["version"], r"^\d+\.\d+\.\d+$")

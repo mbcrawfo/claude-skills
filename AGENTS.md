@@ -1,6 +1,18 @@
 # claude-skills
 
-This repo is a Claude Code plugin marketplace (`mbcrawfo-skills`). See README.md for layout.
+This repo is a Claude Code plugin marketplace (`mbcrawfo-skills`). Layout:
+
+```
+.claude-plugin/marketplace.json   # marketplace manifest: lists every plugin
+plugins/<plugin-name>/
+  .claude-plugin/plugin.json      # plugin manifest
+  skills/<skill-name>/SKILL.md    # one folder per skill
+docs/superpowers/specs/           # design docs
+docs/deferred/                    # planned work not delivered as planned
+docs/tech-debt/                   # known problems and sub-optimal choices
+```
+
+A plugin can hold several related skills. Plugins can also ship `commands/`, `agents/` and `hooks/` alongside `skills/`, and an `ARCHITECTURE.md` with internals, tests and evals for contributors.
 
 ## Core rules
 
@@ -12,6 +24,17 @@ These apply to all development in this project.
 ## Agent instructions
 
 - AGENTS.md is the standard instruction file for this repo. Put all agent guidance here. Do not create CLAUDE.md, GEMINI.md or other tool-specific instruction files.
+
+## Documentation
+
+- READMEs are for people who install and use the plugins. Write them in Simplified Technical English (ASD-STE100):
+  - Keep procedural sentences to 20 words or fewer and descriptive sentences to 25 or fewer.
+  - Use active voice. Write instructions in the imperative, one per sentence.
+  - Keep paragraphs to six sentences or fewer, one topic each.
+  - Do not use "-ing" verb forms. Keep articles. Use one term for one thing.
+  - Use the STE approved word where you know it ("use", not "utilize"). Keep technical names as they are.
+- READMEs hold no changelogs and no script internals. Document internals in the script itself (docstring, comments, `--help`), or in the plugin's `ARCHITECTURE.md` when the script cannot hold them.
+- A plugin's tests and evals instructions go in its `ARCHITECTURE.md`.
 
 ## Pushing
 
@@ -26,7 +49,7 @@ These apply to all development in this project.
 - Skills go in `plugins/<plugin>/skills/<skill-name>/SKILL.md`. The frontmatter `name` matches the folder name, and `description` says when Claude should use the skill.
 - Plugin and skill names are kebab-case.
 - Bump the plugin's `version` in `plugin.json` when changing its skills, so installed copies update.
-- Run `claude plugin validate .` and `claude plugin validate plugins/<name>` before committing.
+- Run `claude plugin validate .` and `claude plugin validate plugins/<name>` before committing. To try a plugin end to end, add your local checkout as a marketplace: `/plugin marketplace add ./path/to/claude-skills`.
 - Plugin scripts are Python 3.9+, standard library only, invoked through `python3`.
 - Tests go in `plugins/<name>/tests/` and run with `python3 -m unittest discover -s plugins/<name>/tests`.
 - Python is linted and formatted with ruff, configured in the root `pyproject.toml`, whose `required-version` pins the ruff release (keep it in step with `version:` in the `ruff` job in `.github/workflows/ci.yml`). Run `ruff check .` and `ruff format .` before committing Python.

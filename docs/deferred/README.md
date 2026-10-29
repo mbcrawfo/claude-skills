@@ -1,6 +1,6 @@
 # Deferred work
 
-Planned work that has not been delivered as planned.  Each active item is fully documented in its own file, linked from the ID column.  When an item is resolved, its row is removed and its file deleted in the same PR as the fix.
+This folder records planned work that a PR did not deliver as planned. Each active item has its own file, and the ID column links to it. When a PR completes an item, that PR removes the row and deletes the file.
 
 Next id: `D-0004`
 
@@ -17,7 +17,7 @@ Next id: `D-0004`
 | Column | Contents |
 |----|----|
 | ID | `D-NNNN`, linked to the item's file in this folder |
-| Status | `Open` (nobody is working on it), `In progress`, or `Blocked` (waiting on something named in the item file) |
-| Added | Date the item was recorded, `YYYY-MM-DD` |
+| Status | `Open` (nobody works on it), `In progress`, or `Blocked` (it waits for something that the item file names) |
+| Added | The date when the item was added, `YYYY-MM-DD` |
 | Planned in | Link to the spec, plan or doc that called for the work |
 | Description | One line: what is missing |
