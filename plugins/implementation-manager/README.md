@@ -33,7 +33,7 @@ During the run:
 - Each child does the work for its unit and reviews it with `/branch-review:review`.
 - A child must get approval from the manager before each push. The manager gives approval only when a clean review covers the commit.
 - By default, only one child at a time can push to its PR. The other children wait in a queue. Tell the manager if you want parallel pushes.
-- When the manager or a child needs a decision from you, the manager puts an item in a queue. An item is a question, an escalated review finding or a command for you to run. The manager shows you one item at a time, and the items of one child come together. To answer an item later, tell the manager to park it. When you are ready, tell the manager to go back to it. The tracker shows the parked items.
+- When the manager or a child needs a decision from you, the manager puts an item in a queue. An item is a question, an escalated review finding, a command for you to run, or a decision that the manager asks you to make. The manager shows you one item at a time, and the items of one child come together. To answer an item later, tell the manager to park it. When you are ready, tell the manager to go back to it. The tracker shows the parked items.
 - If an item blocks the merge, the PR of that unit does not merge until you answer. An escalated review finding always blocks the merge.
 - At the end, the manager offers to archive the child sessions.
 

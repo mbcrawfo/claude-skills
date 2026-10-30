@@ -41,7 +41,7 @@ python3 "$runpy" open "$ws/run" u1
 python3 "$runpy" open "$ws/run" u2
 
 cat >bodies/u1-q1.md <<'BODY'
-Escalated finding R1-F1: the retry in the order client resends a failed request three times with no backoff.
+The retry in the order client resends a failed request three times with no backoff.
 Keep the retry or drop it?
 The child recommends keeping it. blocks merge: yes
 BODY

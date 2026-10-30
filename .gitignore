@@ -1,4 +1,5 @@
 plugins/*/evals/results/
+plugins/evals/results/
 __pycache__/
 evals/results/
 CLAUDE.local.md
