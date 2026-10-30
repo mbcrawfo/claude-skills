@@ -107,7 +107,7 @@ Item bodies (the full text shown to the owner: question, fix options quoted word
 | `item drop <id> <reason>` | Drops an open item. |
 | `item list` | One line per open item: current, queued in order, parked, then answered but not forwarded. |
 
-`forward due <unit> <ids>` is printed, and listed by `status` under "needs the manager" until `item forwarded` runs, when a unit has `answered` items and no item of it is current or queued (it may have parked ones). That covers the owner moving to another unit, the queue emptying, the rest of the unit being parked, and an out-of-order answer to a unit the owner is not on, which is due at once.
+`forward due <unit> <ids>` is printed, and listed by `status` under "needs the manager" until `item forwarded` runs, when a unit has `answered` items and no item of it is current or queued (it may have parked ones). That covers the owner moving to another unit, the queue emptying, the rest of the unit being parked, and an out-of-order answer to a unit the owner is not on, which is due at once if that unit has nothing else queued. Run-wide items are always `decision`s, so nothing run-wide is ever forwarded.
 
 `stop` drops the unit's open and answered items and prints `dropped <id>` per item. `status` adds an `- items:` line (current id and summary, count by unit) and a `- parked:` line.
 
