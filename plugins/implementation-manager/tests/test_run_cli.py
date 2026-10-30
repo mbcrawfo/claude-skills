@@ -1199,6 +1199,32 @@ class ItemCliTests(CliTestCase):
         self.assertEqual(self.ok("stop", str(self.dir), "a", "cancelled"), "dropped a-1\ndropped a-2\n")
         self.assertEqual(self.state()["items"]["current"], "b-1")
 
+    def test_a_new_worktree_drops_the_old_sessions_items(self):
+        self.ok("unit", str(self.dir), "a", "--worktree", "/w/a1")
+        self.item_add("a", "Q1")
+        self.item_add("a", "Q2")
+        self.answer("a-1")  # a-1 answered, a-2 current
+        self.item_add("b", "Q1")
+        self.assertEqual(self.ok("unit", str(self.dir), "a", "--worktree", "/w/a1/"), "")  # same path
+        self.assertEqual(self.ok("unit", str(self.dir), "a", "--worktree", "/w/a2"), "dropped a-1\ndropped a-2\n")
+        self.assertEqual(self.state()["items"]["list"][0]["reason"], "new session")
+        self.item_add("a", "Q1")  # the new session's Q1
+        lines = self.ok("item", "list", str(self.dir)).splitlines()
+        self.assertEqual([line.split(" ", 2)[:2] for line in lines], [["current", "b-1"], ["queued", "a-3"]])
+        self.assertNotIn("forward due", self.ok("status", str(self.dir)))
+
+    def test_forwarded_refuses_a_unit_that_is_not_forward_due(self):
+        self.item_add("a", "Q1")
+        self.item_add("a", "Q2")
+        self.answer("a-1")
+        before = self.read("run.json")
+        result = self.run_cli("item", "forwarded", str(self.dir), "a")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(
+            result.stderr, "run.py item forwarded: unit 'a' is not forward due: it still has a current or queued item\n"
+        )
+        self.assertEqual(self.read("run.json"), before)
+
     def test_stop_without_items_prints_nothing(self):
         self.assertEqual(self.ok("stop", str(self.dir), "a", "cancelled"), "")
 

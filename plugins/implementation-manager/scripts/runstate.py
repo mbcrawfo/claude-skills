@@ -288,7 +288,8 @@ def add_unit(
 
     `after` lists the units that must merge before this one does; [] clears it. A unit may not wait on itself
     through its prerequisites and `after` units together. `title` is a one-line display label for status.
-    Recording a different worktree on a unit that has one bumps its `generation`, the count of its child sessions.
+    Recording a different worktree (compared normalized) on a unit that has one bumps its `generation`, the count
+    of its child sessions.
     `integration=True` makes it the run's one integration unit: it needs the integration mode, branches from the
     base so it has no prerequisites or `after` units, and no other unit may wait on it. Its branch defaults to
     the integration branch and may be nothing else.
@@ -327,7 +328,11 @@ def add_unit(
         }
         if _block(state):
             unit["integration"] = False
-    if worktree is not None and unit["worktree"] is not None and worktree != unit["worktree"]:
+    if (
+        worktree is not None
+        and unit["worktree"] is not None
+        and os.path.normpath(worktree) != os.path.normpath(unit["worktree"])
+    ):
         unit["generation"] = unit.get("generation", 1) + 1  # a new worktree is a new child session
     for key, value in (
         ("prereqs", prereqs),

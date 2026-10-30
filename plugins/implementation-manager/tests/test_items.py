@@ -14,6 +14,7 @@ from items import (
     current_text,
     done_item,
     drop_item,
+    drop_old_generation,
     drop_unit_items,
     forward_due,
     header,
@@ -292,6 +293,21 @@ class DoneAndForwardTests(ItemsTestCase):
         self.add("a", "Q1")
         self.assertRefused(r"unit 'a' has no answered items", mark_forwarded, self.state, "a")
 
+    def test_mark_forwarded_refuses_a_unit_that_is_not_forward_due(self):
+        self.add("a", "Q1")
+        self.add("a", "Q2")
+        done_item(self.dir, self.state, "a-1", "x")  # a-2 current, so no forward due for a
+        self.assertEqual(forward_due(self.state), [])
+        self.assertRefused(
+            r"unit 'a' is not forward due: it still has a current or queued item", mark_forwarded, self.state, "a"
+        )
+        self.add("a", "Q3")
+        park_item(self.state, "a-2", "later", [], now=50)  # a-3 current
+        self.assertRefused(r"unit 'a' is not forward due", mark_forwarded, self.state, "a")
+        park_item(self.state, "a-3", "later", [], now=51)  # only parked items left: forward due
+        self.assertEqual(forward_due(self.state), ["forward due a a-1"])
+        self.assertEqual(mark_forwarded(self.state, "a"), "forwarded a-1")
+
     def test_current_text(self):
         self.assertEqual(current_text(self.dir, self.state), "none")
         self.add("a", "Q1")
@@ -319,6 +335,45 @@ class DropTests(ItemsTestCase):
         self.add("a", "Q4")
         self.assertEqual(drop_unit_items(self.state, "a", "unit stopped"), ["dropped a-3", "dropped a-4"])
         self.assertEqual(self.item("a-1")["status"], "forwarded")
+
+    def test_drop_old_generation_drops_open_items_of_earlier_sessions(self):
+        add_unit(self.state, "a", prereqs=None, branch=None, worktree="/w/a1", specs=None)
+        self.add("a", "Q1")
+        done_item(self.dir, self.state, "a-1", "x")
+        mark_forwarded(self.state, "a")  # a-1 forwarded
+        self.add("a", "Q2")
+        done_item(self.dir, self.state, "a-2", "x")  # a-2 answered
+        self.add("a", "Q3")
+        self.add("a", "Q4")
+        self.add("b", "Q1")
+        park_item(self.state, "a-3", "later", [], now=50)  # a-3 parked, a-4 current
+        add_unit(self.state, "a", prereqs=None, branch=None, worktree="/w/a2", specs=None)
+        self.add("a", "Q1")  # a-5, generation 2, queued behind a-4
+        out = drop_old_generation(self.state, "a", "new session")
+        self.assertEqual(out, ["dropped a-2", "dropped a-3", "dropped a-4"])
+        self.assertEqual(self.item("a-4")["reason"], "new session")
+        self.assertEqual(self.item("a-1")["status"], "forwarded")
+        self.assertEqual(self.item("a-5")["status"], "current")
+        self.assertEqual(forward_due(self.state), [])
+        self.assertEqual(drop_old_generation(self.state, "a", "new session"), [])
+
+    def test_drop_old_generation_drops_answers_not_yet_forwarded(self):
+        add_unit(self.state, "a", prereqs=None, branch=None, worktree="/w/a1", specs=None)
+        self.add("a", "Q1")
+        done_item(self.dir, self.state, "a-1", "x")
+        add_unit(self.state, "a", prereqs=None, branch=None, worktree="/w/a2", specs=None)
+        self.add("a", "Q1")  # a-2, generation 2
+        self.assertEqual(drop_old_generation(self.state, "a", "new session"), ["dropped a-1"])
+        done_item(self.dir, self.state, "a-2", "y")
+        self.assertEqual(forward_due(self.state), ["forward due a a-2"])
+
+    def test_drop_old_generation_leaves_other_units_alone(self):
+        self.add("b", "Q1")
+        add_unit(self.state, "a", prereqs=None, branch=None, worktree="/w/a1", specs=None)
+        self.add("a", "Q1")
+        add_unit(self.state, "a", prereqs=None, branch=None, worktree="/w/a2", specs=None)
+        self.assertEqual(drop_old_generation(self.state, "a", "new session"), ["dropped a-1"])
+        self.assertEqual(self.item("b-1")["status"], "current")
 
     def test_drop_item(self):
         self.add("a", "Q1")
@@ -456,6 +511,20 @@ class ParkTests(ItemsTestCase):
         self.add("b", "Q1")
         done_item(self.dir, self.state, "a-1", "yes")
         self.assertIn("forward due a a-1", park_item(self.state, "a-2", "later", [], now=60))
+
+    def test_parking_the_resume_item_clears_resume(self):
+        self.add("b", "Q1")  # current, sticky b
+        self.add("c", "Q1")  # c-1, older than b-2
+        self.add("b", "Q2")
+        done_item(self.dir, self.state, "b-1", "x")  # b-2 current: the owner stays on b
+        self.add("a", "Q1")
+        park_item(self.state, "a-1", "later", [], now=50)
+        unpark_item(self.state, "a-1", to_queue=False)  # b-2 displaced: the resume item
+        self.assertEqual(self.state["items"]["resume"], "b-2")
+        park_item(self.state, "b-2", "later", [], now=51)
+        self.assertIsNone(self.state["items"]["resume"])
+        unpark_item(self.state, "b-2", to_queue=True)
+        self.assertEqual(self.order(), ["c-1", "b-2"])  # the oldest unit first; b-2 does not jump it
 
     def test_unpark_refuses_an_item_that_is_not_parked(self):
         self.add("a", "Q1")

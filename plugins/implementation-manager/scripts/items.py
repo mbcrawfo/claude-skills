@@ -16,6 +16,7 @@ import re
 from runstate import RunError
 
 KINDS = ("question", "finding", "command", "decision")
+OPEN = ("queued", "current", "parked", "answered")  # the statuses a drop takes
 REF_RE = r"Q[1-9][0-9]*"
 ITEMS_DIR = "items"
 RUN_PREFIX = "run"  # the id prefix and display name of run-wide items, whose `unit` is ""
@@ -242,6 +243,8 @@ def park_item(state: dict, item_id: str, note: str, with_ids: list[str], now: fl
                 changed = True
     if items["current"] in taken_ids:
         items["current"] = None
+    if items["resume"] in taken_ids:
+        items["resume"] = None  # unparked later, it rejoins the queue in arrival order
     _promote(state)
     return "\n".join([*(f"parked {i['id']}" for i in taken), _current_header(state), *forward_due(state)])
 
@@ -274,32 +277,38 @@ def unpark_item(state: dict, item_id: str, *, to_queue: bool) -> str:
     return header(item)
 
 
-def forward_due(state: dict) -> list[str]:
-    """`forward due <unit> <id> ...` for each unit with answers to send and nothing current or queued.
-
-    Units come in the order of their earliest answer. The manager sends the answers, then calls `mark_forwarded`.
-    """
+def _forward_groups(state: dict) -> dict[str, list[dict]]:
+    """The answered items of each unit with nothing current or queued, by unit in the order of its earliest answer."""
     items = state["items"]["list"]
     busy = {i["unit"] for i in items if i["status"] in ("current", "queued")}
     answered: dict[str, list[dict]] = {}
     for item in sorted((i for i in items if i["status"] == "answered"), key=lambda i: i["seq"]):
         answered.setdefault(item["unit"], []).append(item)
-    return [
-        f"forward due {unit} {' '.join(i['id'] for i in group)}" for unit, group in answered.items() if unit not in busy
-    ]
+    return {unit: group for unit, group in answered.items() if unit not in busy}
+
+
+def forward_due(state: dict) -> list[str]:
+    """`forward due <unit> <id> ...` for each unit with answers to send and nothing current or queued.
+
+    Units come in the order of their earliest answer. The manager sends the answers, then calls `mark_forwarded`.
+    """
+    return [f"forward due {unit} {' '.join(i['id'] for i in group)}" for unit, group in _forward_groups(state).items()]
 
 
 def mark_forwarded(state: dict, unit: str) -> str:
-    """Mark the unit's answered items as forwarded; returns `forwarded <id> ...`."""
-    answered = sorted(
-        (i for i in state["items"]["list"] if i["unit"] == unit and i["status"] == "answered"), key=lambda i: i["seq"]
-    )
-    if not answered:
-        raise RunError(f"unit {_label(unit)!r} has no answered items")
-    for item in answered:
+    """Mark the unit's answered items as forwarded; returns `forwarded <id> ...`.
+
+    Refused unless `forward_due` lists the unit: its answers go out together, once the owner has left the unit.
+    """
+    group = _forward_groups(state).get(unit)
+    if group is None:
+        if not any(i["unit"] == unit and i["status"] == "answered" for i in state["items"]["list"]):
+            raise RunError(f"unit {_label(unit)!r} has no answered items")
+        raise RunError(f"unit {_label(unit)!r} is not forward due: it still has a current or queued item")
+    for item in group:
         item["status"] = "forwarded"
     _promote(state)
-    return "forwarded " + " ".join(i["id"] for i in answered)
+    return "forwarded " + " ".join(i["id"] for i in group)
 
 
 def done_item(run_dir: Path, state: dict, item_id: str, answer: str | None) -> str:
@@ -346,15 +355,28 @@ def _drop(state: dict, item: dict, reason: str) -> None:
         state["items"]["resume"] = None
 
 
-def drop_unit_items(state: dict, unit: str, reason: str) -> list[str]:
-    """Drop the unit's queued, current, parked and answered items; returns `dropped <id>` lines."""
-    doomed = [
-        i
-        for i in state["items"]["list"]
-        if i["unit"] == unit and i["status"] in ("queued", "current", "parked", "answered")
-    ]
+def _drop_open(state: dict, doomed: list[dict], reason: str) -> list[str]:
     _release(state, [i["id"] for i in doomed])
     for item in doomed:
         _drop(state, item, reason)
     _promote(state)
     return [f"dropped {i['id']}" for i in doomed]
+
+
+def drop_unit_items(state: dict, unit: str, reason: str) -> list[str]:
+    """Drop the unit's queued, current, parked and answered items; returns `dropped <id>` lines."""
+    doomed = [i for i in state["items"]["list"] if i["unit"] == unit and i["status"] in OPEN]
+    return _drop_open(state, doomed, reason)
+
+
+def drop_old_generation(state: dict, unit: str, reason: str) -> list[str]:
+    """Drop the unit's queued, current, parked and answered items from its earlier sessions; returns `dropped <id>`.
+
+    A new child session (a new generation) never sees the old session's questions, and its refs start again at Q1,
+    so an old answer forwarded to it would be read against the wrong question.
+    """
+    generation = state["units"][unit].get("generation", 1)
+    doomed = [
+        i for i in state["items"]["list"] if i["unit"] == unit and i["status"] in OPEN and i["generation"] != generation
+    ]
+    return _drop_open(state, doomed, reason)

@@ -12,7 +12,9 @@ The run folder is always the first argument after the subcommand:
                                     names use letters, digits, '-' and '_', starting with a letter or digit;
                                     each --prereq and --after unit must already exist; --prereq gates the start,
                                     --after only the merge; an --after unit that has neither merged nor stopped,
-                                    given to the slot holder, frees the slot
+                                    given to the slot holder, frees the slot; a --worktree other than the
+                                    stored one (compared normalized) starts a new session: the unit's open
+                                    owner items from earlier sessions are dropped (print dropped <id> per item)
   set <dir> wip <N|none> | set <dir> queue <serial|parallel>
                                     in parallel mode, print each request still queued: queued <unit> <sha>
   set <dir> final-merge <manager|owner> | set <dir> feature-review <yes|no>
@@ -50,7 +52,8 @@ The run folder is always the first argument after the subcommand:
                                     parked <id>, the next current header (or none), then forward due lines
   item unpark <dir> <id> [--queue]  make a parked item current (the displaced one is resumed next); --queue
                                     puts it back in the queue instead
-  item forwarded <dir> <unit>       the unit's answers are sent: mark its answered items forwarded
+  item forwarded <dir> <unit>       the unit's answers are sent: mark its answered items forwarded; refused
+                                    unless a forward due line lists the unit
   item drop <dir> <id> <reason...>  drop an item that is no longer needed
   item list <dir>                   current, queued (in order), parked and answered items, one line each, or none
   status <dir>                      the tracker and everything waiting on the manager
@@ -603,6 +606,7 @@ def _run(args: argparse.Namespace) -> str | None:
             if args.after and "none" in args.after and len(args.after) > 1:
                 raise RunError("--after none clears the list; give it alone")
             after = [] if args.after == ["none"] else args.after
+            generation = state["units"].get(args.name, {}).get("generation")
             runstate.add_unit(
                 state,
                 args.name,
@@ -614,6 +618,9 @@ def _run(args: argparse.Namespace) -> str | None:
                 title=args.title,
                 integration=args.integration,
             )
+            if generation is not None and state["units"][args.name]["generation"] != generation:
+                # A new child session: the old session's open items no longer apply.
+                return "\n".join(items.drop_old_generation(state, args.name, "new session")) or None
         elif command == "set":
             runstate.set_option(state, args.key, args.value)
             if args.key in ("wip", "queue") and state["queue_mode"] == "parallel":

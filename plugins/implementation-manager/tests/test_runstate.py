@@ -231,6 +231,15 @@ class UnitTests(RunStateTestCase):
         add_unit(state, "a", prereqs=None, branch=None, worktree="/w2", specs=None)
         self.assertEqual(state["units"]["a"]["generation"], 2)
 
+    def test_worktree_paths_are_compared_normalized(self):
+        state = self.init()
+        add_unit(state, "a", prereqs=None, branch=None, worktree="/w/a", specs=None)
+        for same in ("/w/a/", "/w//a", "/w/./a"):
+            add_unit(state, "a", prereqs=None, branch=None, worktree=same, specs=None)
+            self.assertEqual(state["units"]["a"]["generation"], 1, same)
+        add_unit(state, "a", prereqs=None, branch=None, worktree="/w/a2/", specs=None)
+        self.assertEqual(state["units"]["a"]["generation"], 2)
+
     def test_new_unit_with_a_worktree_starts_at_generation_one(self):
         state = self.init()
         add_unit(state, "a", prereqs=None, branch=None, worktree="/w1", specs=None)
