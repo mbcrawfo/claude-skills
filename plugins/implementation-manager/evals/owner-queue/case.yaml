@@ -1,0 +1,9 @@
+schema_version: "1.1"
+name: owner-queue
+# Only the manager is under test. The owner queue never calls branch-review, and
+# eval containment keeps case.yaml from loading a plugin outside this one.
+plugins: ["../..", "../../../branch-review"]
+context:
+  # Builds a run folder (run/) with three queued owner items in the run's
+  # workspace. Runs only with --scaffold.
+  scaffold_script: scaffold.sh
