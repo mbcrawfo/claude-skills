@@ -82,6 +82,12 @@ def _promote(state: dict) -> None:
         items["resume"] = None
 
 
+def _current_header(state: dict) -> str:
+    """The current item's header; `none` when nothing is current."""
+    current = state["items"]["current"]
+    return header(_find(state, current)) if current else "none"
+
+
 def current_text(run_dir: Path, state: dict) -> str:
     """The current item's header, a blank line and its body; `none` when nothing is current."""
     current = state["items"]["current"]
@@ -237,16 +243,15 @@ def park_item(state: dict, item_id: str, note: str, with_ids: list[str], now: fl
     if items["current"] in taken_ids:
         items["current"] = None
     _promote(state)
-    current = items["current"]
-    first = header(_find(state, current)) if current else "none"
-    return "\n".join([*(f"parked {i['id']}" for i in taken), first, *forward_due(state)])
+    return "\n".join([*(f"parked {i['id']}" for i in taken), _current_header(state), *forward_due(state)])
 
 
 def unpark_item(state: dict, item_id: str, *, to_queue: bool) -> str:
-    """Bring a parked item back, with everything parked with it. Returns its header, or `queued <id>` with `to_queue`.
+    """Bring a parked item back, with everything parked with it.
 
     By default it becomes the current item (and its unit the sticky one) and the item it displaces goes back to the
-    queue as the resume item. With `to_queue` it only rejoins the queue at its old place.
+    queue as the resume item; returns its header. With `to_queue` it only rejoins the queue at its old place;
+    returns `queued <id>`, or `current <header>` when nothing else was current and it is shown at once.
     """
     item = _find(state, item_id)
     if item["status"] != "parked":
@@ -265,7 +270,7 @@ def unpark_item(state: dict, item_id: str, *, to_queue: bool) -> str:
     _release(state, [item_id])
     if to_queue:
         _promote(state)
-        return f"queued {item_id}"
+        return f"current {header(item)}" if items["current"] == item_id else f"queued {item_id}"
     return header(item)
 
 
@@ -319,9 +324,7 @@ def done_item(run_dir: Path, state: dict, item_id: str, answer: str | None) -> s
         items["resume"] = None
     _release(state, [item_id])
     _promote(state)
-    current = items["current"]
-    first = header(_find(state, current)) if current else "none"
-    return "\n".join([first, *forward_due(state)])
+    return "\n".join([_current_header(state), *forward_due(state)])
 
 
 def drop_item(state: dict, item_id: str, reason: str) -> None:

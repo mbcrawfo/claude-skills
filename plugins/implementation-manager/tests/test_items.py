@@ -390,6 +390,13 @@ class ParkTests(ItemsTestCase):
         self.assertEqual(park_item(self.state, "a-1", "later", [], now=5), "parked a-1\nnone")
         self.assertIsNone(self.state["items"]["current"])
 
+    def test_unpark_to_queue_with_nothing_current_makes_it_current(self):
+        self.add("a", "Q1")
+        park_item(self.state, "a-1", "later", [], now=50)
+        self.assertIsNone(self.state["items"]["current"])
+        self.assertEqual(unpark_item(self.state, "a-1", to_queue=True), f"current {header(self.item('a-1'))}")
+        self.assertEqual(self.state["items"]["current"], "a-1")
+
     def test_unpark_resumes_displaced_item_after_unit(self):
         self.add("a", "Q1")
         self.add("a", "Q2", depends=["Q1"])

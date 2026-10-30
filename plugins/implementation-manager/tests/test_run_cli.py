@@ -333,8 +333,9 @@ class StatusTests(CliTestCase):
         self.assertEqual(lines[3], "- merged: c #4")
         self.assertEqual(lines[4], "- open: a working, d working")
         self.assertEqual(lines[5], "- gated: b on a")
-        self.assertEqual(lines[6], "- needs the manager:")
-        self.assertEqual(lines[7:], ["  - push approved for a 1111111, not seen yet"])
+        self.assertEqual(lines[6], "- items: none")
+        self.assertEqual(lines[7], "- needs the manager:")
+        self.assertEqual(lines[8:], ["  - push approved for a 1111111, not seen yet"])
 
     def test_status_shows_merges_after(self):
         self.init()
@@ -431,6 +432,7 @@ class StatusTests(CliTestCase):
                 "- merged: none",
                 "- open: a working",
                 "- gated: none",
+                "- items: none",
                 "- needs the manager: nothing",
             ],
         )
@@ -725,7 +727,7 @@ class IntegrationCliTests(CliTestCase):
         lines = self.status()
         gated = next(i for i, line in enumerate(lines) if line.startswith("- gated:"))
         self.assertEqual(
-            lines[gated + 1], "- integration: integration/x into main · final merge: owner · feature review: no"
+            lines[gated + 2], "- integration: integration/x into main · final merge: owner · feature review: no"
         )
 
     def test_a_default_run_has_no_integration_line(self):
@@ -1071,6 +1073,195 @@ class IntegrationCliTests(CliTestCase):
         self.fake_gh({"pr_list": [], "graphql": None})
         self.init_integration("owner")
         self.assertEqual(self.ok("check", str(self.dir), "int"), "NOT-READY - no open PR from integration/x\n")
+
+
+class ItemCliTests(CliTestCase):
+    def setUp(self):
+        super().setUp()
+        self.init()
+        self.ok("unit", str(self.dir), "a")
+        self.ok("unit", str(self.dir), "b")
+
+    def body_file(self, text, name="body.md"):
+        path = self.tmp / name
+        path.write_text(text, encoding="utf-8")
+        return str(path)
+
+    def item_add(self, unit, ref, *extra):
+        path = self.body_file(f"text of {unit} {ref}", f"body-{unit}-{ref}.md")
+        return self.ok(
+            "item",
+            "add",
+            str(self.dir),
+            unit,
+            "--ref",
+            ref,
+            "--kind",
+            "question",
+            "--blocks",
+            "no",
+            "--summary",
+            f"{unit} {ref}",
+            "--body-file",
+            path,
+            *extra,
+        )
+
+    def answer(self, item_id, text="keep the retry"):
+        return self.ok("item", "done", str(self.dir), item_id, "--answer-file", self.body_file(text, "ans.md"))
+
+    def test_add_current_done_flow(self):
+        out = self.item_add("a", "Q1")
+        self.assertTrue(out.startswith("current a-1 (Q1) \u00b7 a \u00b7 question \u00b7 blocks merge: no"))
+        self.assertTrue(out.endswith("\n"))
+        self.assertEqual(self.item_add("b", "Q1"), "queued b-1 for b, 1 waiting\n")
+        self.assertIn("text of a Q1", self.ok("item", "current", str(self.dir)))
+        out = self.answer("a-1")
+        self.assertEqual(out.splitlines()[-1], "forward due a a-1")
+        self.assertEqual((self.dir / "items" / "a-1.answer.md").read_text(encoding="utf-8"), "keep the retry")
+
+    def test_current_with_nothing_open(self):
+        self.assertEqual(self.ok("item", "current", str(self.dir)), "none\n")
+        self.assertEqual(self.ok("item", "list", str(self.dir)), "none\n")
+
+    def test_depends_and_run_wide(self):
+        self.item_add("a", "Q1")
+        self.item_add("a", "Q2", "--depends", "Q1")
+        self.assertEqual(self.state()["items"]["list"][1]["depends"], ["a-1"])
+        path = self.body_file("pick one")
+        out = self.ok(
+            "item", "add", str(self.dir), "--run-wide", "--kind", "decision", "--blocks", "no",
+            "--summary", "which way", "--body-file", path,
+        )  # fmt: skip
+        self.assertEqual(out, "queued run-1 for run, 2 waiting\n")  # a-2 and run-1
+
+    def test_status_lists_forward_due(self):
+        self.item_add("a", "Q1")
+        self.item_add("b", "Q1")
+        self.answer("a-1")
+        status = self.ok("status", str(self.dir))
+        self.assertIn("- items: current b-1 (Q1) b Q1 \u00b7 nothing more", status)
+        self.assertIn("  - forward due a a-1", status)
+        self.assertEqual(self.ok("item", "forwarded", str(self.dir), "a"), "forwarded a-1\n")
+        self.assertNotIn("forward due", self.ok("status", str(self.dir)))
+
+    def test_status_counts_by_unit_in_queue_order(self):
+        self.item_add("a", "Q1")
+        self.item_add("b", "Q1")
+        self.item_add("a", "Q2")
+        self.item_add("b", "Q2")
+        self.ok("item", "add", str(self.dir), "--run-wide", "--kind", "decision", "--blocks", "no",
+                "--summary", "d", "--body-file", self.body_file("x"))  # fmt: skip
+        status = self.ok("status", str(self.dir))
+        self.assertIn("- items: current a-1 (Q1) a Q1 \u00b7 4 more: a \u00d71, b \u00d72, run \u00d71", status)
+
+    def test_status_with_no_items(self):
+        status = self.ok("status", str(self.dir))
+        self.assertIn("- items: none", status)
+        self.assertNotIn("- parked:", status)
+        self.assertLess(status.index("- gated:"), status.index("- items:"))
+
+    def test_status_parked_line(self):
+        self.item_add("a", "Q1")
+        self.ok("item", "park", str(self.dir), "a-1", "ask", "Sam")
+        status = self.ok("status", str(self.dir))
+        self.assertIn("- items: none", status)
+        self.assertRegex(status, r"- parked: a-1 \(Q1\) a Q1, ask Sam, since \d\d:\d\d\n")
+
+    def test_park_unpark_and_drop(self):
+        self.item_add("a", "Q1")
+        self.item_add("b", "Q1")
+        out = self.ok("item", "park", str(self.dir), "a-1", "ask", "Sam")
+        self.assertEqual(out.splitlines()[0], "parked a-1")
+        self.assertTrue(out.splitlines()[1].startswith("b-1 (Q1)"))
+        self.assertTrue(self.ok("item", "unpark", str(self.dir), "a-1").startswith("a-1 (Q1)"))
+        self.assertEqual(self.state()["items"]["resume"], "b-1")
+        self.ok("item", "drop", str(self.dir), "b-1", "no", "longer", "needed")
+        item = self.state()["items"]["list"][1]
+        self.assertEqual((item["status"], item["reason"]), ("dropped", "no longer needed"))
+
+    def test_unpark_queue(self):
+        self.item_add("a", "Q1")
+        self.ok("item", "park", str(self.dir), "a-1", "later")
+        out = self.ok("item", "unpark", str(self.dir), "a-1", "--queue")
+        self.assertTrue(out.startswith("current a-1 (Q1)"))
+
+    def test_park_with(self):
+        self.item_add("a", "Q1")
+        self.item_add("a", "Q2")
+        out = self.ok("item", "park", str(self.dir), "a-1", "ask", "Sam", "--with", "a-2")
+        self.assertEqual(out.splitlines()[:2], ["parked a-1", "parked a-2"])
+
+    def test_stop_drops_items_and_promotes(self):
+        self.item_add("a", "Q1")
+        self.item_add("a", "Q2")
+        self.item_add("b", "Q1")
+        self.assertEqual(self.ok("stop", str(self.dir), "a", "cancelled"), "dropped a-1\ndropped a-2\n")
+        self.assertEqual(self.state()["items"]["current"], "b-1")
+
+    def test_stop_without_items_prints_nothing(self):
+        self.assertEqual(self.ok("stop", str(self.dir), "a", "cancelled"), "")
+
+    def test_add_missing_body_file_changes_nothing(self):
+        before = self.read("run.json")
+        result = self.run_cli(
+            "item", "add", str(self.dir), "a", "--ref", "Q1", "--kind", "question",
+            "--blocks", "no", "--summary", "s", "--body-file", str(self.tmp / "nope.md"),
+        )  # fmt: skip
+        self.assertEqual(result.returncode, 1)
+        self.assertTrue(result.stderr.startswith("run.py item add: "), result.stderr)
+        self.assertEqual(self.read("run.json"), before)
+        self.assertFalse((self.dir / "items").exists())
+
+    def test_done_missing_answer_file_changes_nothing(self):
+        self.item_add("a", "Q1")
+        before = self.read("run.json")
+        result = self.run_cli("item", "done", str(self.dir), "a-1", "--answer-file", str(self.tmp / "nope.md"))
+        self.assertEqual(result.returncode, 1)
+        self.assertTrue(result.stderr.startswith("run.py item done: "), result.stderr)
+        self.assertEqual(self.read("run.json"), before)
+
+    def test_refusals_name_the_subcommand(self):
+        result = self.run_cli("item", "unpark", str(self.dir), "zz-9")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stderr, "run.py item unpark: unknown item 'zz-9'\n")
+
+    def test_unit_and_run_wide_are_exclusive(self):
+        common = ["--kind", "decision", "--blocks", "no", "--summary", "s", "--body-file", self.body_file("x")]
+        both = self.run_cli("item", "add", str(self.dir), "a", "--run-wide", *common)
+        neither = self.run_cli("item", "add", str(self.dir), *common)
+        for result in (both, neither):
+            self.assertEqual(result.returncode, 1)
+            self.assertTrue(result.stderr.startswith("run.py item add: "), result.stderr)
+        self.assertEqual(self.state()["items"]["list"], [])
+
+    def test_usage_errors_exit_2(self):
+        self.assertEqual(self.run_cli("item", str(self.dir)).returncode, 2)
+        self.assertEqual(self.run_cli("item").returncode, 2)
+
+    def test_list_order(self):
+        self.item_add("a", "Q1")
+        self.item_add("b", "Q1")
+        self.item_add("b", "Q2")
+        self.item_add("a", "Q2")
+        self.ok("item", "park", str(self.dir), "a-2", "ask", "Sam")
+        self.item_add("a", "Q3")
+        self.answer("a-1")  # the owner stays on unit a: a-3 current
+        lines = self.ok("item", "list", str(self.dir)).splitlines()
+        self.assertEqual([line.split(" ", 2)[0] + " " + line.split(" ", 2)[1] for line in lines],
+                         ["current a-3", "queued b-1", "queued b-2", "parked a-2", "answered a-1"])  # fmt: skip
+        self.assertRegex(lines[3], r" \u00b7 ask Sam since \d\d:\d\d$")
+        self.assertTrue(lines[4].endswith(" (not forwarded)"))
+
+    def test_old_run_json_without_items(self):
+        state = self.state()
+        del state["items"]
+        for unit in state["units"].values():
+            del unit["generation"]
+        (self.dir / "run.json").write_text(json.dumps(state), encoding="utf-8")
+        self.assertEqual(self.ok("item", "list", str(self.dir)), "none\n")
+        self.assertTrue(self.item_add("a", "Q1").startswith("current a-1"))
+        self.assertEqual(self.state()["units"]["a"]["generation"], 1)
 
 
 if __name__ == "__main__":

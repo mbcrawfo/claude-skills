@@ -52,6 +52,28 @@ When the owner answers, the manager forwards the answer and holds the unit again
 
 A WIP limit (`init --wip N` or `set wip N|none`) caps the units whose gate is open and that have not merged. Every unit is gated, so a lower limit holds back units that have not started; it never stops one that has. The manager's own `specs` unit is not counted.
 
+## Owner queue
+
+Everything a child (or the manager) needs from the owner is an *item*: a `question`, `finding`, `command` or `decision`, filed with `run.py item add`. The owner sees one item at a time, so questions that arrive in bursts from several children do not interleave. An item has an id (`<unit>-<n>`, or `run-<n>` for a run-wide item; counters never reuse an id), the child's `ref` (`Q1`, `Q2`, ... within the child's session), whether it blocks the unit's merge, a one-line summary and the refs it depends on. A run-wide item is always a `decision`, takes no `ref` and is never forwarded to a child.
+
+Records live in `run.json` under `items`: the `list`, the `current` id, the `sticky` unit, the `resume` item and the id counters. Each item's body is `items/<id>.md` in the run folder, and the owner's answer is `items/<id>.answer.md`. `run.json` is written only by the script, so only `run.py item` changes items. `load` fills in `items` and each unit's `generation` for a run that began before they existed.
+
+Statuses: `queued`, `current` (the one shown to the owner), `parked`, `answered` (the owner replied, the child has not been told), `forwarded` and `dropped`. A `decision` goes straight from the owner's answer to `forwarded`, since no child waits for it.
+
+**Ordering.** The owner stays on one unit. `queue_order` puts the items of the sticky unit (the unit of the current item) first, then the resume item, then the oldest queued item, whose unit becomes the sticky one. Whether an item blocks never changes the order. `item current` shows the head, and every command that changes the queue makes the head current when nothing is.
+
+**Parking.** `item park` sets an item aside with a one-line note, together with every queued or current item that depends on it and any `--with` item. Those are parked with it (`parked_with` names the parent, and the note reads `with <parent>`), and an item filed later that depends on a parked item is parked on arrival. `item unpark` makes the item current at once and returns what was parked with it to the queue. The item it displaces becomes the resume item, shown once the unparked unit has nothing queued. There is one resume slot: unparking a second item while a resume item is set makes the newly displaced item the resume item, and the earlier one falls back to plain arrival order. `unpark --queue` only puts the item back in the queue at its old place.
+
+**Session generations.** A child's refs are only unique within one child session. A unit's `generation` goes up when a new session takes the unit over (its worktree changes), so a later session can reuse `Q1` and `--depends` only resolves refs of the unit's current generation.
+
+**Forwarding.** When a unit has `answered` items and none of its items is current or queued, `item done`, `item park` and `status` print `forward due <unit> <ids>`. The manager sends all the unit's answers to its child in one message, so answering a burst costs one message per unit, then runs `item forwarded <unit>`. Until it does, `status` lists the line under "needs the manager". Parked items do not hold the forward back.
+
+**Stopping.** `stop` drops the unit's queued, current, parked and answered items and prints `dropped <id>` for each; the next queued item becomes current. `item drop` drops a single item and prints nothing; `item current` shows the item that takes its place.
+
+Holds are separate. A blocking item still puts its unit on `hold`, and the hold ends with `release`, as described above; items only record what is open, and `run.py item list` replaces keeping the open questions in `notes.md`.
+
+`status` adds `- items: current <id> [(<ref>)] <summary> · <N> more: <unit> ×<n>, ...` (counts in queue order, `run` for run-wide items; `· nothing more` when none is queued; `- items: none` when nothing is current) after the `- gated:` line, and `- parked: <id> [(<ref>)] <summary>, <note>, since HH:MM; ...` when something is parked.
+
 ## Merge bar
 
 The manager merges a PR when all of these hold:
@@ -87,6 +109,7 @@ run.json      # the run's state: units, gates, PRs, the slot and the queue, the 
 requests.log  # <unit> push <sha> <branch>: appended by children; <unit> syncing <sha> <branch> by the integration child
 pushes.log    # <unit> go <sha> | <unit> redo <sha> <reasons>: written only by the script
 gates.log     # <unit> open | <unit> stop <reason> | <unit> final review|no-review: written only by the script
+items/        # <id>.md: an owner item's body; <id>.answer.md: the owner's answer; written only by the script
 notes.md      # the units table, decisions, and what each merged unit left for later ones; written by the manager
 ```
 
