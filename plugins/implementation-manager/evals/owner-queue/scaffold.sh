@@ -18,10 +18,19 @@ here=$(cd "$(dirname "$0")" && pwd -P)
 runpy="$here/../../scripts/run.py"
 ws=$(pwd -P)
 
-if [ -e run ]; then
-  echo "error: run already exists in $ws; run the scaffold in an empty directory" >&2
-  exit 1
-fi
+# Isolate from the user's git configuration, signing and hooks.
+for var in GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
+  GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE GIT_PREFIX GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT; do
+  unset "$var"
+done
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_NOSYSTEM=1
+
+for existing in run u1 u2 bodies; do
+  if [ -e "$existing" ]; then
+    echo "error: $existing already exists in $ws; run the scaffold in an empty directory" >&2
+    exit 1
+  fi
+done
 
 mkdir u1 u2 bodies
 

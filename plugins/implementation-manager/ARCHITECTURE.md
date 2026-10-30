@@ -144,3 +144,13 @@ Timings: `requests.log` is checked every 5 s and PRs are polled every 60 s. Each
 ```bash
 python3 -m unittest discover -s plugins/implementation-manager/tests -v
 ```
+
+## Evals
+
+The eval cases are `push-gate`, `push-queue` and `owner-queue`, in `evals/`. Each case builds its fixture with a scaffold script. Run them from the repository root:
+
+```bash
+claude plugin eval plugins --case <case> --scaffold --allow-tools Bash Write Edit SendMessage ToolSearch --runs 1 --ablation none --json <file>
+```
+
+The target is `plugins`, not `plugins/implementation-manager`. Each case also loads `branch-review`, which this plugin depends on, and the plugin does not load without it. `claude plugin eval` refuses a case that names a plugin outside the target plugin's own folder, so the target must be the folder that holds both. Drop `--runs 1 --ablation none` for the default three runs with a no-plugin baseline. The run needs a Claude token in the environment. Results go to `plugins/evals/results/`, which git ignores. Use `--output-dir` to put them elsewhere.

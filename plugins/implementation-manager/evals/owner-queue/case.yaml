@@ -1,7 +1,7 @@
 schema_version: "1.1"
 name: owner-queue
-# Only the manager is under test. The owner queue never calls branch-review, and
-# eval containment keeps case.yaml from loading a plugin outside this one.
+# branch-review is listed because the manager plugin depends on it and does not
+# load without it. Run the eval with the target `plugins` (see ARCHITECTURE.md).
 plugins: ["../..", "../../../branch-review"]
 context:
   # Builds a run folder (run/) with three queued owner items in the run's
