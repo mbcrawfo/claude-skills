@@ -252,39 +252,56 @@ git commit -m "feat(implementation-manager): owner queue ordering, answers and f
 
 ```python
 def test_park_takes_marked_dependents_and_promotes(self):
-    self.add("a", "Q1"); self.add("a", "Q2", depends=["Q1"]); self.add("a", "Q3"); self.add("b", "Q1")
+    self.add("a", "Q1")
+    self.add("a", "Q2", depends=["Q1"])
+    self.add("a", "Q3")
+    self.add("b", "Q1")
     out = park_item(self.state, "a-1", "ask Sam", [], now=50)
     self.assertEqual(out.splitlines()[:2], ["parked a-1", "parked a-2"])
-    self.assertEqual(self.state["items"]["current"], "a-3")        # unmarked a-3 stays, sticky a
+    self.assertEqual(self.state["items"]["current"], "a-3")  # unmarked a-3 stays, sticky a
+
 
 def test_park_with_and_keep_it(self):
-    self.add("a", "Q1"); self.add("a", "Q2"); self.add("b", "Q1")
+    self.add("a", "Q1")
+    self.add("a", "Q2")
+    self.add("b", "Q1")
     park_item(self.state, "a-1", "ask Sam", ["a-2"], now=50)
     self.assertEqual(self.item("a-2")["parked_with"], "a-1")
     self.assertEqual(unpark_item(self.state, "a-2", to_queue=True), "queued a-2")
     self.assertEqual(self.state["items"]["current"], "b-1")
     self.assertEqual([i["id"] for i in queue_order(self.state)], ["a-2"])
 
+
 def test_unpark_resumes_displaced_item_after_unit(self):
-    self.add("a", "Q1"); self.add("a", "Q2", depends=["Q1"]); self.add("b", "Q1"); self.add("b", "Q2"); self.add("c", "Q1")
-    park_item(self.state, "a-1", "later", [], now=50)                 # a-2 goes too; b-1 current
+    self.add("a", "Q1")
+    self.add("a", "Q2", depends=["Q1"])
+    self.add("b", "Q1")
+    self.add("b", "Q2")
+    self.add("c", "Q1")
+    park_item(self.state, "a-1", "later", [], now=50)  # a-2 goes too; b-1 current
     unpark_item(self.state, "a-1", to_queue=False)
     self.assertEqual(self.state["items"]["current"], "a-1")
     self.assertEqual([i["id"] for i in queue_order(self.state)], ["a-2", "b-1", "b-2", "c-1"])
 
+
 def test_item_depending_on_parked_item_is_parked_on_add(self):
-    self.add("a", "Q1"); park_item(self.state, "a-1", "later", [], now=50)
+    self.add("a", "Q1")
+    park_item(self.state, "a-1", "later", [], now=50)
     self.add("a", "Q2", depends=["Q1"])
     self.assertEqual(self.item("a-2")["status"], "parked")
     unpark_item(self.state, "a-1", to_queue=False)
     self.assertEqual(self.item("a-2")["status"], "queued")
 
+
 def test_parking_rest_of_unit_makes_forward_due(self):
-    self.add("a", "Q1"); self.add("a", "Q2"); self.add("b", "Q1")
+    self.add("a", "Q1")
+    self.add("a", "Q2")
+    self.add("b", "Q1")
     done_item(self.dir, self.state, "a-1", "yes")
     self.assertIn("forward due a a-1", park_item(self.state, "a-2", "later", [], now=60))
 
-def test_park_refusals(self): ...   # parked/answered id, bad with id, two-line note
+
+def test_park_refusals(self): ...  # parked/answered id, bad with id, two-line note
 ```
 
 - [ ] **Step 2: Run to verify they fail**

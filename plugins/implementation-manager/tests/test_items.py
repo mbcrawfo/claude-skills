@@ -104,6 +104,13 @@ class AddAndOrderTests(ItemsTestCase):
         done_item(self.dir, self.state, "a-1", "x")
         self.assertEqual([self.state["items"]["current"]] + self.order(), ["c-1", "c-2", "b-1", "b-2"])
 
+    def test_queue_order_stays_on_each_unit_it_moves_to(self):
+        self.add("a", "Q1")  # current
+        self.add("b", "Q1")
+        self.add("c", "Q1")
+        self.add("b", "Q2")
+        self.assertEqual(self.order(), ["b-1", "b-2", "c-1"])
+
     def test_blocking_does_not_jump(self):
         self.add("a", "Q1")
         self.add("a", "Q2")
@@ -243,6 +250,14 @@ class DoneAndForwardTests(ItemsTestCase):
         self.assertIn("forward due b b-1", done_item(self.dir, self.state, "b-1", "yes"))
         self.assertEqual(self.state["items"]["current"], "a-1")
 
+    def test_queued_item_of_the_unit_holds_its_forward(self):
+        self.add("b", "Q1")  # current
+        self.add("a", "Q1")
+        self.add("a", "Q2")
+        done_item(self.dir, self.state, "a-1", "yes")  # out of order; a-2 still queued
+        self.assertEqual(forward_due(self.state), [])
+        self.assertIn("forward due a a-1 a-2", done_item(self.dir, self.state, "a-2", "no"))
+
     def test_forward_due_orders_units_by_earliest_answered_item(self):
         self.add("c", "Q1")
         self.add("a", "Q1")
@@ -324,7 +339,16 @@ class DropTests(ItemsTestCase):
         self.assertEqual(self.item("a-1")["status"], "dropped")
         self.assertEqual(self.item("a-1")["reason"], "unit stopped")
 
-    def test_drop_unit_items_takes_answered_and_parked_but_not_forwarded(self):
+    def test_drop_unit_items_takes_answered_items(self):
+        self.add("a", "Q1")
+        self.add("b", "Q1")
+        done_item(self.dir, self.state, "b-1", "x")  # answered, forward due
+        self.assertEqual(forward_due(self.state), ["forward due b b-1"])
+        self.assertEqual(drop_unit_items(self.state, "b", "unit stopped"), ["dropped b-1"])
+        self.assertEqual(self.item("b-1")["status"], "dropped")
+        self.assertEqual(forward_due(self.state), [])
+
+    def test_drop_unit_items_takes_parked_but_not_forwarded(self):
         self.add("a", "Q1")
         self.add("a", "Q2")
         self.add("a", "Q3")
