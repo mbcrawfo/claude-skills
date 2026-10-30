@@ -2,7 +2,7 @@
 
 This folder records known problems that are not fixed, and intentional choices that are known to be sub-optimal. Each active item has its own file, and the ID column links to it. When a PR fixes an item, that PR removes the row and deletes the file.
 
-Next id: `TD-0010`
+Next id: `TD-0011`
 
 ## Active items
 
@@ -13,6 +13,7 @@ Next id: `TD-0010`
 | [TD-0003](TD-0003-integration-final-gate-stopped-prereq.md) | Open | 2026-10-26 | Low | In integration-branch mode a unit gated on a stopped prerequisite never opens, so the final gate never opens and `status` does not say why |
 | [TD-0008](TD-0008-agents-md-cleanup-known-limits.md) | Open | 2026-10-27 | Low | agents-md-cleanup stops when `.claude` is a symlink, its project-choice check is coarse, it doesn't merge hard-linked AGENTS.md files, only SKILL.md gives a move target its resolved path, and a broken `.git` file blocks move targets below it |
 | [TD-0009](TD-0009-agents-md-cleanup-doc-destinations.md) | Open | 2026-10-28 | Low | agents-md-cleanup's doc page choice, root `references` seed, output-read test detection, over-limit re-dispatch, unchecked user splits, unrecorded over-limit files, word-count scanner edge cases, missing size tests, the uncapped `(whole)` fix, an overlapping eval statement and `_docs` cap are known gaps |
+| [TD-0010](TD-0010-implementation-manager-owner-queue-known-gaps.md) | Open | 2026-10-30 | Low | implementation-manager owner-queue known gaps: duplicated ref scope and id formatting, quiet `item drop` and `stop`, loose refusal tests, skill rules that disagree or need an extra `status`, and a thin `owner-queue` eval |
 
 ## Columns
 
