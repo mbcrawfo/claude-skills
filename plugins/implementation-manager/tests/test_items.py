@@ -18,7 +18,9 @@ from items import (
     forward_due,
     header,
     mark_forwarded,
+    park_item,
     queue_order,
+    unpark_item,
 )
 from runstate import RunError, add_unit, init_run
 
@@ -176,7 +178,7 @@ class AddAndOrderTests(ItemsTestCase):
         self.add("a", "Q1")
         self.add("a", "Q2")
         self.item("a-2").update(status="parked", parked_at=1, parked_with=None, note="later")
-        self.add("a", "Q3", depends=["Q2"])
+        self.assertEqual(self.add("a", "Q3", depends=["Q2"]), "parked a-3 with a-2")
         record = self.item("a-3")
         self.assertEqual(
             (record["status"], record["parked_with"], record["note"], record["parked_at"]),
@@ -333,6 +335,200 @@ class DropTests(ItemsTestCase):
         self.add("a", "Q2")
         self.item("a-2")["status"] = "forwarded"
         self.assertRefused(r"item a-2 is forwarded", drop_item, self.state, "a-2", "r")
+
+
+class ParkTests(ItemsTestCase):
+    def test_park_takes_marked_dependents_and_promotes(self):
+        self.add("a", "Q1")
+        self.add("a", "Q2", depends=["Q1"])
+        self.add("a", "Q3")
+        self.add("b", "Q1")
+        out = park_item(self.state, "a-1", "ask Sam", [], now=50)
+        self.assertEqual(out.splitlines()[:2], ["parked a-1", "parked a-2"])
+        self.assertEqual(self.state["items"]["current"], "a-3")  # unmarked a-3 stays, sticky a
+        self.assertEqual(out.splitlines()[2], header(self.item("a-3")))
+        self.assertEqual(
+            (self.item("a-1")["note"], self.item("a-1")["parked_at"], self.item("a-1")["parked_with"]),
+            ("ask Sam", 50, None),
+        )
+        self.assertEqual(
+            (self.item("a-2")["note"], self.item("a-2")["parked_at"], self.item("a-2")["parked_with"]),
+            ("with a-1", 50, "a-1"),
+        )
+
+    def test_park_with_and_keep_it(self):
+        self.add("a", "Q1")
+        self.add("a", "Q2")
+        self.add("b", "Q1")
+        park_item(self.state, "a-1", "ask Sam", ["a-2"], now=50)
+        self.assertEqual(self.item("a-2")["parked_with"], "a-1")
+        self.assertEqual(unpark_item(self.state, "a-2", to_queue=True), "queued a-2")
+        self.assertEqual(self.state["items"]["current"], "b-1")
+        self.assertEqual(self.order(), ["a-2"])
+        self.assertIsNone(self.item("a-2")["parked_with"])
+        self.assertIsNone(self.item("a-2")["note"])
+
+    def test_park_with_dependents_of_with_items(self):
+        self.add("a", "Q1")
+        self.add("a", "Q2")
+        self.add("a", "Q3", depends=["Q2"])
+        self.add("b", "Q1")
+        out = park_item(self.state, "a-1", "later", ["a-2"], now=5)
+        self.assertEqual(out.splitlines()[:3], ["parked a-1", "parked a-2", "parked a-3"])
+        self.assertEqual(self.item("a-3")["parked_with"], "a-1")
+        self.assertEqual(self.item("a-3")["note"], "with a-1")
+
+    def test_park_a_queued_item_keeps_the_current_one(self):
+        self.add("a", "Q1")
+        self.add("a", "Q2")
+        out = park_item(self.state, "a-2", "later", [], now=5)
+        self.assertEqual(out.splitlines(), ["parked a-2", header(self.item("a-1"))])
+        self.assertEqual(self.state["items"]["current"], "a-1")
+
+    def test_park_the_only_item_says_none(self):
+        self.add("a", "Q1")
+        self.assertEqual(park_item(self.state, "a-1", "later", [], now=5), "parked a-1\nnone")
+        self.assertIsNone(self.state["items"]["current"])
+
+    def test_unpark_resumes_displaced_item_after_unit(self):
+        self.add("a", "Q1")
+        self.add("a", "Q2", depends=["Q1"])
+        self.add("b", "Q1")
+        self.add("b", "Q2")
+        self.add("c", "Q1")
+        park_item(self.state, "a-1", "later", [], now=50)  # a-2 goes too; b-1 current
+        out = unpark_item(self.state, "a-1", to_queue=False)
+        self.assertEqual(out, header(self.item("a-1")))
+        self.assertEqual(self.state["items"]["current"], "a-1")
+        self.assertEqual(self.state["items"]["resume"], "b-1")
+        self.assertEqual(self.state["items"]["sticky"], "a")
+        self.assertEqual(self.item("b-1")["status"], "queued")
+        self.assertEqual(self.order(), ["a-2", "b-1", "b-2", "c-1"])
+
+    def test_unpark_keeps_sticky_unit_items_before_the_resume_item(self):
+        self.add("a", "Q1")
+        self.add("b", "Q1")  # older than a-2 and a-3
+        self.add("a", "Q2")
+        park_item(self.state, "a-1", "later", ["a-2"], now=50)  # b-1 current
+        self.add("a", "Q3")
+        unpark_item(self.state, "a-1", to_queue=False)
+        self.assertEqual(self.state["items"]["resume"], "b-1")
+        self.assertEqual(self.order(), ["a-2", "a-3", "b-1"])
+
+    def test_unpark_with_nothing_current(self):
+        self.add("a", "Q1")
+        park_item(self.state, "a-1", "later", [], now=50)
+        self.assertEqual(unpark_item(self.state, "a-1", to_queue=False), header(self.item("a-1")))
+        self.assertEqual(self.state["items"]["current"], "a-1")
+        self.assertIsNone(self.state["items"]["resume"])
+        self.assertIsNone(self.item("a-1")["note"])
+
+    def test_item_depending_on_parked_item_is_parked_on_add(self):
+        self.add("a", "Q1")
+        park_item(self.state, "a-1", "later", [], now=50)
+        self.add("a", "Q2", depends=["Q1"])
+        self.assertEqual(self.item("a-2")["status"], "parked")
+        unpark_item(self.state, "a-1", to_queue=False)
+        self.assertEqual(self.item("a-2")["status"], "queued")
+
+    def test_unpark_returns_a_chain(self):
+        self.add("a", "Q1")
+        self.add("b", "Q1")
+        park_item(self.state, "a-1", "later", [], now=50)
+        self.add("a", "Q2", depends=["Q1"])  # parked with a-1
+        self.add("a", "Q3", depends=["Q2"])  # parked with a-2
+        self.assertEqual(self.item("a-3")["parked_with"], "a-2")
+        unpark_item(self.state, "a-1", to_queue=False)
+        self.assertEqual([self.item(i)["status"] for i in ("a-2", "a-3")], ["queued", "queued"])
+        self.assertEqual(self.order(), ["a-2", "a-3", "b-1"])
+        self.assertEqual((self.item("a-3")["parked_with"], self.item("a-3")["note"]), (None, None))
+
+    def test_parking_rest_of_unit_makes_forward_due(self):
+        self.add("a", "Q1")
+        self.add("a", "Q2")
+        self.add("b", "Q1")
+        done_item(self.dir, self.state, "a-1", "yes")
+        self.assertIn("forward due a a-1", park_item(self.state, "a-2", "later", [], now=60))
+
+    def test_unpark_refuses_an_item_that_is_not_parked(self):
+        self.add("a", "Q1")
+        self.add("a", "Q2")
+        self.assertRefused(r"item a-1 is current", unpark_item, self.state, "a-1", to_queue=False)
+        self.assertRefused(r"item a-2 is queued", unpark_item, self.state, "a-2", to_queue=True)
+        self.assertRefused(r"unknown item 'zz-1'", unpark_item, self.state, "zz-1", to_queue=True)
+
+    def test_park_refusals(self):
+        self.add("a", "Q1")
+        self.add("a", "Q2")
+        self.add("b", "Q1")
+        self.add("c", "Q1")
+        park_item(self.state, "c-1", "later", [], now=1)
+        done_item(self.dir, self.state, "a-1", "x")  # a-1 answered; a-2 current
+        cases = [
+            (r"item a-1 is answered", ("a-1", "n", [])),
+            (r"item c-1 is parked", ("c-1", "n", [])),
+            (r"unknown item 'zz-1'", ("zz-1", "n", [])),
+            (r"item c-1 is parked", ("a-2", "n", ["c-1"])),
+            (r"item a-1 is answered", ("a-2", "n", ["a-1"])),
+            (r"unknown item 'zz-1'", ("a-2", "n", ["zz-1"])),
+            (r"with itself", ("a-2", "n", ["a-2"])),
+            (r"note", ("a-2", "", [])),
+            (r"note", ("a-2", "   ", [])),
+            (r"note", ("a-2", "two\nlines", [])),
+        ]
+        for regex, (item_id, note, with_ids) in cases:
+            with self.subTest(item_id=item_id, note=note, with_ids=with_ids):
+                self.assertRefused(regex, park_item, self.state, item_id, note, with_ids, now=9)
+
+
+class ClosingParkedItemsTests(ItemsTestCase):
+    def parked_pair(self):
+        self.add("a", "Q1")
+        self.add("a", "Q2", depends=["Q1"])
+        self.add("a", "Q3", depends=["Q2"])
+        self.add("b", "Q1")
+        park_item(self.state, "a-1", "later", [], now=50)  # a-2 and a-3 parked with a-1; b-1 current
+
+    def assertReturned(self):
+        for item_id in ("a-2", "a-3"):
+            record = self.item(item_id)
+            self.assertEqual((record["status"], record["parked_with"], record["note"]), ("queued", None, None))
+
+    def test_done_on_a_parked_item_returns_its_dependents(self):
+        self.parked_pair()
+        done_item(self.dir, self.state, "a-1", "x")
+        self.assertReturned()
+
+    def test_drop_on_a_parked_item_returns_its_dependents(self):
+        self.parked_pair()
+        drop_item(self.state, "a-1", "gone")
+        self.assertReturned()
+
+    def test_drop_unit_items_returns_dependents_in_other_units(self):
+        self.add("a", "Q1")
+        self.add("b", "Q1")
+        park_item(self.state, "a-1", "later", ["b-1"], now=50)
+        self.assertEqual(drop_unit_items(self.state, "a", "stopped"), ["dropped a-1"])
+        self.assertEqual(self.item("b-1")["status"], "current")
+        self.assertIsNone(self.item("b-1")["parked_with"])
+
+    def test_closing_the_resume_item_clears_resume(self):
+        for close in (
+            lambda: done_item(self.dir, self.state, "b-1", "x"),
+            lambda: drop_item(self.state, "b-1", "gone"),
+            lambda: drop_unit_items(self.state, "b", "stopped"),
+        ):
+            with self.subTest(close=close):
+                self.setUp()
+                self.add("a", "Q1")
+                self.add("b", "Q1")
+                self.add("c", "Q1")
+                park_item(self.state, "a-1", "later", [], now=1)  # b-1 current
+                unpark_item(self.state, "a-1", to_queue=False)  # b-1 queued, resume
+                self.assertEqual(self.state["items"]["resume"], "b-1")
+                close()
+                self.assertNotEqual(self.state["items"]["resume"], "b-1")
+                self.assertIsNone(self.state["items"]["resume"])
 
 
 if __name__ == "__main__":

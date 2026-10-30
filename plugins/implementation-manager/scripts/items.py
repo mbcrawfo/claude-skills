@@ -142,8 +142,8 @@ def add_item(
 
     `ref` (Q1, Q2, ...) names a question within the unit's current child session and may be reused by a later
     session; `depends` lists refs of that session whose answers this item needs. An item that depends on a parked
-    item is stored parked with it. Returns `current <header>` when it is shown at once, else
-    `queued <id> for <unit>, <N> waiting`.
+    item is stored parked with it. Returns `current <header>` when it is shown at once, `parked <id> with <parent>`
+    when it is stored parked, else `queued <id> for <unit>, <N> waiting`.
     """
     generation = _validate_new(state, unit, ref, kind, depends, summary)
     items = state["items"]
@@ -179,7 +179,94 @@ def add_item(
     _promote(state)
     if items["current"] == item_id:
         return f"current {header(record)}"
+    if parked_on is not None:
+        return f"parked {item_id} with {parked_on}"
     return f"queued {item_id} for {prefix}, {len(queue_order(state))} waiting"
+
+
+def _release(state: dict, roots: list[str]) -> None:
+    """Return to `queued` every parked item parked with one of `roots`, and so on down the chain.
+
+    Clears their note and `parked_with`. The roots themselves are left as they are.
+    """
+    released = set(roots)
+    changed = True
+    while changed:
+        changed = False
+        for item in state["items"]["list"]:
+            if item["status"] == "parked" and item["parked_with"] in released and item["id"] not in released:
+                item.update(status="queued", note=None, parked_with=None)
+                released.add(item["id"])
+                changed = True
+
+
+def park_item(state: dict, item_id: str, note: str, with_ids: list[str], now: float) -> str:
+    """Set a queued or current item aside with a one-line note, taking its dependents and `with_ids` along.
+
+    Every queued or current item that depends on a parked item, and each item of `with_ids`, is parked with the
+    item (`parked_with` is `item_id`, note `with <item_id>`). If the current item was parked, the next queued item
+    becomes current. Returns `parked <id>` per item, the new current item's header (or `none`), then `forward due`
+    lines.
+    """
+    item = _find(state, item_id)
+    if item["status"] not in ("queued", "current"):
+        raise RunError(f"item {item_id} is {item['status']}")
+    for other in with_ids:
+        if other == item_id:
+            raise RunError(f"item {item_id} cannot be parked with itself")
+        status = _find(state, other)["status"]
+        if status not in ("queued", "current"):
+            raise RunError(f"item {other} is {status}")
+    if not note.strip() or "\n" in note or "\r" in note:
+        raise RunError("note must be one non-empty line")
+    items = state["items"]
+    taken = [item]
+    item.update(status="parked", note=note, parked_at=now, parked_with=None)
+    taken_ids = {item_id}
+    changed = True
+    while changed:
+        changed = False
+        for other in items["list"]:
+            if other["status"] not in ("queued", "current"):
+                continue
+            if other["id"] in with_ids or taken_ids.intersection(other["depends"]):
+                other.update(status="parked", note=f"with {item_id}", parked_at=now, parked_with=item_id)
+                taken.append(other)
+                taken_ids.add(other["id"])
+                changed = True
+    if items["current"] in taken_ids:
+        items["current"] = None
+    _promote(state)
+    current = items["current"]
+    first = header(_find(state, current)) if current else "none"
+    return "\n".join([*(f"parked {i['id']}" for i in taken), first, *forward_due(state)])
+
+
+def unpark_item(state: dict, item_id: str, *, to_queue: bool) -> str:
+    """Bring a parked item back, with everything parked with it. Returns its header, or `queued <id>` with `to_queue`.
+
+    By default it becomes the current item (and its unit the sticky one) and the item it displaces goes back to the
+    queue as the resume item. With `to_queue` it only rejoins the queue at its old place.
+    """
+    item = _find(state, item_id)
+    if item["status"] != "parked":
+        raise RunError(f"item {item_id} is {item['status']}")
+    items = state["items"]
+    item.update(status="queued", note=None, parked_with=None)
+    if not to_queue:
+        if items["current"] is not None:
+            _find(state, items["current"])["status"] = "queued"
+            items["resume"] = items["current"]
+        item["status"] = "current"
+        items["current"] = item_id
+        items["sticky"] = item["unit"]
+        if items["resume"] == item_id:
+            items["resume"] = None
+    _release(state, [item_id])
+    if to_queue:
+        _promote(state)
+        return f"queued {item_id}"
+    return header(item)
 
 
 def forward_due(state: dict) -> list[str]:
@@ -228,6 +315,9 @@ def done_item(run_dir: Path, state: dict, item_id: str, answer: str | None) -> s
     item["status"] = "forwarded" if item["kind"] == "decision" else "answered"
     if items["current"] == item_id:
         items["current"] = None
+    if items["resume"] == item_id:
+        items["resume"] = None
+    _release(state, [item_id])
     _promote(state)
     current = items["current"]
     first = header(_find(state, current)) if current else "none"
@@ -240,6 +330,7 @@ def drop_item(state: dict, item_id: str, reason: str) -> None:
     if item["status"] in ("forwarded", "dropped"):
         raise RunError(f"item {item_id} is {item['status']}")
     _drop(state, item, reason)
+    _release(state, [item_id])
     _promote(state)
 
 
@@ -248,6 +339,8 @@ def _drop(state: dict, item: dict, reason: str) -> None:
     item["reason"] = reason
     if state["items"]["current"] == item["id"]:
         state["items"]["current"] = None
+    if state["items"]["resume"] == item["id"]:
+        state["items"]["resume"] = None
 
 
 def drop_unit_items(state: dict, unit: str, reason: str) -> list[str]:
@@ -257,6 +350,7 @@ def drop_unit_items(state: dict, unit: str, reason: str) -> list[str]:
         for i in state["items"]["list"]
         if i["unit"] == unit and i["status"] in ("queued", "current", "parked", "answered")
     ]
+    _release(state, [i["id"] for i in doomed])
     for item in doomed:
         _drop(state, item, reason)
     _promote(state)
