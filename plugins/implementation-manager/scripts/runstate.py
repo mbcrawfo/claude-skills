@@ -53,6 +53,14 @@ def _write_state(run_dir: Path, state: dict) -> None:
     os.replace(tmp, run_dir / STATE_FILE)
 
 
+def empty_items() -> dict:
+    """The owner queue's state: items waiting on the owner, the one being shown, the sticky group and counters.
+
+    `sticky` is a unit name, "" for the run-wide group, or None when no group is sticky.
+    """
+    return {"list": [], "current": None, "sticky": None, "resume": None, "seq": 0, "counters": {}}
+
+
 def init_run(
     run_dir: Path,
     *,
@@ -108,6 +116,7 @@ def init_run(
         "bad_requests": [],
         "requests_offset": 0,
         "marks": {},
+        "items": empty_items(),
     }
     if integration is not None:
         state["integration"] = {
@@ -156,11 +165,13 @@ def load(run_dir: Path) -> dict:
     if missing:
         raise RunError(f"{path} is missing {', '.join(missing)}")
     state.setdefault("integration", None)
+    state.setdefault("items", empty_items())
     for unit in state["units"].values():  # fields added since a run began
         unit.setdefault("integration", False)
         unit.setdefault("after", [])
         unit.setdefault("hold", None)
         unit.setdefault("title", None)
+        unit.setdefault("generation", 1)
     return state
 
 
@@ -277,6 +288,7 @@ def add_unit(
 
     `after` lists the units that must merge before this one does; [] clears it. A unit may not wait on itself
     through its prerequisites and `after` units together. `title` is a one-line display label for status.
+    Recording a different worktree on a unit that has one bumps its `generation`, the count of its child sessions.
     `integration=True` makes it the run's one integration unit: it needs the integration mode, branches from the
     base so it has no prerequisites or `after` units, and no other unit may wait on it. Its branch defaults to
     the integration branch and may be nothing else.
@@ -311,9 +323,12 @@ def add_unit(
             "gate_at": None,
             "done": False,
             "prs": {},
+            "generation": 1,
         }
         if _block(state):
             unit["integration"] = False
+    if worktree is not None and unit["worktree"] is not None and worktree != unit["worktree"]:
+        unit["generation"] = unit.get("generation", 1) + 1  # a new worktree is a new child session
     for key, value in (
         ("prereqs", prereqs),
         ("after", after),

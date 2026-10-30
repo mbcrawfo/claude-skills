@@ -12,6 +12,7 @@ from runstate import (
     RunError,
     add_unit,
     all_stopped,
+    empty_items,
     enqueue,
     final_due,
     go,
@@ -47,6 +48,7 @@ from runstate import (
 NOW = 1000.0
 SHA1 = "1" * 40
 SHA2 = "2" * 40
+EMPTY_ITEMS = {"list": [], "current": None, "sticky": None, "resume": None, "seq": 0, "counters": {}}
 
 
 def add(state, name, prereqs=(), specs=False, after=(), title=None):
@@ -93,8 +95,40 @@ class InitTests(RunStateTestCase):
                 "bad_requests": [],
                 "requests_offset": 0,
                 "marks": {},
+                "items": EMPTY_ITEMS,
             },
         )
+
+    def test_init_has_empty_items(self):
+        state = self.init()
+        self.assertEqual(state["items"], EMPTY_ITEMS)
+        self.assertEqual(empty_items(), EMPTY_ITEMS)
+
+    def test_empty_items_is_a_fresh_dict_each_call(self):
+        first = empty_items()
+        first["list"].append(1)
+        self.assertEqual(empty_items()["list"], [])
+
+    def test_load_backfills_items_and_generation(self):
+        # a 0.7 run.json: no items key, a unit without generation
+        self.init()
+        raw = json.loads((self.dir / "run.json").read_text())
+        del raw["items"]
+        raw["units"]["a"] = {"order": 0, "prereqs": [], "worktree": None, "specs": False}
+        (self.dir / "run.json").write_text(json.dumps(raw))
+        state = load(self.dir)
+        self.assertEqual(state["items"], EMPTY_ITEMS)
+        self.assertEqual(state["units"]["a"]["generation"], 1)
+
+    def test_load_keeps_stored_items_and_generation(self):
+        self.init()
+        raw = json.loads((self.dir / "run.json").read_text())
+        raw["items"]["seq"] = 3
+        raw["units"]["a"] = {"order": 0, "generation": 4}
+        (self.dir / "run.json").write_text(json.dumps(raw))
+        state = load(self.dir)
+        self.assertEqual(state["items"]["seq"], 3)
+        self.assertEqual(state["units"]["a"]["generation"], 4)
 
     def test_init_refuses_existing_run(self):
         self.init()
@@ -168,6 +202,7 @@ class UnitTests(RunStateTestCase):
                 "gate_at": None,
                 "done": False,
                 "prs": {},
+                "generation": 1,
             },
         )
         self.assertEqual(state["units"]["b"]["order"], 1)
@@ -182,6 +217,24 @@ class UnitTests(RunStateTestCase):
         add_unit(state, "a", prereqs=["b"], branch=None, worktree=None, specs=False)
         unit = state["units"]["a"]
         self.assertEqual((unit["branch"], unit["worktree"], unit["prereqs"], unit["order"]), ("x", "/w", ["b"], 0))
+
+    def test_worktree_change_bumps_generation(self):
+        state = self.init()
+        add_unit(state, "a", prereqs=None, branch=None, worktree=None, specs=None)
+        self.assertEqual(state["units"]["a"]["generation"], 1)
+        add_unit(state, "a", prereqs=None, branch=None, worktree="/w1", specs=None)
+        self.assertEqual(state["units"]["a"]["generation"], 1)  # first recording
+        add_unit(state, "a", prereqs=None, branch=None, worktree="/w1", specs=None)
+        self.assertEqual(state["units"]["a"]["generation"], 1)  # same path
+        add_unit(state, "a", prereqs=None, branch=None, worktree=None, specs=None)
+        self.assertEqual(state["units"]["a"]["generation"], 1)  # worktree not given
+        add_unit(state, "a", prereqs=None, branch=None, worktree="/w2", specs=None)
+        self.assertEqual(state["units"]["a"]["generation"], 2)
+
+    def test_new_unit_with_a_worktree_starts_at_generation_one(self):
+        state = self.init()
+        add_unit(state, "a", prereqs=None, branch=None, worktree="/w1", specs=None)
+        self.assertEqual(state["units"]["a"]["generation"], 1)
 
     def test_unknown_prereq_rejected(self):
         state = self.init()
