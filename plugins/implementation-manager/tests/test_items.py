@@ -138,6 +138,16 @@ class AddAndOrderTests(ItemsTestCase):
         self.assertEqual(self.add("b", "Q1"), "queued b-1 for b, 1 waiting")
         self.assertEqual(self.add("c", "Q1"), "queued c-1 for c, 2 waiting")
 
+    def test_run_wide_items_stay_together(self):
+        def run_wide(summary):
+            add_item(self.dir, self.state, "", ref=None, kind="decision", blocks=False, depends=[],
+                     summary=summary, body="x", now=1)  # fmt: skip
+
+        run_wide("first")  # run-1, current
+        self.add("a", "Q1")
+        run_wide("second")  # run-2
+        self.assertEqual(self.order(), ["run-2", "a-1"])
+
     def test_run_wide_decision(self):
         out = add_item(
             self.dir,
@@ -266,6 +276,13 @@ class DoneAndForwardTests(ItemsTestCase):
         done_item(self.dir, self.state, "a-1", "x")
         done_item(self.dir, self.state, "c-1", "x")
         self.assertEqual(forward_due(self.state), ["forward due c c-1", "forward due a a-1", "forward due b b-1"])
+
+    def test_decision_with_an_answer_is_forwarded_at_once(self):
+        self.add("a", None, kind="decision")
+        done_item(self.dir, self.state, "a-1", "merge it")
+        self.assertEqual(self.item("a-1")["status"], "forwarded")
+        self.assertEqual((self.dir / "items" / "a-1.answer.md").read_text(), "merge it")
+        self.assertEqual(forward_due(self.state), [])
 
     def test_decision_needs_no_answer_and_is_not_forwarded(self):
         add_item(

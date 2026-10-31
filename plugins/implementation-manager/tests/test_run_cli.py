@@ -1279,6 +1279,15 @@ class ItemCliTests(CliTestCase):
         self.assertRegex(lines[3], r" \u00b7 ask Sam since \d\d:\d\d$")
         self.assertTrue(lines[4].endswith(" (not forwarded)"))
 
+    def test_list_keeps_each_unit_together(self):
+        self.ok("unit", str(self.dir), "c")
+        self.item_add("a", "Q1")  # current
+        self.item_add("b", "Q1")
+        self.item_add("c", "Q1")
+        self.item_add("b", "Q2")
+        lines = self.ok("item", "list", str(self.dir)).splitlines()
+        self.assertEqual([line.split(" ", 2)[1] for line in lines], ["a-1", "b-1", "b-2", "c-1"])
+
     def test_old_run_json_without_items(self):
         state = self.state()
         del state["items"]
