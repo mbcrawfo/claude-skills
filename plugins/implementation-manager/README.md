@@ -33,7 +33,8 @@ During the run:
 - Each child does the work for its unit and reviews it with `/branch-review:review`.
 - A child must get approval from the manager before each push. The manager gives approval only when a clean review covers the commit.
 - By default, only one child at a time can push to its PR. The other children wait in a queue. Tell the manager if you want parallel pushes.
-- When a child has a question that only you can answer, the manager sends it to you. If the question blocks the merge, the PR of that unit does not merge until you answer. An escalated review finding always blocks the merge.
+- When the manager or a child needs an answer or an action from you, the manager puts an item in a queue. An item is a question, an escalated review finding, a command for you to run, or a decision that the manager asks you to make. The manager shows you one item at a time, and the items of one child come together. To answer an item later, tell the manager to park it. When you are ready, tell the manager to go back to it. The tracker shows the parked items.
+- If an item blocks the merge, the PR of that unit does not merge until you answer. An escalated review finding always blocks the merge.
 - At the end, the manager offers to archive the child sessions.
 
 ## Integration-branch mode
@@ -62,12 +63,12 @@ The manager merges a PR only when all of these conditions are true:
 - The PR is open, all its checks passed, and it has no unresolved review threads.
 - A clean `branch-review` review covers the head commit of the PR.
 - The child has no push request that waits for an answer, and no approved push that it did not do yet.
-- No question that blocks the merge waits for an answer from you.
+- No item that blocks the merge waits for an answer from you.
 - All units that must merge first are merged.
 
 For contributor details, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Known issues
 
-- In `status`, the hold label of a unit can show an old question. This occurs when you answer one question while a different question is still open. The hold still works correctly: the unit does not merge until all questions that block the merge have an answer. To see the open questions of a unit, look in `notes.md`.
+- In `status`, the hold label of a unit can show an old item. This occurs when you answer one item while a different item is still open. The hold still works correctly: the unit does not merge until all items that block the merge have an answer. To see the open items, ask the manager what waits for you.
 - In integration-branch mode, a unit stays closed when a unit that it needs is stopped. Thus, the final PR does not start, and `status` does not tell you why. Stop that unit too, or remove the prerequisite. See [TD-0003](../../docs/tech-debt/TD-0003-integration-final-gate-stopped-prereq.md).

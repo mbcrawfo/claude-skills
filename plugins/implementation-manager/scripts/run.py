@@ -12,7 +12,9 @@ The run folder is always the first argument after the subcommand:
                                     names use letters, digits, '-' and '_', starting with a letter or digit;
                                     each --prereq and --after unit must already exist; --prereq gates the start,
                                     --after only the merge; an --after unit that has neither merged nor stopped,
-                                    given to the slot holder, frees the slot
+                                    given to the slot holder, frees the slot; a --worktree other than the
+                                    stored one (compared normalized) starts a new session: the unit's open
+                                    owner items from earlier sessions are dropped (print dropped <id> per item)
   set <dir> wip <N|none> | set <dir> queue <serial|parallel>
                                     in parallel mode, print each request still queued: queued <unit> <sha>
   set <dir> final-merge <manager|owner> | set <dir> feature-review <yes|no>
@@ -20,7 +22,8 @@ The run folder is always the first argument after the subcommand:
   open <dir> <unit>                 open one gate
   open-ready <dir>                  open every gate that may open; print one unit name per line, then the
                                     final gate's gates.log line when it opens (integration mode)
-  stop <dir> <unit> <reason...>     the unit never opens, gets go or queues again, and gives up the slot
+  stop <dir> <unit> <reason...>     the unit never opens, gets go or queues again, and gives up the slot; its owner
+                                    items are dropped (print dropped <id> per item)
   go <dir> <unit> <sha>             serial mode: take the push slot, or refuse while another unit holds it, while
                                     the slot is free and another unit heads the queue, or while an --after unit
                                     is unmerged and not stopped; refuses a held unit in either mode
@@ -36,6 +39,23 @@ The run folder is always the first argument after the subcommand:
   merged <dir> <unit> <pr> [--more] record a merge and free the slot; print the gates that may open now, one per
                                     line; --more keeps the unit open for its next part
   closed <dir> <unit> <pr>          record a PR closed without merging and free the slot
+  item add <dir> [unit] [--run-wide] [--ref Q<n>] --kind question|finding|command|decision --blocks yes|no
+       [--depends Q<n> ...] --summary S --body-file P
+                                    file an item for the owner (exactly one of unit and --run-wide; a run-wide
+                                    item is a decision); print current <header>, queued <id> for <unit>, <N> waiting,
+                                    or parked <id> with <parent>
+  item current <dir>                the current item's header and body, or none
+  item done <dir> <id> [--answer-file P]
+                                    close an item; print the next current header (or none), then forward due lines
+  item park <dir> <id> <note...> [--with ID ...]
+                                    set the item, its dependents and the --with items aside; print each
+                                    parked <id>, the next current header (or none), then forward due lines
+  item unpark <dir> <id> [--queue]  make a parked item current (the displaced one is resumed next); --queue
+                                    puts it back in the queue instead
+  item forwarded <dir> <unit>       the unit's answers are sent: mark its answered items forwarded; refused
+                                    unless a forward due line lists the unit
+  item drop <dir> <id> <reason...>  drop an item that is no longer needed
+  item list <dir>                   current, queued (in order), parked and answered items, one line each, or none
   status <dir>                      the tracker and everything waiting on the manager
   clear-bad <dir>                   forget the bad request lines status lists, once they are handled
   check <dir> <unit>                one readiness check of the unit's PR, printed as one line: READY <pr> <sha>
@@ -57,6 +77,7 @@ import re
 import sys
 import time
 
+import items
 from prstate import GhError, check_once, run_gh
 import runstate
 from runstate import PUSHES, RunError, load, locked
@@ -182,6 +203,7 @@ def _needs(run_dir: Path, state: dict) -> list[str]:
         if head:
             needs.append(f"slot free with a queue, next {head['unit']} {head['sha']}")
     needs += [f"bad request line: {line}" for line in state["bad_requests"]]
+    needs += items.forward_due(state)
     needs += [f"gate {name} may open" for name in runstate.openable(state)]
     if runstate.final_due(state):
         needs.append(f"final gate for {runstate.integration_unit(state)} may open: run open-ready")
@@ -221,6 +243,32 @@ def _integration_lines(run_dir: Path, state: dict) -> list[str]:
         ):
             lines.append(f"- final PR #{pr} ready: the owner merges it")
     return lines
+
+
+def _item_lines(state: dict) -> list[str]:
+    """The status lines of the owner queue: `- items:` always, `- parked:` only when something is parked."""
+    all_items = state["items"]["list"]
+    by_id = {i["id"]: i for i in all_items}
+    current = state["items"]["current"]
+    if current is None:
+        lines = ["- items: none"]
+    else:
+        item = by_id[current]
+        counts: dict[str, int] = {}
+        for queued in items.queue_order(state):
+            unit = queued["unit"] or items.RUN_PREFIX
+            counts[unit] = counts.get(unit, 0) + 1
+        more = f"{sum(counts.values())} more: " + ", ".join(f"{unit} \u00d7{n}" for unit, n in counts.items())
+        lines = [f"- items: current {_item_name(item)} {item['summary']} \u00b7 {more if counts else 'nothing more'}"]
+    parked = sorted((i for i in all_items if i["status"] == "parked"), key=lambda i: i["seq"])
+    if parked:
+        entries = [f"{_item_name(i)} {i['summary']}, {i['note']}, since {_clock(i['parked_at'])}" for i in parked]
+        lines.append("- parked: " + "; ".join(entries))
+    return lines
+
+
+def _item_name(item: dict) -> str:
+    return item["id"] + (f" ({item['ref']})" if item["ref"] else "")
 
 
 def _status(run_dir: Path, state: dict) -> str:
@@ -265,6 +313,7 @@ def _status(run_dir: Path, state: dict) -> str:
                 gated.append(f"{label} may open" if name in openable else f"{label} on WIP")
     lines.append(f"- open: {', '.join(open_units) or 'none'}")
     lines.append(f"- gated: {', '.join(gated) or 'none'}")
+    lines += _item_lines(state)
     lines += _integration_lines(run_dir, state)
     needs = _needs(run_dir, state)
     if needs:
@@ -360,6 +409,41 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("unit")
     p.add_argument("pr", type=int)
 
+    item = sub.add_parser("item", help="the owner queue: items waiting on the owner")
+    item_sub = item.add_subparsers(dest="item_command", required=True, metavar="subcommand")
+
+    def item_command(name: str, help: str) -> argparse.ArgumentParser:
+        p = item_sub.add_parser(name, help=help)
+        p.add_argument("dir", type=Path, help="the run folder")
+        return p
+
+    p = item_command("add", "file an item for the owner")
+    p.add_argument("unit", nargs="?", help="the unit the item belongs to")
+    p.add_argument("--run-wide", action="store_true", help="a run-wide decision, in place of a unit")
+    p.add_argument("--ref", metavar="Q<n>", help="the question's number in the child's session")
+    p.add_argument("--kind", required=True, choices=items.KINDS)
+    p.add_argument("--blocks", required=True, choices=("yes", "no"), help="whether it blocks the unit's merge")
+    p.add_argument("--depends", nargs="+", action="extend", metavar="Q<n>", help="refs whose answers it needs")
+    p.add_argument("--summary", required=True, help="one line")
+    p.add_argument("--body-file", required=True, type=Path, help="the item's text")
+    item_command("current", "show the current item")
+    p = item_command("done", "close an item the owner dealt with")
+    p.add_argument("id")
+    p.add_argument("--answer-file", type=Path, help="the owner's answer, for the child")
+    p = item_command("park", "set an item aside")
+    p.add_argument("id")
+    p.add_argument("note", nargs="+")
+    p.add_argument("--with", dest="with_ids", nargs="+", action="extend", metavar="ID", help="park these too")
+    p = item_command("unpark", "bring a parked item back")
+    p.add_argument("id")
+    p.add_argument("--queue", action="store_true", help="rejoin the queue instead of becoming current")
+    p = item_command("forwarded", "mark a unit's answered items sent to its child")
+    p.add_argument("unit")
+    p = item_command("drop", "drop an item that is no longer needed")
+    p.add_argument("id")
+    p.add_argument("reason", nargs="+")
+    item_command("list", "list the open items")
+
     command("status", "print the tracker and what waits on the manager")
     command("clear-bad", "forget the bad request lines status lists")
     p = command("check", "check the unit's PR once")
@@ -420,6 +504,71 @@ def _integration_verdict(run_dir: Path, state: dict, unit: str, line: str) -> st
     return f"FINAL-READY {rest}" if _owner_merges(state, unit) else line
 
 
+def _read_text(path: Path) -> str:
+    """The text of a file the owner or a child wrote; a refusal, not a crash, when it cannot be read."""
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, ValueError) as exc:
+        raise RunError(f"cannot read {path}: {getattr(exc, 'strerror', None) or exc}") from None
+
+
+def _item_list(state: dict) -> str:
+    """One line per open item: current, queued in order, parked, then answered and not yet forwarded."""
+    by_status = {"current": [], "parked": [], "answered": []}
+    for item in sorted(state["items"]["list"], key=lambda i: i["seq"]):
+        if item["status"] in by_status:
+            by_status[item["status"]].append(item)
+    lines = [f"current {items.header(i)}" for i in by_status["current"]]
+    lines += [f"queued {items.header(i)}" for i in items.queue_order(state)]
+    lines += [
+        f"parked {items.header(i)} \u00b7 {i['note']} since {_clock(i['parked_at'])}" for i in by_status["parked"]
+    ]
+    lines += [f"answered {items.header(i)} (not forwarded)" for i in by_status["answered"]]
+    return "\n".join(lines) or "none"
+
+
+def _item(args: argparse.Namespace, now: float) -> str | None:
+    """Run one `item` subcommand; the files it names are read before the lock is taken."""
+    run_dir: Path = args.dir
+    sub = args.item_command
+    if sub in ("current", "list"):
+        state = load(run_dir)
+        return items.current_text(run_dir, state) if sub == "current" else _item_list(state)
+    body = answer = None
+    unit = ""
+    if sub == "add":
+        if bool(args.unit) == args.run_wide:
+            raise RunError("give exactly one of a unit and --run-wide")
+        unit = args.unit or ""
+        body = _read_text(args.body_file)
+    elif sub == "done" and args.answer_file:
+        answer = _read_text(args.answer_file)
+    with locked(run_dir) as state:
+        if sub == "add":
+            return items.add_item(
+                run_dir,
+                state,
+                unit,
+                ref=args.ref,
+                kind=args.kind,
+                blocks=args.blocks == "yes",
+                depends=args.depends or [],
+                summary=args.summary,
+                body=body,
+                now=now,
+            )
+        if sub == "done":
+            return items.done_item(run_dir, state, args.id, answer)
+        if sub == "park":
+            return items.park_item(state, args.id, " ".join(args.note), args.with_ids or [], now)
+        if sub == "unpark":
+            return items.unpark_item(state, args.id, to_queue=args.queue)
+        if sub == "forwarded":
+            return items.mark_forwarded(state, args.unit)
+        items.drop_item(state, args.id, " ".join(args.reason))
+    return None
+
+
 def _run(args: argparse.Namespace) -> str | None:
     """Run one command other than wait; return what it prints, if anything."""
     run_dir: Path = args.dir
@@ -439,6 +588,8 @@ def _run(args: argparse.Namespace) -> str | None:
         return None
     if command == "status":
         return _status(run_dir, load(run_dir))
+    if command == "item":
+        return _item(args, now)
     if command == "check":
         state = load(run_dir)
         record = state["units"].get(args.unit)
@@ -455,6 +606,7 @@ def _run(args: argparse.Namespace) -> str | None:
             if args.after and "none" in args.after and len(args.after) > 1:
                 raise RunError("--after none clears the list; give it alone")
             after = [] if args.after == ["none"] else args.after
+            generation = state["units"].get(args.name, {}).get("generation")
             runstate.add_unit(
                 state,
                 args.name,
@@ -466,6 +618,9 @@ def _run(args: argparse.Namespace) -> str | None:
                 title=args.title,
                 integration=args.integration,
             )
+            if generation is not None and state["units"][args.name]["generation"] != generation:
+                # A new child session: the old session's open items no longer apply.
+                return "\n".join(items.drop_old_generation(state, args.name, "new session")) or None
         elif command == "set":
             runstate.set_option(state, args.key, args.value)
             if args.key in ("wip", "queue") and state["queue_mode"] == "parallel":
@@ -483,6 +638,7 @@ def _run(args: argparse.Namespace) -> str | None:
             return "\n".join(names) or None
         elif command == "stop":
             runstate.stop_gate(run_dir, state, args.unit, " ".join(args.reason))
+            return "\n".join(items.drop_unit_items(state, args.unit, "unit stopped")) or None
         elif command == "go":
             runstate.go(run_dir, state, args.unit, args.sha, now)
         elif command == "redo":
@@ -519,7 +675,8 @@ def main(argv: list[str]) -> int:
     try:
         out = _run(args)
     except (RunError, GhError, OSError, json.JSONDecodeError) as exc:
-        print(f"run.py {args.command}: {' '.join(_describe(args.dir, exc).split())}", file=sys.stderr)
+        name = f"item {args.item_command}" if args.command == "item" else args.command
+        print(f"run.py {name}: {' '.join(_describe(args.dir, exc).split())}", file=sys.stderr)
         return 1
     if out:
         print(out, flush=True)

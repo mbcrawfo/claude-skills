@@ -9,11 +9,11 @@ A unit has one hold, with one reason, and the reason is what `run.py status` sho
 
 ## Why it exists
 
-The behaviour is correct: the unit stays held until its next push request finds no blocking question open in `notes.md` (step 5 of "Answering a push request"), whatever the label says. Keeping every label exact would need a list of reasons per hold, or more relabel rules for the manager to follow, for a display-only gain.
+The behaviour is correct: the unit stays held until its next push request finds no open blocking item of the unit in `run.py item list` (current, queued, parked, or answered and not forwarded) and no `own session` question left in `notes.md` (step 5 of "Answering a push request"), whatever the label says. Keeping every label exact would need a list of reasons per hold, or more relabel rules for the manager to follow, for a display-only gain.
 
 ## Impact
 
-Low. Only the `status` line and the tracker differ. A wrong label can put a hold under "Waiting on you" when it waits on the child, or the reverse, until the next relabel or release. Nothing merges early or waits longer.
+Low. Only the `hold <unit>: <reason>` line of `run.py status` differs. Holds no longer list under "Waiting on you": that tracker line comes from the owner queue's items, and an `own session` question shows under `Elsewhere:` from `notes.md`, so a stale label does not change either. The one tracker text a label drives is `<unit> held until it asks again`, for an `answer sent:` reason, and the manager relabels that hold when a blocking item or an own-session notice arrives. Nothing merges early or waits longer.
 
 ## Proposed fix
 

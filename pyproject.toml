@@ -20,6 +20,7 @@ known-first-party = [
     "agents_md_limits",
     "docs_inventory",
     "helpers",
+    "items",
     "review_state",
     "prstate",
     "runstate",
