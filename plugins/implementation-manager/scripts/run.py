@@ -64,6 +64,9 @@ The run folder is always the first argument after the subcommand:
                                     in integration mode READY becomes NOT-READY ... blocked: <reason>
                                     (also for a PR on the wrong base) or FINAL-READY
   wait <dir> [--stall-hours N]      block until one event, print it as one line, exit 0 (also on error)
+  prune <dir> [--days D]            remove the run folders beside <dir> untouched for D days (default 30),
+                                    never <dir>, which need not exist yet; print {removed, skipped, errors}
+                                    as JSON, exit 1 when errors is not empty
 
 Exit codes: 0 on success, 1 for a refused command (one line on stderr), 2 for a usage error.
 """
@@ -79,6 +82,7 @@ import time
 
 import items
 from prstate import GhError, check_once, run_gh
+import prune
 import runstate
 from runstate import PUSHES, RunError, load, locked
 import watcher
@@ -408,6 +412,8 @@ def _parser() -> argparse.ArgumentParser:
     p = command("closed", "record a PR closed without merging")
     p.add_argument("unit")
     p.add_argument("pr", type=int)
+    p = command("prune", "remove this repo's run folders untouched for the retention period")
+    p.add_argument("--days", type=prune.retention_days, default=prune.DEFAULT_DAYS, metavar="D")
 
     item = sub.add_parser("item", help="the owner queue: items waiting on the owner")
     item_sub = item.add_subparsers(dest="item_command", required=True, metavar="subcommand")
@@ -672,6 +678,15 @@ def main(argv: list[str]) -> int:
         return exc.code if isinstance(exc.code, int) else 2
     if args.command == "wait":
         return _wait(args)
+    if args.command == "prune":
+        # No lock: the run folder <dir> need not exist yet, and prune never touches it.
+        try:
+            result = prune.prune_runs(args.dir, args.days, time.time())
+        except (prune.PruneError, OSError) as exc:
+            print(f"run.py prune: {exc}", file=sys.stderr)
+            return 1
+        print(json.dumps(result, indent=2), flush=True)
+        return 1 if result["errors"] else 0
     try:
         out = _run(args)
     except (RunError, GhError, OSError, json.JSONDecodeError) as exc:
