@@ -1612,6 +1612,7 @@ def cmd_covered(args: argparse.Namespace) -> dict:
 # --- summary, prune, list, cleanup -----------------------------------------
 
 STALE_DAYS = 30
+MAX_DAYS = 999999999  # the most days a timedelta can hold
 
 
 def _retention_days(value: str) -> int:
@@ -1628,8 +1629,8 @@ def _retention_days(value: str) -> int:
         days = int(value)
     except ValueError:
         days = 0
-    if days < 1:
-        raise argparse.ArgumentTypeError(f"must be a whole number of days, at least 1: {value!r}")
+    if not 1 <= days <= MAX_DAYS:
+        raise argparse.ArgumentTypeError(f"must be a whole number of days, from 1 to {MAX_DAYS}: {value!r}")
     return days
 
 

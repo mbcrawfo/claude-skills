@@ -18,7 +18,8 @@
       "title": "Retention (days)",
       "description": "Remove state untouched for this many days",
       "default": 30,
-      "min": 1
+      "min": 1,
+      "max": 999999999
     }
   }
 }

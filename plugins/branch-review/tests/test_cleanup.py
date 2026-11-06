@@ -247,6 +247,15 @@ class CleanupTest(unittest.TestCase):
                 self.assertEqual(self.cli("prune", "--days", value)["removed"], [str(old)])
                 self.assertTrue(recent.exists())
 
+    def test_prune_days_upper_bound(self):
+        # timedelta holds at most 999999999 days; a larger saved option must be a one-line usage error.
+        self.assertEqual(self.call("prune", "--days", "999999999")[0], 0)
+        code, out, err = self.call("prune", "--days", "1000000000")
+        self.assertEqual((code, out), (1, ""))
+        self.assertTrue(err.startswith("error: "), err)
+        self.assertIn("--days", err)
+        self.assertEqual(len(err.strip().splitlines()), 1, err)
+
     def test_prune_days_rejects_zero(self):
         code, out, err = self.call("prune", "--days", "0")
         self.assertEqual((code, out), (1, ""))

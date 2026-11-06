@@ -682,7 +682,7 @@ def main(argv: list[str]) -> int:
         # No lock: the run folder <dir> need not exist yet, and prune never touches it.
         try:
             result = prune.prune_runs(args.dir, args.days, time.time())
-        except prune.PruneError as exc:
+        except (prune.PruneError, OSError) as exc:
             print(f"run.py prune: {exc}", file=sys.stderr)
             return 1
         print(json.dumps(result, indent=2), flush=True)

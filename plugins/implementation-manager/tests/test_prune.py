@@ -120,6 +120,22 @@ class PruneRunsTest(unittest.TestCase):
         self.assertEqual(result, {"removed": [], "skipped": [str(other)], "errors": []})
         self.assertTrue(other.exists())
 
+    def unreadable(self, path: Path) -> None:
+        if os.geteuid() == 0:
+            self.skipTest("root ignores file permissions")
+        path.chmod(0)
+        self.addCleanup(path.chmod, 0o755)
+
+    def test_prune_reports_unreadable_run_and_goes_on(self):
+        locked = self.make_run("a-locked", 90)
+        old = self.make_run("old", 90)
+        self.unreadable(locked)
+        result = self.prune()
+        self.assertEqual(result["removed"], [str(old)])
+        self.assertEqual(result["skipped"], [])
+        self.assertEqual([e["dir"] for e in result["errors"]], [str(locked)])
+        self.assertFalse(old.exists())
+
     def test_prune_without_repo_folder(self):
         self.keep = self.tmp / "other-repo" / "first-run"
         self.assertEqual(self.prune(), {"removed": [], "skipped": [], "errors": []})
@@ -172,6 +188,28 @@ class PruneCliTest(unittest.TestCase):
         self.assertEqual((result.returncode, result.stdout), (1, ""))
         self.assertTrue(result.stderr.startswith("run.py prune: "), result.stderr)
         self.assertTrue(old.exists())
+
+    def unreadable(self, path: Path) -> None:
+        if os.geteuid() == 0:
+            self.skipTest("root ignores file permissions")
+        path.chmod(0)
+        self.addCleanup(path.chmod, 0o755)
+
+    def test_cli_prune_exits_1_with_json_on_errors(self):
+        locked = self.repo_dir / "locked"
+        locked.mkdir()
+        (locked / "run.json").write_text("{}", encoding="utf-8")
+        self.unreadable(locked)
+        result = self.run_cli("prune", str(self.repo_dir / "new-run"), "--days", "30")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual([e["dir"] for e in json.loads(result.stdout)["errors"]], [str(locked)])
+
+    def test_cli_prune_unreadable_repo_folder(self):
+        self.unreadable(self.repo_dir)
+        result = self.run_cli("prune", str(self.repo_dir / "new-run"), "--days", "30")
+        self.assertEqual((result.returncode, result.stdout), (1, ""))
+        self.assertTrue(result.stderr.startswith("run.py prune: "), result.stderr)
+        self.assertEqual(len(result.stderr.strip().splitlines()), 1, result.stderr)
 
     def test_cli_prune_rejects_zero_days(self):
         result = self.run_cli("prune", str(self.repo_dir / "new-run"), "--days", "0")

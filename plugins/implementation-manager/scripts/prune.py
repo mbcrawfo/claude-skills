@@ -18,6 +18,7 @@ import argparse
 import os
 from pathlib import Path
 import shutil
+import stat
 
 DEFAULT_DAYS = 30
 RUN_FILE = "run.json"
@@ -54,6 +55,14 @@ def _newest_mtime(run: Path) -> float:
     return newest
 
 
+def _has_run_file(folder: Path) -> bool:
+    """Whether `folder` holds a regular `run.json`; an unreadable folder raises, so it is reported, not skipped."""
+    try:
+        return stat.S_ISREG(os.stat(folder / RUN_FILE).st_mode)
+    except FileNotFoundError:
+        return False
+
+
 def _raise(exc: OSError) -> None:
     raise exc
 
@@ -79,15 +88,16 @@ def prune_runs(keep: Path, days: int, now: float) -> dict:
         return {"removed": removed, "skipped": skipped, "errors": errors}
     keep_stat = keep.stat() if keep.exists() else None
     for entry in sorted(repo_dir.iterdir()):
-        if entry.is_symlink():
-            skipped.append(str(entry))
-            continue
-        if not entry.is_dir() or (keep_stat and os.path.samestat(entry.lstat(), keep_stat)):
-            continue
-        if not (entry / RUN_FILE).is_file():
-            skipped.append(str(entry))
-            continue
         try:
+            entry_stat = entry.lstat()
+            if stat.S_ISLNK(entry_stat.st_mode):
+                skipped.append(str(entry))
+                continue
+            if not stat.S_ISDIR(entry_stat.st_mode) or (keep_stat and os.path.samestat(entry_stat, keep_stat)):
+                continue
+            if not _has_run_file(entry):
+                skipped.append(str(entry))
+                continue
             if now - _newest_mtime(entry) > days * 86400:
                 shutil.rmtree(entry)
                 removed.append(str(entry))
