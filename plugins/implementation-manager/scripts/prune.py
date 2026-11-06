@@ -5,7 +5,11 @@ run. A run folder is removed once nothing in it has changed for the retention
 period. Its age is taken from the newest file under it, not from `run.json`,
 because children append to `requests.log` while `run.json` sits still. Symlinks
 are never followed, for age or for removal, and only folders holding `run.json`
-count as runs. The run being started is never touched.
+count as runs. The run being started is never touched: it is matched by file
+identity, since a slug that differs only in case names the same folder on a
+case-insensitive filesystem. A relative run path, or one whose folder or its
+parent is the filesystem root or the home directory, is refused, so a wrong
+path never prunes an unrelated directory.
 """
 
 from __future__ import annotations
@@ -17,6 +21,10 @@ import shutil
 
 DEFAULT_DAYS = 30
 RUN_FILE = "run.json"
+
+
+class PruneError(Exception):
+    """The run path is unsafe to prune beside; nothing was removed."""
 
 
 def retention_days(value: str) -> int:
@@ -50,20 +58,31 @@ def _raise(exc: OSError) -> None:
     raise exc
 
 
+def _check_keep(keep: Path) -> None:
+    """Refuse a run path whose siblings could be anything but this repo's runs."""
+    if not keep.is_absolute():
+        raise PruneError(f"the run folder must be an absolute path: {str(keep)!r}")
+    unsafe = {Path(keep.anchor).resolve(), Path.home().resolve()}
+    for folder in (keep.parent, keep.parent.parent):
+        if folder.resolve() in unsafe:
+            raise PruneError(f"refusing to prune beside {str(keep)!r}: {str(folder)!r} is the root or home folder")
+
+
 def prune_runs(keep: Path, days: int, now: float) -> dict:
     """Remove run folders beside `keep` untouched for over `days` days; never `keep`."""
+    _check_keep(keep)
     removed: list[str] = []
     skipped: list[str] = []
     errors: list[dict] = []
     repo_dir = keep.parent
     if not repo_dir.is_dir():
         return {"removed": removed, "skipped": skipped, "errors": errors}
-    keep_resolved = keep.resolve()
+    keep_stat = keep.stat() if keep.exists() else None
     for entry in sorted(repo_dir.iterdir()):
         if entry.is_symlink():
             skipped.append(str(entry))
             continue
-        if not entry.is_dir() or entry.resolve() == keep_resolved:
+        if not entry.is_dir() or (keep_stat and os.path.samestat(entry.lstat(), keep_stat)):
             continue
         if not (entry / RUN_FILE).is_file():
             skipped.append(str(entry))

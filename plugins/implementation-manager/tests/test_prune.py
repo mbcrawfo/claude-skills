@@ -73,6 +73,22 @@ class PruneRunsTest(unittest.TestCase):
         self.assertEqual(result, {"removed": [], "skipped": [], "errors": []})
         self.assertTrue(self.keep.exists())
 
+    def test_prune_keeps_the_given_run_in_another_case(self):
+        run = self.make_run("my-slug", 90)
+        if not (self.repo_dir / "MY-SLUG").exists():
+            self.skipTest("case-sensitive filesystem")
+        self.keep = self.repo_dir / "My-Slug"
+        self.assertEqual(self.prune()["removed"], [])
+        self.assertTrue(run.exists())
+
+    def test_prune_refuses_unsafe_dir(self):
+        old = self.make_run("old", 90)
+        home = Path.home()
+        for keep in (Path("old-sibling"), Path("/new-run"), home / "new-run", home / "projects" / "new-run"):
+            with self.subTest(keep=str(keep)), self.assertRaises(prune.PruneError):
+                prune.prune_runs(keep, 30, self.now)
+        self.assertTrue(old.exists())
+
     def test_prune_skips_symlinked_run(self):
         elsewhere = self.tmp / "elsewhere"
         elsewhere.mkdir()
@@ -140,6 +156,22 @@ class PruneCliTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout), {"removed": [str(old)], "skipped": [], "errors": []})
         self.assertFalse(old.exists())
+
+    def test_cli_prune_refuses_relative_dir(self):
+        old = self.repo_dir / "old"
+        old.mkdir()
+        (old / "run.json").write_text("{}", encoding="utf-8")
+        age(old, 90, time.time())
+        result = subprocess.run(
+            [sys.executable, str(RUN_PY), "prune", "new-run", "--days", "30"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            cwd=self.repo_dir,
+        )
+        self.assertEqual((result.returncode, result.stdout), (1, ""))
+        self.assertTrue(result.stderr.startswith("run.py prune: "), result.stderr)
+        self.assertTrue(old.exists())
 
     def test_cli_prune_rejects_zero_days(self):
         result = self.run_cli("prune", str(self.repo_dir / "new-run"), "--days", "0")
