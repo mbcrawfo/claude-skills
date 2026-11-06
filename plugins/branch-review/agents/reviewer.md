@@ -204,12 +204,12 @@ The block has this shape in every mode. The values are placeholders; `a|b` means
 }
 ```
 
-The mistakes that cost a round:
+Mistakes seen in past reports:
 
 - Every top-level key is present in every mode, `summary` included. A follow-up with nothing to report still has `"findings": []`.
 - `merge_risk` is an object with `level` and `reason`, never a string.
 - A verdict's value goes in `status`, not `verdict`.
-- Add no keys of your own, such as `mode`.
+- Add no keys of your own, such as `mode`. The script ignores them.
 - In deep mode, `coverage` has one entry for each of `logic`, `sibling-path`, `security`, `tests`, `intent`, `conventions`, `docs`, `build-ci`, `break-tests`, `doc-grep`, `fulfilled-promises`, `real-system`, `related-records`, `broad-mappings`, `measurement-tests` and `consumer-build`.
 
 Write the complete report to `REPORT_PATH` with one Bash heredoc. Its delimiter is `BRANCH_REVIEW_REPORT_` plus 8 random hex digits (`od -An -N4 -tx1 /dev/urandom | tr -d ' \n'`), checked not to occur in the report (draw again if it does). Quote the delimiter so the shell expands nothing in the report:

@@ -93,6 +93,34 @@ class ReviewerShapeTest(unittest.TestCase):
         expected = set(review_state.FINDING_REQUIRED) | set(review_state.FINDING_OPTIONAL)
         self.assertEqual(keys, expected | {"effort", "variants", "fix_options"})
 
+    def test_nested_keys_match_the_script(self):
+        shape = self.shape
+        self.assertEqual(set(shape["merge_risk"]), {"level", "reason"})
+        self.assertEqual(set(shape["intent_check"]), {"unmet_claims", "unmentioned_behavior"})
+        self.assertEqual(set(shape["verdicts"][0]), {"id", "status", "reason"})
+        self.assertEqual(set(shape["findings"][0]["variants"][0]), {"input", "result"})
+        self.assertEqual(set(shape["outside_change"][0]), {"file", "lines", "title", "detail"})
+        self.assertEqual(set(shape["coverage"][0]), {"item", "done"})
+        self.assertEqual(set(shape["not_checked"][0]), {"what", "reason"})
+
+    def test_shape_passes_the_validator(self):
+        def first_choice(value):
+            if isinstance(value, dict):
+                return {k: first_choice(v) for k, v in value.items()}
+            if isinstance(value, list):
+                return [first_choice(v) for v in value]
+            if isinstance(value, str) and "|" in value:
+                return value.split("|")[0]
+            return value
+
+        filled = first_choice(self.shape)
+        known = {v["id"]: "fixed" for v in filled["verdicts"]}
+        checked = review_state._validate_output(filled, known, require_coverage=False)
+        self.assertEqual(len(checked["findings"]), 1)
+        self.assertEqual(checked["verdicts"][0]["reason"], self.shape["verdicts"][0]["reason"])
+        self.assertEqual(checked["coverage"], self.shape["coverage"])
+        self.assertEqual(checked["not_checked"], self.shape["not_checked"])
+
     def test_coverage_items_are_listed(self):
         output = section(REVIEWER, "Output")
         listed = re.search(r"`coverage` has one entry for each of (.*?)\.\n", output).group(1)

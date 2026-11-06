@@ -32,6 +32,15 @@ class CheckReportTest(LedgerHarness, unittest.TestCase):
         # The same file still records afterwards.
         self.assertEqual(self.record(output())["added"], 2)
 
+    def test_counts_each_kind_of_entry(self):
+        self.begin()
+        self.record(output())
+        self.begin("followup")
+        outside = [{"file": "b.txt", "title": f"Outside {i}."} for i in range(3)]
+        data = output(verdicts=[{"id": "R1-F1", "status": "verified"}], outside_change=outside)
+        out = self.cli("check-report", "--file", self.write("r.md", report(data)))
+        self.assertEqual((out["findings"], out["outside"], out["verdicts"]), (2, 3, 1))
+
     def test_refuses_what_record_findings_refuses(self):
         self.begin()
         self.record(output())
@@ -93,6 +102,35 @@ class AllProblemsTest(LedgerHarness, unittest.TestCase):
         self.assertIn("findings[0].severity", err)
         self.assertIn("findings[2].category", err)
         self.assertNotIn("findings[1]", err)
+
+    def test_coverage_and_not_checked_are_separate_parts(self):
+        self.begin()
+        data = output(coverage=[{"item": "logic", "done": "read it"}])
+        del data["not_checked"]
+        code, _, err = self.call("record-findings", "--file", self.write("r.md", report(data)))
+        self.assertEqual(code, 1)
+        self.assertIn("coverage is missing sibling-path", err)
+        self.assertIn("output is missing not_checked", err)
+
+    def test_messages_for_absent_and_wrong_type_objects(self):
+        cases = (
+            ({"merge_risk": "Low."}, "merge_risk must be an object"),
+            ({"intent_check": []}, "intent_check must be an object"),
+            ({"merge_risk": None}, "output is missing merge_risk"),
+            ({"intent_check": None}, "output is missing intent_check"),
+        )
+        self.begin()
+        for over, message in cases:
+            with self.subTest(over=over):
+                code, _, err = self.call("check-report", "--file", self.write("r.md", report(output(**over))))
+                self.assertEqual(code, 1)
+                self.assertEqual(err.strip(), f"error: invalid reviewer output: {message}")
+        for key in ("merge_risk", "intent_check"):
+            with self.subTest(absent=key):
+                data = output()
+                del data[key]
+                code, _, err = self.call("check-report", "--file", self.write("r.md", report(data)))
+                self.assertEqual(err.strip(), f"error: invalid reviewer output: output is missing {key}")
 
     def test_a_single_problem_keeps_its_message(self):
         self.begin()

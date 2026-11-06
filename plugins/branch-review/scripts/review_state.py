@@ -1043,8 +1043,8 @@ def _objects(data: dict, key: str, where: str, required: bool) -> list:
     return items
 
 
-def _validate_coverage(data: dict, required: bool) -> tuple[list, list]:
-    """`coverage` and `not_checked`; both must be present, and cover every item, when `required`."""
+def _validate_coverage(data: dict, required: bool) -> list:
+    """`coverage`; it must be present, and cover every item, when `required`."""
     coverage = []
     for i, c in enumerate(_objects(data, "coverage", "output", required)):
         where = f"coverage[{i}]"
@@ -1054,11 +1054,16 @@ def _validate_coverage(data: dict, required: bool) -> tuple[list, list]:
         missing = [item for item in COVERAGE_ITEMS if item not in listed]
         if missing:
             raise _bad("coverage is missing " + ", ".join(missing))
+    return coverage
+
+
+def _validate_not_checked(data: dict, required: bool) -> list:
+    """`not_checked`; it must be present when `required`."""
     not_checked = []
     for i, n in enumerate(_objects(data, "not_checked", "output", required)):
         where = f"not_checked[{i}]"
         not_checked.append({"what": _require_text(n, "what", where), "reason": _require_text(n, "reason", where)})
-    return coverage, not_checked
+    return not_checked
 
 
 def _validate_variants(f: dict, where: str) -> list:
@@ -1121,7 +1126,8 @@ def _validate_output(data: object, known: dict, *, require_coverage: bool = Fals
     part(_require_str, data, "summary", "output")
     part(risk_check)
     part(intent_check)
-    coverage, not_checked = part(_validate_coverage, data, require_coverage) or ([], [])
+    coverage = part(_validate_coverage, data, require_coverage) or []
+    not_checked = part(_validate_not_checked, data, require_coverage) or []
 
     verdicts = []
     seen: set = set()
