@@ -21,6 +21,7 @@ known-first-party = [
     "docs_inventory",
     "helpers",
     "items",
+    "prune",
     "review_state",
     "prstate",
     "runstate",

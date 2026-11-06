@@ -1,6 +1,6 @@
 {
   "name": "implementation-manager",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Runs a planned multi-phase piece of work to completion through child sessions that each deliver a pull request.",
   "author": {
     "name": "Michael Crawford",
@@ -17,5 +17,14 @@
       "name": "branch-review",
       "version": ">=0.12.1"
     }
-  ]
+  ],
+  "userConfig": {
+    "retention_days": {
+      "type": "number",
+      "title": "Retention (days)",
+      "description": "Remove state untouched for this many days",
+      "default": 30,
+      "min": 1
+    }
+  }
 }
