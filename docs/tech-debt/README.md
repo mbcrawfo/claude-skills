@@ -14,7 +14,6 @@ Next id: `TD-0012`
 | [TD-0008](TD-0008-agents-md-cleanup-known-limits.md) | Open | 2026-10-27 | Low | agents-md-cleanup stops when `.claude` is a symlink, its project-choice check is coarse, it doesn't merge hard-linked AGENTS.md files, only SKILL.md gives a move target its resolved path, and a broken `.git` file blocks move targets below it |
 | [TD-0009](TD-0009-agents-md-cleanup-doc-destinations.md) | Open | 2026-10-28 | Low | agents-md-cleanup's doc page choice, root `references` seed, output-read test detection, over-limit re-dispatch, unchecked user splits, unrecorded over-limit files, word-count scanner edge cases, missing size tests, the uncapped `(whole)` fix, an overlapping eval statement and `_docs` cap are known gaps |
 | [TD-0010](TD-0010-implementation-manager-owner-queue-known-gaps.md) | Open | 2026-10-30 | Low | implementation-manager owner-queue known gaps: duplicated ref scope and id formatting, quiet `item drop` and `stop`, loose refusal tests, skill rules that disagree or need an extra `status`, and a thin `owner-queue` eval |
-| [TD-0011](TD-0011-review-loop-eval-escalation-fails-loop.md) | Open | 2026-11-06 | Low | The branch-review review-loop eval fails a correct run that escalates a finding, since an escalation holds the second opinion its `loop` grader requires |
 
 ## Columns
 
