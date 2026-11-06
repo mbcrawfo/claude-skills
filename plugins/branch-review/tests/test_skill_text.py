@@ -73,6 +73,11 @@ class ReviewSkillTextTest(unittest.TestCase):
         line = next(line for line in self.text.splitlines() if "`locate` wins over `next_mode`" in line)
         self.assertIn("`second-opinion`", line)
 
+    def test_prune_passes_retention_option(self):
+        line = next(line for line in self.text.splitlines() if "`rs prune" in line)
+        # Single quotes: an unexpanded ${user_config...} in double quotes is a shell "bad substitution".
+        self.assertIn("`rs prune --days '${user_config.retention_days}'`", line)
+
     def test_argument_hint_lists_new_arguments(self):
         hint = next(line for line in self.text.splitlines() if line.startswith("argument-hint:"))
         self.assertIn("--notes-file", hint)

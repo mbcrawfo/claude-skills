@@ -1614,6 +1614,25 @@ def cmd_covered(args: argparse.Namespace) -> dict:
 STALE_DAYS = 30
 
 
+def _retention_days(value: str) -> int:
+    """Parse `prune --days`: empty or an unexpanded `${user_config...}` means STALE_DAYS.
+
+    The review skill passes the plugin's `retention_days` option as
+    '${user_config.retention_days}'. Claude Code fills it in only once the user
+    saves a value; until then the skill text keeps the literal, so it falls back
+    to the default here instead of failing the review's set-up.
+    """
+    if value == "" or value.startswith("${"):
+        return STALE_DAYS
+    try:
+        days = int(value)
+    except ValueError:
+        days = 0
+    if days < 1:
+        raise argparse.ArgumentTypeError(f"must be a whole number of days, at least 1: {value!r}")
+    return days
+
+
 def _one_line(text: object) -> str:
     return " ".join(str(text or "").split())
 
@@ -2341,7 +2360,7 @@ def _build_parser() -> argparse.ArgumentParser:
     summ.set_defaults(func=cmd_summary)
 
     prune = sub.add_parser("prune", parents=[common], help="remove state for branches that are gone or stale")
-    prune.add_argument("--days", type=int, default=STALE_DAYS, help="age in days that counts as stale")
+    prune.add_argument("--days", type=_retention_days, default=STALE_DAYS, help="age in days that counts as stale")
     prune.set_defaults(func=cmd_prune)
 
     lst = sub.add_parser("list", parents=[common], help="list every review in the state dir")

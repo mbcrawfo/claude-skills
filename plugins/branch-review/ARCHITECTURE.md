@@ -40,7 +40,9 @@ Claude Code writes the plugin data path into a skill's text when it loads it, bu
 
 ### Pruning and cleanup
 
-Every review run prunes stale state first. It removes the state of branches that exist neither locally nor as `origin/<branch>`, and state untouched for more than 30 days. Detached-HEAD state matches no branch, so it goes only by age. It never removes the current branch's state.
+Every review run prunes stale state first. It removes the state of branches that exist neither locally nor as `origin/<branch>`, and state untouched for more than the retention period. Detached-HEAD state matches no branch, so it goes only by age. It never removes the current branch's state.
+
+The retention period is the plugin's `retention_days` option (`userConfig` in `plugin.json`, default 30). The review skill passes it as `rs prune --days '${user_config.retention_days}'`. Claude Code (checked on 2.1.300) fills in `${user_config.retention_days}` only once the user has saved a value; until then the skill text keeps the literal, because the manifest's `default` is not substituted. So `--days` treats an empty value or one starting with `${` as `STALE_DAYS` (30), and the skill quotes it in single quotes: inside double quotes the unexpanded literal is a shell "bad substitution" error before the script runs. A value that is not a whole number of at least 1 is a usage error. No prompt for the unset option was seen in a headless run; whether the app prompts on enable is untested.
 
 Pruning and cleanup only remove `<repo>/<branch>` directories that hold `review.json` or `rounds/`. Any other directory under the state dir, and any symlink (including a symlinked repo directory, which is never walked into), is reported as `skipped` and left alone. A directory that cannot be checked or removed is reported under `errors` without stopping the rest, and the command then exits 1.
 

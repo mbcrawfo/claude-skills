@@ -235,6 +235,24 @@ class CleanupTest(unittest.TestCase):
         self.assertEqual(self.cli("prune")["removed"], [])
         self.assertEqual(self.cli("prune", "--days", "3")["removed"], [str(old)])
 
+    def test_prune_days_unset_means_30(self):
+        # Claude Code leaves ${user_config.retention_days} unexpanded when the option was never set.
+        self.begin()
+        git(self.repo, "branch", "old")
+        git(self.repo, "branch", "recent")
+        for value in ("${user_config.retention_days}", ""):
+            with self.subTest(value=value):
+                old = self.seed(REPO_KEY, "old", "old", updated=days_ago(31))
+                recent = self.seed(REPO_KEY, "recent", "recent", updated=days_ago(29))
+                self.assertEqual(self.cli("prune", "--days", value)["removed"], [str(old)])
+                self.assertTrue(recent.exists())
+
+    def test_prune_days_rejects_zero(self):
+        code, out, err = self.call("prune", "--days", "0")
+        self.assertEqual((code, out), (1, ""))
+        self.assertTrue(err.startswith("error: "), err)
+        self.assertIn("--days", err)
+
     def _corrupt(self, name):
         d = self.state_dir / REPO_KEY / name
         d.mkdir(parents=True)

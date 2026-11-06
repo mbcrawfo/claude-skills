@@ -59,7 +59,7 @@ The review keeps its state outside the repo, in the plugin data directory. Claud
   review-notes.md  # the Review notes block for the PR description
 ```
 
-Each review run removes old state first. It removes the state of a branch that is not local and not on `origin`. It also removes state older than 30 days. It never removes the state of the current branch.
+Each review run removes old state first. It removes the state of a branch that is not local and not on `origin`. It also removes state older than the retention period, which is 30 days by default. To change the period, set the `retention_days` option in `/config`. You can also use `claude plugin configure branch-review@mbcrawfo-skills`. The review never removes the state of the current branch.
 
 ## Clean up
 
