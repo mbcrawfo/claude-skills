@@ -97,6 +97,8 @@ REPORT_PATH: <tmp>/round-<number>.md
 VALIDATED: <command> @ <sha>
 CHECKLIST_PATH: ${CLAUDE_SKILL_DIR}/reviewer-checklist.md
 SCHEMA_PATH: ${CLAUDE_SKILL_DIR}/finding-schema.md
+CHECK_COMMAND (run it after you write REPORT_PATH, and fix the report until it passes):
+CLAUDE_PLUGIN_DATA="${CLAUDE_PLUGIN_DATA}" "${CLAUDE_SKILL_DIR}/../../scripts/rs" check-report --repo '<repo>' --file '<tmp>/round-<number>.md'
 CHANGED_FILES (the review's scope; diff only these, with `git diff DIFF_FROM DIFF_TO -- <files>`):
 <changed_files, one path per line>
 CONFLICTS:
@@ -120,7 +122,7 @@ RELATED_BRANCHES:
 Write the whole report to REPORT_PATH before you hand back, however short the round: the orchestrator records from that file, not from your final message.
 ```
 
-`INTENT`, `OPEN_FINDINGS` and `CHANGED_FILES` are inlined text, never paths. Never create `<tmp>/round-<number>.md` before the reviewer reports: the reviewer writes it.
+`INTENT`, `OPEN_FINDINGS` and `CHANGED_FILES` are inlined text, never paths. Write the `CHECK_COMMAND` line with the same `rs` path and `CLAUDE_PLUGIN_DATA` value your own `rs` calls use, adding `--state-dir "<path>"` when the invoker gave one. It runs `record-findings`' checks on the report without saving anything, so the reviewer fixes a malformed block before it hands back. Never create `<tmp>/round-<number>.md` before the reviewer reports: the reviewer writes it.
 
 Leave out the lines that do not apply: `FOCUS` and `PRIOR_FINDINGS` unless the round's focus is `second-opinion`; `CONFLICTS` unless the mode is `merge-check`, or the focus is `second-opinion` and the latest `locate`'s `conflicts` is not empty; `CONFLICT_ANCHOR` only in that second-opinion case; `UPSTREAM_OVERLAP` unless the mode is `merge-check`; `EARLIER_NOT_CHECKED` unless the mode is deep and the list is not empty; `EARLIER_REVIEW_NOTES` unless the mode is deep and `notes` is set; `RELATED_BRANCHES` unless `related_branches` is not empty; `VALIDATED` unless you have the output of a full run of the repo's test suite, your own or a subagent's report that quotes the command, the pass result and the commit, giving the command and the commit or snapshot it ran on.
 

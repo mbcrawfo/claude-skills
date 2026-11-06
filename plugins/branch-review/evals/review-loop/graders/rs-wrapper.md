@@ -1,8 +1,8 @@
 ---
 type: tool_used
 tool: Bash
-input_match: 'scripts/rs\b'
+input_match: 'scripts/rs\b(?!\\?["'']?\s+check-report)'
 min: 4
 ---
 
-The orchestrator ran the state script through the `rs` wrapper (`scripts/rs`) in at least four Bash calls, either by its full path or through a variable assigned that path in the same call. The reviewer subagent never runs `rs`, so its calls cannot satisfy this grader.
+The orchestrator ran the state script through the `rs` wrapper (`scripts/rs`) in at least four Bash calls, either by its full path or through a variable assigned that path in the same call. The reviewer subagent runs `rs` only for `check-report`, which the match leaves out, so its calls cannot satisfy this grader.

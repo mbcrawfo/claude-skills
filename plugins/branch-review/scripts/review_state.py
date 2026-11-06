@@ -974,8 +974,16 @@ def extract_json_block(text: str) -> dict:
         raise ValueError(f"json parse error: {exc}") from exc
 
 
-def _bad(message: str) -> StateError:
-    return StateError(f"invalid reviewer output: {message}")
+class ReportError(StateError):
+    """A reviewer block that breaks the schema; `problems` lists each fault found."""
+
+    def __init__(self, problems: list[str]):
+        super().__init__("invalid reviewer output: " + "; ".join(problems))
+        self.problems = problems
+
+
+def _bad(message: str) -> ReportError:
+    return ReportError([message])
 
 
 def _require_str(obj: dict, key: str, where: str) -> str:
@@ -1035,8 +1043,8 @@ def _objects(data: dict, key: str, where: str, required: bool) -> list:
     return items
 
 
-def _validate_coverage(data: dict, required: bool) -> tuple[list, list]:
-    """`coverage` and `not_checked`; both must be present, and cover every item, when `required`."""
+def _validate_coverage(data: dict, required: bool) -> list:
+    """`coverage`; it must be present, and cover every item, when `required`."""
     coverage = []
     for i, c in enumerate(_objects(data, "coverage", "output", required)):
         where = f"coverage[{i}]"
@@ -1046,11 +1054,16 @@ def _validate_coverage(data: dict, required: bool) -> tuple[list, list]:
         missing = [item for item in COVERAGE_ITEMS if item not in listed]
         if missing:
             raise _bad("coverage is missing " + ", ".join(missing))
+    return coverage
+
+
+def _validate_not_checked(data: dict, required: bool) -> list:
+    """`not_checked`; it must be present when `required`."""
     not_checked = []
     for i, n in enumerate(_objects(data, "not_checked", "output", required)):
         where = f"not_checked[{i}]"
         not_checked.append({"what": _require_text(n, "what", where), "reason": _require_text(n, "reason", where)})
-    return coverage, not_checked
+    return not_checked
 
 
 def _validate_variants(f: dict, where: str) -> list:
@@ -1078,26 +1091,48 @@ def _validate_output(data: object, known: dict, *, require_coverage: bool = Fals
     `known` maps each ledger finding id to its status. With `require_coverage`
     (a deep round begun under 0.9 or later), `coverage` must list every item of
     `COVERAGE_ITEMS` and `not_checked` must be present.
+
+    Each part of the block (the summary, merge_risk, intent_check, coverage,
+    not_checked, and each verdict, finding and outside entry) is checked on its
+    own, and one ReportError lists the first fault of every part, so a single
+    re-emit can fix them all.
     """
     if not isinstance(data, dict):
         raise _bad("expected a JSON object")
-    _require_str(data, "summary", "output")
-    risk = data.get("merge_risk")
-    if not isinstance(risk, dict):
-        raise _bad("output is missing merge_risk")
-    _require_enum(risk, "level", RISK_LEVELS, "merge_risk")
-    if not _require_str(risk, "reason", "merge_risk").strip():
-        raise _bad("merge_risk.reason must not be empty")
-    check = data.get("intent_check")
-    if not isinstance(check, dict):
-        raise _bad("output is missing intent_check")
-    _require_str_list(check, "unmet_claims", "intent_check")
-    _require_str_list(check, "unmentioned_behavior", "intent_check")
-    coverage, not_checked = _validate_coverage(data, require_coverage)
+    problems: list[str] = []
+
+    def part(check, *args):
+        try:
+            return check(*args)
+        except ReportError as exc:
+            problems.extend(exc.problems)
+            return None
+
+    def risk_check() -> None:
+        risk = data.get("merge_risk")
+        if not isinstance(risk, dict):
+            raise _bad("output is missing merge_risk" if risk is None else "merge_risk must be an object")
+        _require_enum(risk, "level", RISK_LEVELS, "merge_risk")
+        if not _require_str(risk, "reason", "merge_risk").strip():
+            raise _bad("merge_risk.reason must not be empty")
+
+    def intent_check() -> None:
+        check = data.get("intent_check")
+        if not isinstance(check, dict):
+            raise _bad("output is missing intent_check" if check is None else "intent_check must be an object")
+        _require_str_list(check, "unmet_claims", "intent_check")
+        _require_str_list(check, "unmentioned_behavior", "intent_check")
+
+    part(_require_str, data, "summary", "output")
+    part(risk_check)
+    part(intent_check)
+    coverage = part(_validate_coverage, data, require_coverage) or []
+    not_checked = part(_validate_not_checked, data, require_coverage) or []
 
     verdicts = []
     seen: set = set()
-    for i, v in enumerate(_require_list(data, "verdicts", "output")):
+
+    def verdict_check(i: int, v: object) -> dict:
         where = f"verdicts[{i}]"
         if not isinstance(v, dict):
             raise _bad(f"{where} must be an object")
@@ -1110,10 +1145,9 @@ def _validate_output(data: object, known: dict, *, require_coverage: bool = Fals
         if known[vid] not in OPEN_STATUSES:
             raise _bad(f"{where} gives a verdict on {vid}, which is {known[vid]}, not open, fixed or still-open")
         seen.add(vid)
-        verdicts.append({"id": vid, "status": status, "reason": _optional_str(v, "reason", "", where)})
+        return {"id": vid, "status": status, "reason": _optional_str(v, "reason", "", where)}
 
-    findings = []
-    for i, f in enumerate(_require_list(data, "findings", "output")):
+    def finding_check(i: int, f: object) -> dict:
         where = f"findings[{i}]"
         if not isinstance(f, dict):
             raise _bad(f"{where} must be an object")
@@ -1132,10 +1166,9 @@ def _validate_output(data: object, known: dict, *, require_coverage: bool = Fals
         rec["effort"] = _require_enum(f, "effort", EFFORTS, where) if "effort" in f else "quick"
         rec["variants"] = _validate_variants(f, where)
         rec["fix_options"] = _validate_fix_options(f, where)
-        findings.append(rec)
+        return rec
 
-    outside = []
-    for i, o in enumerate(_require_list(data, "outside_change", "output")):
+    def outside_check(i: int, o: object) -> dict:
         where = f"outside_change[{i}]"
         if not isinstance(o, dict):
             raise _bad(f"{where} must be an object")
@@ -1151,8 +1184,19 @@ def _validate_output(data: object, known: dict, *, require_coverage: bool = Fals
             rec["severity"] = _require_enum(o, "severity", SEVERITIES, where)
         if "category" in o:
             rec["category"] = _require_enum(o, "category", CATEGORIES, where)
-        outside.append(rec)
+        return rec
 
+    def entries(key: str, check) -> list:
+        items = part(_require_list, data, key, "output") or []
+        checked = (part(check, i, item) for i, item in enumerate(items))
+        return [rec for rec in checked if rec is not None]
+
+    verdicts = entries("verdicts", verdict_check)
+    findings = entries("findings", finding_check)
+    outside = entries("outside_change", outside_check)
+
+    if problems:
+        raise ReportError(problems)
     return {
         "verdicts": verdicts,
         "findings": findings,
@@ -1194,16 +1238,40 @@ def _find(state: dict, finding_id: str) -> dict:
     raise StateError(f"unknown finding id {finding_id}")
 
 
-def cmd_record_findings(args: argparse.Namespace) -> dict:
+def _check_round_report(args: argparse.Namespace) -> tuple[Path, dict, dict, object, dict]:
+    """Validate `--file` against the latest round, which must be unrecorded.
+
+    Returns the state dir, the state, the round, the parsed block and the
+    checked output. Shared by `record-findings` and `check-report`, so both
+    refuse exactly the same reports.
+    """
     directory, state = _ledger_state(args)
     rnd = state["rounds"][-1]
-    number = rnd["number"]
     if "added" in rnd:
-        raise StateError(f"round {number} already has recorded findings")
+        raise StateError(f"round {rnd['number']} already has recorded findings")
     known = {f.get("id"): f.get("status") for f in state["findings"]}
     data = _load_output(args.file)
     required = rnd.get("mode") == "deep" and _version_at_least(rnd.get("plugin_version"), V09)
     checked = _validate_output(data, known, require_coverage=required)
+    return directory, state, rnd, data, checked
+
+
+def cmd_check_report(args: argparse.Namespace) -> dict:
+    """Validate a reviewer report as `record-findings` would, saving nothing."""
+    _, _, rnd, _, checked = _check_round_report(args)
+    return {
+        "ok": True,
+        "round": rnd["number"],
+        "mode": rnd.get("mode"),
+        "findings": len(checked["findings"]),
+        "outside": len(checked["outside"]),
+        "verdicts": len(checked["verdicts"]),
+    }
+
+
+def cmd_record_findings(args: argparse.Namespace) -> dict:
+    directory, state, rnd, data, checked = _check_round_report(args)
+    number = rnd["number"]
 
     for v in checked["verdicts"]:
         f = _find(state, v["id"])
@@ -2303,6 +2371,14 @@ def _build_parser() -> argparse.ArgumentParser:
     rec.add_argument("--file", required=True, help="reviewer report (markdown) or bare JSON")
     rec.add_argument("--report", action="store_true", help="keep a copy as rounds/<N>.md")
     rec.set_defaults(func=cmd_record_findings)
+
+    chk = sub.add_parser(
+        "check-report",
+        parents=[common],
+        help="check a reviewer report against the current round as record-findings would; save nothing",
+    )
+    chk.add_argument("--file", required=True, help="reviewer report (markdown) or bare JSON")
+    chk.set_defaults(func=cmd_check_report)
 
     setst = sub.add_parser("set-status", parents=[common], help="update a finding's status")
     setst.add_argument("--id", required=True)

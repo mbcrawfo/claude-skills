@@ -10,6 +10,9 @@
 #       callee finds it.
 #   (c) a test that only checks the function returned something
 #   (d) INTENT.md says negative quantities are rejected; no code does that
+# INTENT.md also says to fix a rule-breaking helper in place, without naming
+# one, so (b) has one settled fix and the orchestrator does not escalate it: an
+# escalation holds the second opinion that the `loop` grader requires.
 # The test suite passes as-is: `python3 -m unittest discover -s src`.
 #
 # Usage: make_fixture.sh [<dir>]
@@ -155,6 +158,8 @@ Adds `discounted_total(unit_price, quantity)` to `shop.pricing`. Orders of 10
 or more units get 10% off the line total; smaller orders pay the plain line
 total. The result is a `Decimal` rounded to cents, like every other amount in
 the package. `discounted_total` rejects negative quantities with `ValueError`.
+When a helper this change calls breaks a package rule, fix the helper itself
+rather than working around it in the new code.
 
 Out of scope: more than one discount tier, and per-customer discounts.
 EOF
