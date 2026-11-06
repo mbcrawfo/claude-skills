@@ -36,11 +36,12 @@ The dispatch prompt gives you:
 - `CONFLICTS` with `CONFLICT_ANCHOR`: second-opinion focus only, when the second opinion replaces a merge-check. `CONFLICT_ANCHOR` is the last round's snapshot, from before the conflicted merge (see the second-opinion focus).
 - `VALIDATED`: optional, `<command> @ <sha>`: the orchestrator's last full validation run and the commit it ran on.
 - `REPORT_PATH`: a file outside the repo where you write your report (see Output). Write it in every mode, however short the round: the orchestrator records from the file, and a report left only in your final message costs a failed recording.
+- `CHECK_COMMAND`: optional. A command that checks the report at `REPORT_PATH` against this round, exactly as the orchestrator will record it. See Output.
 - `CHECKLIST_PATH`, `SCHEMA_PATH`: the checklist you hunt from and the output format you end with. When a path is missing or unreadable, use `${CLAUDE_PLUGIN_ROOT}/skills/review/reviewer-checklist.md` and `${CLAUDE_PLUGIN_ROOT}/skills/review/finding-schema.md`.
 
 ## Setup (every mode)
 
-1. **Read the checklist and the schema.** Read `CHECKLIST_PATH` and `SCHEMA_PATH` in full before anything else.
+1. **Read the checklist and the schema.** Read `CHECKLIST_PATH` and `SCHEMA_PATH` in full before anything else, however small the round. The JSON block's shape is also in Output below; copy it from there, never from memory.
 2. **Take the baseline.** Run `git status --porcelain --ignored` and keep the output; you compare against it at the end. `--ignored` matters: ignored files such as `__pycache__/` and `dist/` never show in plain `git status`, so without it you cannot tell what your own runs created from what the developer already had.
 3. **Read the repo's rules.** List the rule files with their sizes: `git ls-files -z -- '*AGENTS.md' '*CLAUDE.md' | xargs -0 wc -c`. Read the root file and each file on the path from the root to the directory of a changed file in full, one at a time, with the Read tool. Read any other rule file, and any doc a rule file tells agents to read, when a rule points to it. Never print several rule files in one command, and never send their output to a file you do not then read. Write down each rule that applies to a changed file, with its file. Note any instruction about what not to review, such as docs that are records of intent, and honor it.
 
@@ -65,7 +66,7 @@ The dispatch prompt gives you:
 6. **Check intent against code, both ways.** For every claim in `INTENT`, find the code that keeps it and try it with an input. Then check the reverse: what else the code does under the same condition. Then check each item of the "deliberately not done" list against the repo's tech-debt records. When the repo's rules say deferred work is recorded in its tech-debt records, each item the intent leaves for later must be there as still open. In every case, the code must not half-do it. Each claim the code does not keep goes in `intent_check.unmet_claims`. It is also an `intent` finding, with the input that shows it, unless the same defect is already a finding under another category; then it is listed in `unmet_claims` only. Behavior the code adds that `INTENT` does not mention goes in `intent_check.unmentioned_behavior`.
 7. **Verify carried findings.** When `OPEN_FINDINGS` is not empty, do follow-up step 2 for each entry and emit one verdict per entry. Do not report a carried finding again as a new finding: if it is not fixed, its verdict is `still-open`.
 8. **Check your findings and clean up.** Hold each finding to the Evidence rules. Fill `coverage` with one line per checklist category and required step, saying what you ran or read (see Output). Clean up everything the review created (see Scratch files). Rate the merge risk in one sentence.
-9. **Write the report.** Write it to `REPORT_PATH` with one heredoc as Output says, then run `tail -n 3 '<REPORT_PATH>'` and confirm the file ends with the JSON block's closing fence. Your final message does not replace the file: the orchestrator records from the file. When `REPORT_PATH` is absent, skip the file.
+9. **Write the report.** Write it to `REPORT_PATH` with one heredoc as Output says, then run `tail -n 3 '<REPORT_PATH>'` and confirm the file ends with the JSON block's closing fence. Then run `CHECK_COMMAND` and fix the report until it passes, as Output says. Your final message does not replace the file: the orchestrator records from the file. When `REPORT_PATH` is absent, skip the file.
 
 ## Process for second-opinion focus
 
@@ -79,7 +80,7 @@ The dispatch prompt gives you:
 
 Then do the rest of the deep process, ending with its steps 8 and 9. When `CONFLICTS` is given, this round also replaces a merge-check: do merge-check step 1 for each path in it, with `CONFLICT_ANCHOR` as the branch's side in place of `DIFF_FROM`, `git merge-base CONFLICT_ANCHOR BASE_REF` as the old merge base, and `git merge-base DIFF_TO BASE_REF` as the new one. An entry of `PRIOR_FINDINGS` is already reported: never report it again, and treat a defect with the same cause as that finding, not a new one. The entries still unsettled are also in `OPEN_FINDINGS` and get verdicts there. The one exception is a `verified` entry that has regressed: when its trigger fails again at `DIFF_TO`, report it as a new finding and name the earlier id in its `trigger` or `evidence` (for example "regression of R1-F2"). Every other status (`open`, `fixed`, `still-open`, `invalid`, `escalated`, `deferred`, `accepted`, `outside`) is never reported again.
 
-6. **Write the report** to `REPORT_PATH`, then run `tail -n 3` on it and confirm the closing fence, as deep step 9 says.
+6. **Write the report** to `REPORT_PATH`, then run `tail -n 3` on it, confirm the closing fence and run `CHECK_COMMAND`, as deep step 9 says.
 
 ## Process for follow-up mode
 
@@ -92,7 +93,7 @@ Then do the rest of the deep process, ending with its steps 8 and 9. When `CONFL
    - the tests added for each fix: does the new test fail without the fix? When it is cheap, check it in a copy of the repo under a `mktemp -d` directory with the fix reverted;
    - the docs for each fix: when a fix changed a behavior or a statement, `git grep` the old wording across the living docs, untruncated.
 4. **Check your findings and clean up.** New findings go in `findings`; verdicts go in `verdicts`. Do not re-report an open finding as a new one: a finding that is not fixed gets a `still-open` verdict. Clean up as Scratch files says.
-5. **Write the report** to `REPORT_PATH` with one heredoc as Output says, then run `tail -n 3 '<REPORT_PATH>'` and confirm the file ends with the JSON block's closing fence. A short round still writes the file: the orchestrator records from it, not from your final message.
+5. **Write the report** to `REPORT_PATH` with one heredoc as Output says, then run `tail -n 3 '<REPORT_PATH>'` and confirm the file ends with the JSON block's closing fence. Then run `CHECK_COMMAND` and fix the report until it passes, as Output says. A short round still writes the file and still runs the check: the orchestrator records from the file, not from your final message.
 
 ## Process for merge-check mode
 
@@ -105,7 +106,7 @@ The base was merged into the branch and the merge conflicted. Do the follow-up p
 
 Do not review the unchanged rest of the change again. Code the base wrote is not the change: a defect in it goes in `outside_change`, unless the branch's code relies on it. Report new findings as usual.
 
-5. **Write the report** to `REPORT_PATH`, then run `tail -n 3` on it and confirm the closing fence, as follow-up step 5 says.
+5. **Write the report** to `REPORT_PATH`, then run `tail -n 3` on it, confirm the closing fence and run `CHECK_COMMAND`, as follow-up step 5 says.
 
 ## Evidence rules
 
@@ -167,7 +168,49 @@ The orchestrator may resume you with a dispute or a question about your findings
 The report has two parts.
 
 1. **Prose for a human reader.** Two sentences on what the change does and its main risk. The merge risk in one sentence. Then each finding as a short section: severity, category and title as the heading, then file and lines, trigger, consequence, evidence and fix. Then the intent check and, if any, the outside-the-change list. When `OPEN_FINDINGS` is not empty, the verdicts come first. End the prose with a `Not checked:` line naming what you did not check or could not run, rather than asserting that something matches.
-2. **The JSON block**, exactly as `SCHEMA_PATH` defines it, as the last fenced `json` block of the report. Nothing after it. Use only the enum values the schema lists; `category` is one of the checklist's category values. Leave `id` out of findings: the state script numbers them. Use empty lists, never omitted keys, when there is nothing to report. In deep mode, `coverage` has one entry per item the schema lists (each checklist category and each required step), each saying what you ran or read, or `not applicable: <why>`; `not_checked` lists what you could not check, each with a reason, and mirrors the prose's `Not checked:` line. The state script refuses a deep report that leaves an item out. When a fix has real alternatives, put them in `fix_options` and your recommendation in `fix`; never write the alternatives into `fix` as prose.
+2. **The JSON block**, in the shape below, as the last fenced `json` block of the report. Nothing after it. `SCHEMA_PATH` gives the rules for each field. Use only the enum values the schema lists; `category` is one of the checklist's category values. Leave `id` out of findings: the state script numbers them. Use empty lists, never omitted keys, when there is nothing to report. In deep mode, `coverage` has one entry per item the schema lists (each checklist category and each required step), each saying what you ran or read, or `not applicable: <why>`; `not_checked` lists what you could not check, each with a reason, and mirrors the prose's `Not checked:` line. The state script refuses a deep report that leaves an item out. When a fix has real alternatives, put them in `fix_options` and your recommendation in `fix`; never write the alternatives into `fix` as prose.
+
+The block has this shape in every mode. The values are placeholders; `a|b` means one of the listed values:
+
+```json
+{
+  "summary": "Two sentences on what the change does and its main risk.",
+  "merge_risk": {"level": "minimal|low|moderate|high", "reason": "One sentence."},
+  "intent_check": {"unmet_claims": [], "unmentioned_behavior": []},
+  "verdicts": [{"id": "R1-F2", "status": "verified|still-open", "reason": "What you ran or read."}],
+  "findings": [
+    {
+      "severity": "critical|major|minor",
+      "category": "logic|sibling-path|security|tests|intent|conventions|docs|build-ci",
+      "file": "path/from/repo/root",
+      "lines": "12-20",
+      "title": "Imperative sentence.",
+      "trigger": "Input or state that causes the problem.",
+      "consequence": "What goes wrong.",
+      "reachable_now": "yes|no|unclear",
+      "reachable_note": "",
+      "evidence": "",
+      "fix": "What to change.",
+      "test": "",
+      "source": "",
+      "effort": "quick|heavy",
+      "variants": [{"input": "What you tried.", "result": "fails|ok"}],
+      "fix_options": []
+    }
+  ],
+  "outside_change": [{"file": "path", "lines": "10-12", "title": "...", "detail": "..."}],
+  "coverage": [{"item": "logic", "done": "What you ran or read, or 'not applicable: <why>'."}],
+  "not_checked": [{"what": "What you did not check.", "reason": "Why you could not."}]
+}
+```
+
+The mistakes that cost a round:
+
+- Every top-level key is present in every mode, `summary` included. A follow-up with nothing to report still has `"findings": []`.
+- `merge_risk` is an object with `level` and `reason`, never a string.
+- A verdict's value goes in `status`, not `verdict`.
+- Add no keys of your own, such as `mode`.
+- In deep mode, `coverage` has one entry for each of `logic`, `sibling-path`, `security`, `tests`, `intent`, `conventions`, `docs`, `build-ci`, `break-tests`, `doc-grep`, `fulfilled-promises`, `real-system`, `related-records`, `broad-mappings`, `measurement-tests` and `consumer-build`.
 
 Write the complete report to `REPORT_PATH` with one Bash heredoc. Its delimiter is `BRANCH_REVIEW_REPORT_` plus 8 random hex digits (`od -An -N4 -tx1 /dev/urandom | tr -d ' \n'`), checked not to occur in the report (draw again if it does). Quote the delimiter so the shell expands nothing in the report:
 
@@ -178,5 +221,7 @@ BRANCH_REVIEW_REPORT_1c00a0ab
 ````
 
 Then run `tail -n 3 '<REPORT_PATH>'` and confirm the file ends with the JSON block's closing fence. When `REPORT_PATH` is absent, skip the file.
+
+Then run `CHECK_COMMAND` exactly as the dispatch prompt gives it, prefixed with `cd <absolute repo path> &&`. It reads the report's last JSON block and checks it as the orchestrator will when it records the round; it changes nothing. On success it prints `"ok": true`. On failure it exits 1 and prints one `error:` line that lists every problem, separated by `; `. Fix each one in your report, write the whole report again with a new heredoc (a new delimiter), and run the check again. Repeat until it passes. Never hand back a report the check refuses. When the check fails for a reason that is not about the report (no round in progress, a state directory error), say so in your final message and hand back. When `CHECK_COMMAND` is absent, skip this step.
 
 Your final message is the same report, word for word.

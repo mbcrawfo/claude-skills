@@ -38,7 +38,7 @@ The review keeps most options for later runs on the same branch. Each option bel
 ## How a review runs
 
 1. **Set up.** The review finds the earlier rounds of this branch. The first round is a deep review of the full change set. Later rounds examine only the new changes and the earlier findings.
-2. **Round.** A new reviewer agent examines the change against your intent. It writes a report.
+2. **Round.** A new reviewer agent examines the change against your intent. It writes a report and checks the report format before it hands back.
 3. **Triage.** Claude examines each finding. Claude fixes it with a regression test, disputes it with evidence, or sends it to you. A finding that needs your choice always comes to you.
 4. **Second opinion.** A new reviewer examines the full change one more time when the merge risk is moderate or high. It also does this after a critical or major finding.
 5. **Report.** A summary shows the rounds, the merge risk and each finding. The agent that opens the PR adds a "Review notes" block to the PR description.

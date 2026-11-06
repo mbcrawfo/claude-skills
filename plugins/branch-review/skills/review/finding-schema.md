@@ -44,6 +44,10 @@ Required top-level keys: `summary` (string), `merge_risk` (`level` from the enum
 
 Required finding keys: `severity`, `category`, `file`, `lines`, `title`, `trigger`, `consequence`, `reachable_now`, `fix`. Optional: `reachable_note`, `evidence`, `test`, `source` (default `""`) and `effort` (default `"quick"`). `lines` is a string.
 
+**Errors.** `record-findings` checks each part of the block on its own: `summary`, `merge_risk`, `intent_check`, `coverage`, `not_checked`, and each verdict, finding and outside entry. A refused block gives one stderr line, `error: invalid reviewer output: ` and then the first problem of each failing part, joined with `; `.
+
+**check-report.** `check-report --file PATH` runs the same checks as `record-findings` against the latest round and saves nothing. The reviewer runs it on its own report before it hands back. It refuses what `record-findings` refuses, with the same message, including a round that is already recorded and a missing round. On success it prints `ok`, `round`, `mode` and the counts of `findings`, `outside` and `verdicts`.
+
 Verdicts are for earlier findings only: the entries of `OPEN_FINDINGS`, which a follow-up round always has and a deep round has when findings are carried forward. Give each entry one verdict and never re-report it as a new finding. `id` must exist in the ledger, name a finding whose status is `open`, `fixed` or `still-open`, and appear in at most one verdict; `status` is `verified` or `still-open`; `reason` is optional. Any violation rejects the whole block and leaves the ledger untouched.
 
 `outside_change` entries require `file` and `title`; `lines` and `detail` default to `""`. `severity` and `category` may be given (same enums) and default to `minor` and `logic`.
