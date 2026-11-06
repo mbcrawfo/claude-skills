@@ -68,6 +68,16 @@ The manager merges a PR only when all of these conditions are true:
 
 For contributor details, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
+## Where state lives
+
+The manager keeps the files of each run in the plugin data directory:
+
+```
+~/.claude/plugins/data/implementation-manager-mbcrawfo-skills/<owner>-<repo>/<run>/
+```
+
+When a run starts, the manager removes the old runs of the same repo. A run is old when its files did not change for the retention period. The period is 30 days by default. To change it, set the `retention_days` option in `/config`. The runs of a repo stay until you start a new run in that repo.
+
 ## Known issues
 
 - In `status`, the hold label of a unit can show an old item. This occurs when you answer one item while a different item is still open. The hold still works correctly: the unit does not merge until all items that block the merge have an answer. To see the open items, ask the manager what waits for you.
