@@ -18,7 +18,8 @@ Procedure
   3. ``score`` re-scores saved results and spends nothing. A set passes when
      every branch ran, no round-1 major was missed, no new finding failed the
      judge's check, and the replay cost less than the old rounds on all but at
-     most one branch.
+     most one branch. Findings the judge could not verify are listed for a spot-check
+     and do not fail the set.
 
 Spend caps (hard): each reviewer run gets ``--max-budget-usd`` set to
 ``--round-budget-usd`` (default 15), shrunk so the reviewer plus a $2 judge fit
@@ -58,12 +59,40 @@ def _version(text: str | None) -> tuple[int, ...] | None:
     return tuple(int(x) for x in match.groups()) if match else None
 
 
+def has_commit(repo: str, sha: str) -> bool:
+    """Return True when `repo` is a git repo that holds the commit `sha`."""
+    if not repo or not Path(repo).is_dir():
+        return False
+    done = subprocess.run(["git", "cat-file", "-e", f"{sha}^{{commit}}"], cwd=repo, capture_output=True)
+    return done.returncode == 0
+
+
+def resolve_repo(repo: str | None, sha: str, has: Callable[[str, str], bool] = has_commit) -> str | None:
+    """Return a checkout of the repo that holds `sha`, or None.
+
+    The run's REPO is often a session worktree deleted after merge. The commit
+    is still in the main checkout, which is the path before `/.claude/worktrees/`.
+    """
+    if not repo:
+        return None
+    if has(repo, sha):
+        return repo
+    marker = "/.claude/worktrees/"
+    if marker in repo:
+        main = repo.split(marker, 1)[0]
+        if has(main, sha):
+            return main
+    return None
+
+
 def pick_candidates(
     joined: list[dict],
     states: dict[str, dict],
     min_files: int = 5,
     max_files: int = 15,
     min_version: str = "0.12.0",
+    repo_for: Callable[[str | None, str], str | None] = resolve_repo,
+    skipped: list[str] | None = None,
 ) -> list[dict]:
     """Return replay-set entries for first deep rounds that had a second opinion.
 
@@ -96,9 +125,16 @@ def pick_candidates(
             continue
         second = min(later, key=lambda x: x["number"] or 0)
         run = r["runs"][0]
+        repo = repo_for(run.dispatch.get("repo"), r["diff_to"])
+        if repo is None:
+            if skipped is not None:
+                skipped.append(
+                    f"{r['branch']}: no checkout holds {r['diff_to'][:10]} (REPO {run.dispatch.get('repo')})"
+                )
+            continue
         out.append(
             {
-                "repo": run.dispatch.get("repo"),
+                "repo": repo,
                 "branch": r["branch"],
                 "base_ref": r.get("base_ref"),
                 "diff_from": r["diff_from"],
@@ -177,6 +213,12 @@ def _is_major(known: dict) -> bool:
     return known.get("severity") in ("major", "critical")
 
 
+def _title(findings: list[dict], index) -> str | None:
+    if isinstance(index, int) and 0 <= index < len(findings):
+        return findings[index].get("title")
+    return None
+
+
 def score(results: list[dict]) -> dict:
     """Score saved per-entry results; see the module docstring for the pass rule."""
     branches = []
@@ -185,6 +227,12 @@ def score(results: list[dict]) -> dict:
         matched = {str(j.get("of")) for j in judge if j.get("label") == "matches"}
         round1 = [k for k in r.get("known") or [] if k.get("origin") == "round-1"]
         new = [j for j in judge if j.get("label") == "new"]
+        titles = r.get("replay_findings") or []
+        unverified = [
+            {"replay": j.get("replay"), "title": _title(titles, j.get("replay")), "check": j.get("check")}
+            for j in new
+            if j.get("holds") is None
+        ]
         branches.append(
             {
                 "branch": r.get("branch"),
@@ -194,8 +242,9 @@ def score(results: list[dict]) -> dict:
                 "majors_missed": sum(1 for k in round1 if _is_major(k) and str(k.get("id")) not in matched),
                 "minors_found": sum(1 for k in round1 if not _is_major(k) and str(k.get("id")) in matched),
                 "new_held": sum(1 for j in new if j.get("holds") is True),
-                # A new finding the judge could not confirm (null) counts as not real.
-                "new_not_real": sum(1 for j in new if j.get("holds") is not True),
+                "new_not_real": sum(1 for j in new if j.get("holds") is False),
+                "new_unverified": len(unverified),
+                "unverified": unverified,
                 "duplicates": sum(1 for j in judge if j.get("label") == "duplicate"),
             }
         )
@@ -435,6 +484,9 @@ def _print_score(scored: dict) -> None:
     print("  ".join(f"{c:>13}" for c in cols))
     for b in scored["branches"]:
         print("  ".join(f"{b[c]:>13.2f}" if isinstance(b[c], float) else f"{b[c]!s:>13}" for c in cols))
+    for b in scored["branches"]:
+        for u in b["unverified"]:
+            print(f"unverified, spot-check: {b['branch']} #{u['replay']} {u['title']!r}: {u['check']}")
     print(f"spend ${scored['spend']:.2f}  {'PASSED' if scored['passed'] else 'FAILED'}")
 
 
@@ -453,7 +505,12 @@ def cmd_pick(args: argparse.Namespace) -> int:
     runs = usage_report.reviewer_runs(args.projects_dir, args.since, args.until)
     rounds = usage_report.state_rounds(state_dirs, args.since, args.until)
     joined = usage_report.join(runs, rounds)
-    picked = pick_candidates(joined, _load_states(state_dirs, joined), args.min_files, args.max_files, args.min_version)
+    skipped: list[str] = []
+    picked = pick_candidates(
+        joined, _load_states(state_dirs, joined), args.min_files, args.max_files, args.min_version, skipped=skipped
+    )
+    for line in skipped:
+        print(f"skipped {line}")
     path = args.output
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(picked, indent=2), encoding="utf-8")

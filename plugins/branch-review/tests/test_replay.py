@@ -81,7 +81,7 @@ class PickTest(unittest.TestCase):
         so = rnd(2, branch="later", focus="second-opinion", state_file="/s/later")
         joined = good + small + old + alone + [unmatched, later, so]
         states = {r["state_file"]: {"findings": []} for r in joined}
-        picked = replay.pick_candidates(joined, states)
+        picked = replay.pick_candidates(joined, states, repo_for=lambda repo, sha: repo)
         self.assertEqual([e["branch"] for e in picked], ["b1"])
         e = picked[0]
         self.assertEqual(e["round"], 1)
@@ -91,6 +91,27 @@ class PickTest(unittest.TestCase):
         self.assertEqual(e["repo"], "/r")
         self.assertEqual((e["diff_from"], e["diff_to"], e["base_ref"]), ("aaa", "bbb", "main"))
         json.dumps(picked)
+
+
+class ResolveRepoTest(unittest.TestCase):
+    def test_falls_back_to_main_checkout_of_deleted_worktree(self):
+        main = "/p/Proj"
+        wt = main + "/.claude/worktrees/feat-1"
+        self.assertEqual(replay.resolve_repo(wt, "s", lambda r, s: r == main), main)
+        self.assertEqual(replay.resolve_repo(wt, "s", lambda r, s: True), wt)
+        self.assertIsNone(replay.resolve_repo(wt, "s", lambda r, s: False))
+        self.assertIsNone(replay.resolve_repo("/p/other", "s", lambda r, s: r == main))
+        self.assertIsNone(replay.resolve_repo(None, "s", lambda r, s: True))
+
+    def test_pick_skips_and_reports_unresolvable_repo(self):
+        joined = [rnd(1), rnd(2, focus="second-opinion")]
+        skipped = []
+        picked = replay.pick_candidates(
+            joined, {"/s/b1/review.json": {}}, repo_for=lambda repo, sha: None, skipped=skipped
+        )
+        self.assertEqual(picked, [])
+        self.assertEqual(len(skipped), 1)
+        self.assertIn("b1", skipped[0])
 
 
 class KnownFindingsTest(unittest.TestCase):
@@ -196,6 +217,16 @@ class ScoreTest(unittest.TestCase):
         self.assertEqual((b["new_held"], b["new_not_real"], b["duplicates"]), (1, 1, 1))
         self.assertFalse(s["passed"])
 
+    def test_unverified_new_finding_is_listed_and_does_not_fail(self):
+        j = labels(("matches", "R1-F1", None), ("new", None, None))
+        r = result("a", judge=j)
+        r["replay_findings"] = [{"title": "x"}, {"title": "unsure thing"}]
+        s = replay.score([r])
+        b = s["branches"][0]
+        self.assertEqual((b["new_not_real"], b["new_unverified"]), (0, 1))
+        self.assertEqual(b["unverified"][0]["title"], "unsure thing")
+        self.assertTrue(s["passed"])
+
     def test_score_allows_one_costlier_branch(self):
         s = replay.score([result("a"), result("b", new=9.0), result("c")])
         self.assertTrue(s["passed"])
@@ -227,6 +258,45 @@ REPORT = (
     '"trigger": "x", "consequence": "y"}]}\n```\n'
 )
 JUDGE = 'ok\n```json\n[{"replay": 0, "label": "matches", "of": "R1-F1", "holds": null, "check": "same"}]\n```\n'
+
+
+class RealGitPathTest(unittest.TestCase):
+    def test_worktree_and_begin_round_with_real_runner(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        repo = helpers.make_repo(tmp / "src")
+        diff_from = helpers.git(repo, "rev-parse", "main")
+        diff_to = helpers.git(repo, "rev-parse", "HEAD")
+        helpers.git(repo, "checkout", "-q", "main")  # the branch commit is no longer HEAD
+        plugin = Path(replay.__file__).resolve().parent.parent.parent
+        runner = replay.Runner(plugin)
+        intent = tmp / "intent.md"
+        intent.write_text("add b", encoding="utf-8")
+        tree = tmp / "out" / "repo"
+        self.assertTrue(replay.has_commit(str(repo), diff_to))
+        runner.worktree_add(str(repo), tree, diff_to)
+        try:
+            self.assertEqual(helpers.git(tree, "rev-parse", "HEAD"), diff_to)
+            begun = runner.rs(
+                [
+                    "begin-round",
+                    "--state-dir", str(tmp / "out" / "state"),
+                    "--repo", str(tree),
+                    "--mode", "deep",
+                    "--mode-reason", "replay",
+                    "--model", "opus",
+                    "--snapshot", diff_to,
+                    "--base-ref", diff_from,
+                    "--intent-file", str(intent),
+                ]
+            )  # fmt: skip
+            self.assertEqual((begun["diff_from"], begun["diff_to"]), (diff_from, diff_to))
+            self.assertEqual(begun["changed_files"], ["b.txt"])
+            self.assertEqual(runner.line_count(tree, diff_to, "b.txt"), 1)
+            self.assertIsNone(runner.line_count(tree, diff_to, "gone.txt"))
+        finally:
+            runner.worktree_remove(str(repo), tree)
+        self.assertFalse(tree.exists())
 
 
 class FakeRunner:
