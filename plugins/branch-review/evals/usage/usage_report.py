@@ -17,7 +17,8 @@ Cost comes from the token counts in each transcript, counted once per distinct
 counts). Prices are USD per million tokens, from public list prices: Opus
 $5/$25, Sonnet $3/$15 (input/output). Cache write is 1.25x input for 5 minutes
 and 2x for 1 hour; cache read is 0.1x input. The Haiku and Fable rows are
-placeholders to check against current list prices.
+placeholders to check against current list prices (TD-0012). A model with no
+price row costs 0 and is counted under ``unpriced``, with a warning line.
 
 Usage: python3 usage_report.py [--since YYYY-MM-DD] [--until YYYY-MM-DD]
        [--projects-dir PATH] [--state-dir PATH ...] [--json]
@@ -141,6 +142,7 @@ class ReviewerRun:
     peak_context: int
     tool_calls: int
     dispatch: dict
+    unpriced_model: str | None = None
 
 
 def _first_prompt(objs: list[dict]) -> str:
@@ -185,7 +187,9 @@ def reviewer_runs(projects_dir: Path, since: date, until: date) -> list[Reviewer
             continue
         usages = message_usages(lines)
         model = next((m for m, _ in reversed(usages) if m), None)
-        family = model_family(model) or model_family(meta.get("model")) or "opus"
+        family = model_family(model) or model_family(meta.get("model"))
+        # A model with no price row is not priced as another family: cost 0, flagged.
+        unpriced = None if family else (model or meta.get("model") or "unknown")
         tool_ids = set()
         for o in objs:
             if o.get("type") != "assistant":
@@ -207,11 +211,12 @@ def reviewer_runs(projects_dir: Path, since: date, until: date) -> list[Reviewer
                 path=transcript,
                 started=stamps[0],
                 model=family,
-                cost=sum(cost_usd(u, family) for _, u in usages),
+                cost=sum(cost_usd(u, family) for _, u in usages) if family else 0.0,
                 turns=len(usages),
                 peak_context=peak,
                 tool_calls=len(tool_ids),
                 dispatch=parse_dispatch(_first_prompt(objs)),
+                unpriced_model=unpriced,
             )
         )
     return runs
@@ -292,8 +297,18 @@ def _p90(values: list[float]) -> float:
     return ordered[max(0, -(-len(ordered) * 9 // 10) - 1)] if ordered else 0.0
 
 
-def summarize(joined: list[dict]) -> dict:
-    """Group joined rounds and count findings; list the second opinions."""
+# A finding with one of these statuses is not a real finding: it is counted in
+# its own column and in no severity column.
+NOT_REAL = ("invalid", "duplicate")
+
+
+def summarize(joined: list[dict], all_runs: list[ReviewerRun] | None = None) -> dict:
+    """Group joined rounds and count findings; list the second opinions.
+
+    `unpriced` counts the reviewer runs (all of `all_runs`, else those joined to a
+    round) whose model has no price row; they cost 0 here. `unpriced_models`
+    names those models.
+    """
     grouped: dict[str, list[dict]] = defaultdict(list)
     for r in joined:
         key = "/".join(str(x) for x in (r["mode"], r["focus"] or "-", r["model"], r["shape"], r["plugin_version"]))
@@ -307,9 +322,10 @@ def summarize(joined: list[dict]) -> dict:
         counts = defaultdict(int)
         for r in items:
             for f in r["findings"]:
-                counts[f.get("severity")] += 1
-                if f.get("status") in ("invalid", "duplicate"):
+                if f.get("status") in NOT_REAL:
                     counts[f["status"]] += 1
+                else:
+                    counts[f.get("severity")] += 1
         groups[key] = {
             "rounds": len(items),
             "cost_total": sum(costs),
@@ -337,11 +353,22 @@ def summarize(joined: list[dict]) -> dict:
             second.append(
                 {
                     "branch": branch,
-                    "majors": sum(1 for f in r["findings"] if f.get("severity") == "major"),
+                    "majors": sum(
+                        1
+                        for f in r["findings"]
+                        if f.get("severity") in ("major", "critical") and f.get("status") not in NOT_REAL
+                    ),
                     "prior_shape": prior[-1]["shape"] if prior else None,
                 }
             )
-    return {"groups": groups, "second_opinions": second}
+    seen = all_runs if all_runs is not None else [x for r in joined for x in r["runs"]]
+    unpriced = [x.unpriced_model for x in seen if x.unpriced_model]
+    return {
+        "groups": groups,
+        "second_opinions": second,
+        "unpriced": len(unpriced),
+        "unpriced_models": sorted(set(unpriced)),
+    }
 
 
 def _default_state_dirs() -> list[Path]:
@@ -369,6 +396,9 @@ def _format(summary: dict) -> str:
         by_shape[s["prior_shape"]].append(s["majors"])
     for shape, majors in sorted(by_shape.items(), key=lambda kv: str(kv[0])):
         rows.append(f"second opinions after {shape} deep: {len(majors)}, {sum(majors) / len(majors):.2f} majors each")
+    if summary.get("unpriced"):
+        names = ", ".join(summary["unpriced_models"])
+        rows.append(f"warning: {summary['unpriced']} reviewer runs use a model with no price ({names}); priced at $0")
     return "\n".join(rows)
 
 
@@ -384,7 +414,7 @@ def main(argv: list[str] | None = None) -> int:
     state_dirs = args.state_dir if args.state_dir else _default_state_dirs()
     runs = reviewer_runs(args.projects_dir, args.since, args.until)
     rounds = state_rounds(state_dirs, args.since, args.until)
-    summary = summarize(join(runs, rounds))
+    summary = summarize(join(runs, rounds), runs)
     if args.json:
         json.dump(summary, sys.stdout, indent=2, default=str)
         print()

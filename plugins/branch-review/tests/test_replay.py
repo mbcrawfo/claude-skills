@@ -1,11 +1,15 @@
 """Tests for the small replay (evals/replay/replay.py). No test calls `claude`."""
 
+import contextlib
+import io
 import json
 from pathlib import Path
 import re
+import shlex
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 
 import helpers  # noqa: F401  (puts the evals dirs on sys.path)
 import replay
@@ -132,6 +136,31 @@ class KnownFindingsTest(unittest.TestCase):
         self.assertEqual([(k["id"], k["origin"]) for k in known], [("R1-F1", "round-1"), ("R2-F3", "second-opinion")])
         self.assertEqual([k["id"] for k in excluded], ["R2-F1", "R2-F2"])
 
+    def test_finding_on_the_last_line_is_kept(self):
+        state = {
+            "findings": [
+                finding("R2-F1", 2, file="short.py", lines="10"),
+                finding("R2-F2", 2, file="short.py", lines="11"),
+            ]
+        }
+        known, excluded = replay.known_findings(state, {"round": 1, "second_opinion_round": 2}, {"short.py": 10}.get)
+        self.assertEqual([k["id"] for k in known], ["R2-F1"])
+        self.assertEqual([k["id"] for k in excluded], ["R2-F2"])
+
+    def test_invalid_and_duplicate_findings_are_excluded_not_known(self):
+        state = {"findings": []}
+        for status in ("invalid", "duplicate"):
+            for rnd_no in (1, 2):
+                f = finding(f"R{rnd_no}-{status}", rnd_no)
+                f["status"] = status
+                state["findings"].append(f)
+        state["findings"].append({**finding("R1-open", 1), "status": "open"})
+        known, excluded = replay.known_findings(state, {"round": 1, "second_opinion_round": 2}, lambda f: 100)
+        self.assertEqual([k["id"] for k in known], ["R1-open"])
+        self.assertEqual(
+            sorted(k["id"] for k in excluded), ["R1-duplicate", "R1-invalid", "R2-duplicate", "R2-invalid"]
+        )
+
 
 class DispatchTest(unittest.TestCase):
     def fields(self):
@@ -235,18 +264,32 @@ class ScoreTest(unittest.TestCase):
         s = replay.score([result("a", new=9.0), result("b", new=9.0), result("c")])
         self.assertFalse(s["passed"])
 
+    def test_score_fails_on_missed_round1_critical(self):
+        known = [{"id": "R1-F1", "origin": "round-1", "severity": "critical"}]
+        s = replay.score([result("a", known=known, judge=[])])
+        self.assertEqual(s["branches"][0]["majors_missed"], 1)
+        self.assertFalse(s["passed"])
+
+    def test_score_counts_equal_cost_as_costlier(self):
+        s = replay.score([result("a", old=5.0, new=5.0), result("b", old=5.0, new=5.0), result("c")])
+        self.assertFalse(s["passed"])
+        s = replay.score([result("a", old=5.0, new=5.0), result("b")])
+        self.assertTrue(s["passed"])
+
     def test_score_fails_on_failed_branch(self):
         s = replay.score([result("a"), result("b", status="failed")])
         self.assertFalse(s["passed"])
 
 
-def init_event(tools=("Read", "Grep", "Glob", "Bash"), plugin="/plugin", mcp=()):
+def init_event(
+    tools=("Read", "Grep", "Glob", "Bash"), plugin="/plugin", mcp=(), agents=("branch-review:reviewer", "Explore")
+):
     return {
         "type": "system",
         "subtype": "init",
         "tools": list(tools),
         "mcp_servers": list(mcp),
-        "agents": ["branch-review:reviewer", "Explore"],
+        "agents": list(agents),
         "plugins": [
             {"name": "branch-review", "path": plugin},
             {"name": "superpowers", "path": "/cache/superpowers"},
@@ -288,6 +331,7 @@ class ContextCheckTest(unittest.TestCase):
         self.assertIn("unexpected tools", self.check(init_event(tools=("Read", "mcp__srv__t"))))
         self.assertIn("not /plugin", self.check(init_event(plugin="/installed/x")))
         self.assertIn("MCP", self.check(init_event(mcp=("srv",))))
+        self.assertIn("reviewer agent not loaded", self.check(init_event(agents=("Explore",))))
         self.assertIn("no init", replay.check_context("", Path("/plugin")))
 
 
@@ -298,6 +342,25 @@ class StreamCostTest(unittest.TestCase):
         high = replay.stream_costs(stream(1_000_000, reported=30.0), "opus")
         self.assertEqual((high["spend"], high["reported"]), (30.0, 30.0))
         self.assertIsNone(replay.stream_costs(stream(10), "opus")["reported"])
+
+
+class JsonBlockTest(unittest.TestCase):
+    FENCE = "`" * 3
+
+    def block(self, body):
+        return f"text\n{self.FENCE}json\n{body}\n{self.FENCE}\n"
+
+    def test_last_json_block_reads_backticks_inside_a_string(self):
+        evidence = "quote:\n" + self.FENCE + "py\nx = 1\n" + self.FENCE
+        report = self.block(json.dumps({"findings": [{"title": "t", "evidence": evidence}]}))
+        self.assertEqual(replay.last_json_block(report)["findings"][0]["evidence"], evidence)
+        judge = self.block(json.dumps([{"replay": 0, "label": "new", "holds": True, "check": evidence}]))
+        self.assertEqual(replay.last_json_block(judge)[0]["check"], evidence)
+
+    def test_last_json_block_plain_and_missing(self):
+        self.assertEqual(replay.last_json_block(self.block('{"findings": []}')), {"findings": []})
+        self.assertIsNone(replay.last_json_block("no block here"))
+        self.assertIsNone(replay.last_json_block(self.block("{not json")))
 
 
 class RealGitPathTest(unittest.TestCase):
@@ -340,7 +403,22 @@ class RealGitPathTest(unittest.TestCase):
 
 
 class FakeRunner:
-    def __init__(self, diff_from="aaa", reports=(True, True), cost_tokens=100_000, reviewer_init=None, reported=None):
+    def __init__(
+        self,
+        diff_from="aaa",
+        reports=(True, True),
+        cost_tokens=100_000,
+        reviewer_init=None,
+        reported=None,
+        judge_text=JUDGE,
+        fail_at=None,
+        remove_fails=False,
+    ):
+        self.judge_text = judge_text
+        self.fail_at = fail_at
+        self.remove_fails = remove_fails
+        self.cwds = []
+        self.trees = []
         self.reviewer_init = reviewer_init
         self.reported = reported
         self.diff_from = diff_from
@@ -351,11 +429,14 @@ class FakeRunner:
 
     def worktree_add(self, repo, path, rev):
         Path(path).mkdir(parents=True)
+        self.trees.append(Path(path))
         self.calls.append("add")
 
     def worktree_remove(self, repo, path):
         shutil.rmtree(path, ignore_errors=True)
         self.calls.append("remove")
+        if self.remove_fails:
+            raise RuntimeError("git worktree remove failed")
 
     def rs(self, args):
         self.calls.append("rs")
@@ -363,9 +444,12 @@ class FakeRunner:
         return {"diff_from": self.diff_from, "diff_to": "bbb"}
 
     def line_count(self, cwd, rev, file):
+        if self.fail_at == "line_count":
+            raise RuntimeError("line_count boom")
         return 100
 
     def reviewer(self, prompt, cwd, budget):
+        self.cwds.append(("reviewer", Path(cwd)))
         self.calls.append("reviewer")
         self.budgets.append(budget)
         self.prompt = prompt
@@ -377,7 +461,8 @@ class FakeRunner:
     def judge(self, prompt, cwd, budget):
         self.calls.append("judge")
         self.judge_prompt = prompt
-        return stream(1000, JUDGE)
+        self.cwds.append(("judge", Path(cwd)))
+        return stream(1000, self.judge_text)
 
 
 class RunTest(unittest.TestCase):
@@ -433,7 +518,7 @@ class RunTest(unittest.TestCase):
         self.assertGreater(saved["new_cost"], 0)
         self.assertIn("--snapshot", runner.rs_args)
         self.assertIn(str(self.out / "2" / "state"), runner.rs_args)
-        self.assertIn("--state-dir " + str(self.out / "2" / "state"), runner.prompt)
+        self.assertIn("--state-dir '" + str(self.out / "2" / "state") + "'", runner.prompt)
         self.assertIn("R1-F1", runner.judge_prompt)
         again = replay.score(replay.load_results(self.out))
         self.assertEqual(len(again["branches"]), 2)
@@ -469,10 +554,109 @@ class RunTest(unittest.TestCase):
         self.assertEqual(results[0]["new_cost_reported"], 7.0)
         self.assertIn("judge_cost_estimate", results[0])
 
+    def test_worktree_is_outside_any_checkout_and_removed(self):
+        runner = FakeRunner()
+        self.go(runner)
+        self.assertEqual(len(runner.trees), 2)
+        for tree in runner.trees:
+            for forbidden in (replay.PLUGIN_ROOT, replay.RESULTS_DIR, self.out, self.tmp):
+                self.assertNotIn(forbidden.resolve(), tree.resolve().parents)
+            self.assertFalse(tree.parent.exists())
+        self.assertEqual({c for _, c in runner.cwds}, set(runner.trees))
+        self.assertEqual({n for n, _ in runner.cwds}, {"reviewer", "judge"})
+        self.assertFalse((self.out / "1" / "repo").exists())
+
+    def test_check_command_quotes_a_state_dir_with_a_space(self):
+        self.out = self.tmp / "my out"
+        runner = FakeRunner()
+        self.go(runner)
+        line = re.search(r"^\"?/plugin.*check-report.*$", runner.prompt, re.M).group(0)
+        parts = shlex.split(line)
+        self.assertEqual(parts[parts.index("--state-dir") + 1], str(self.out / "2" / "state"))
+
+    def test_run_fails_when_judge_gives_no_json(self):
+        runner = FakeRunner(judge_text="no json at all")
+        results = self.go(runner)
+        self.assertEqual((results[0]["status"], results[0]["reason"]), ("failed", "no judge output"))
+        self.assertEqual(results[0]["judge"], [])
+
+    def test_runner_step_that_raises_fails_entry_and_removes_worktree(self):
+        runner = FakeRunner(fail_at="line_count")
+        results = self.go(runner)
+        self.assertEqual([r["status"] for r in results], ["failed", "failed"])
+        self.assertIn("line_count boom", results[0]["reason"])
+        self.assertEqual(runner.calls.count("remove"), 2)
+
+    def test_failed_worktree_removal_keeps_the_first_error_first(self):
+        runner = FakeRunner(fail_at="line_count", remove_fails=True)
+        results = self.go(runner)
+        reason = results[0]["reason"]
+        self.assertTrue(reason.startswith("line_count boom"), reason)
+        self.assertIn("git worktree remove failed", reason)
+        ok = self.go(FakeRunner(remove_fails=True))
+        self.assertEqual(ok[0]["status"], "ok")
+        self.assertIn("git worktree remove failed", ok[0]["reason"])
+
+    def test_cost_is_kept_when_writing_the_stream_fails(self):
+        real = Path.write_text
+
+        def flaky(path, *a, **kw):
+            if path.name == "stream.jsonl":
+                raise OSError("disk full")
+            return real(path, *a, **kw)
+
+        with mock.patch.object(Path, "write_text", flaky):
+            results = self.go(FakeRunner())
+        self.assertEqual(results[0]["status"], "failed")
+        self.assertIn("disk full", results[0]["reason"])
+        self.assertGreater(results[0]["new_cost"], 0)
+
+    def test_run_skips_an_entry_when_less_than_a_dollar_is_left(self):
+        runner = FakeRunner()
+        results = self.go(runner, max_total=2.5)
+        self.assertEqual([(r["status"], r["reason"]) for r in results], [("skipped", "budget")] * 2)
+        self.assertEqual(runner.calls, [])
+
+    def test_run_starts_an_entry_with_exactly_a_dollar_left(self):
+        runner = FakeRunner()
+        results = self.go(runner, max_total=3.0)
+        self.assertEqual(results[0]["status"], "ok")
+        self.assertAlmostEqual(runner.budgets[0], 1.0)
+
     def test_reviewer_budget_never_exceeds_remaining_cap(self):
         runner = FakeRunner()
         self.go(runner, max_total=10.0, round_budget=15.0)
         self.assertLessEqual(runner.budgets[0], 8.0)
+
+
+class ExitCodeTest(unittest.TestCase):
+    def main_exit(self, results):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        (tmp / "set.json").write_text("[]", encoding="utf-8")
+        argv = ["run", "--set", str(tmp / "set.json"), "--plugin", str(tmp), "--out", str(tmp / "out")]
+        with mock.patch.object(replay, "run_replay", return_value=results) as fake:
+            with contextlib.redirect_stdout(io.StringIO()):
+                code = replay.main(argv)
+        fake.assert_called_once()
+        return code
+
+    def test_run_exits_1_when_the_set_fails_and_0_when_it_passes(self):
+        self.assertEqual(self.main_exit([result("a"), result("b")]), 0)
+        self.assertEqual(self.main_exit([result("a", status="failed")]), 1)
+
+
+class ClaudeCommandTest(unittest.TestCase):
+    def command(self, method):
+        runner = replay.Runner(Path("/plugin"))
+        with mock.patch.object(replay.subprocess, "run") as fake:
+            fake.return_value.stdout = ""
+            getattr(runner, method)("prompt", Path("/w"), 1.0)
+        return fake.call_args.args[0]
+
+    def test_reviewer_and_judge_both_use_strict_mcp_config(self):
+        for method in ("reviewer", "judge"):
+            self.assertIn("--strict-mcp-config", self.command(method), method)
 
 
 if __name__ == "__main__":

@@ -27,7 +27,7 @@ do things
 """
 
 
-def assistant(mid, out, ts, model="claude-opus-5-5", tools=0):
+def assistant(mid, out, ts, model="claude-opus-5-5", tools=0, **usage):
     return {
         "type": "assistant",
         "timestamp": ts,
@@ -35,7 +35,7 @@ def assistant(mid, out, ts, model="claude-opus-5-5", tools=0):
             "id": mid,
             "model": model,
             "content": [{"type": "tool_use", "id": f"{mid}-t{i}"} for i in range(tools)],
-            "usage": {"input_tokens": 100, "output_tokens": out},
+            "usage": {"input_tokens": 100, "output_tokens": out, **usage},
         },
     }
 
@@ -124,12 +124,18 @@ class UsageReportTests(unittest.TestCase):
             [
                 round_(1, "deep", "opus", "a0", "a1", ts),
                 round_(2, "deep", "opus", "aaa", "bbb", ts, focus="second-opinion", shape="split"),
+                round_(3, "recorded", None, "bbb", "ccc", ts),
             ],
             [
                 finding("R1-F1", 1, "major"),
                 finding("R1-F2", 1, "minor", "invalid"),
+                finding("R1-F3", 1, "major", "duplicate"),
                 finding("R2-F1", 2, "major"),
                 finding("R2-F2", 2, "critical", "open", "outside"),
+                finding("R2-F3", 2, "critical"),
+                finding("R2-F4", 2, "major", "invalid"),
+                finding("R2-F5", 2, "critical", "duplicate"),
+                finding("R2-F6", 2, "major", "invalid"),
             ],
         )
         write_state(
@@ -202,7 +208,7 @@ class UsageReportTests(unittest.TestCase):
         second = rounds[1]
         self.assertEqual(second["shape"], "split")
         self.assertEqual(rounds[0]["shape"], "single")
-        self.assertEqual([f["id"] for f in second["findings"]], ["R2-F1"])
+        self.assertEqual([f["id"] for f in second["findings"]], ["R2-F1", "R2-F3", "R2-F4", "R2-F5", "R2-F6"])
         for key in ("mode_reason", "state_file", "base_ref", "intent"):
             self.assertIn(key, second)
         self.assertEqual(second["base_ref"], "main")
@@ -269,11 +275,78 @@ class UsageReportTests(unittest.TestCase):
             },
         )
         g = out["groups"]["deep/-/opus/single/0.14.0"]
-        self.assertEqual((g["rounds"], g["major"], g["minor"], g["invalid"]), (1, 1, 1, 1))
+        # invalid and duplicate findings are counted only in their own columns.
         self.assertEqual(
-            out["second_opinions"],
-            [{"branch": "feat", "majors": 1, "prior_shape": "single"}],
+            (g["rounds"], g["major"], g["minor"], g["critical"], g["invalid"], g["duplicate"]), (1, 1, 0, 0, 1, 1)
         )
+        g2 = out["groups"]["deep/second-opinion/opus/split/0.14.0"]
+        self.assertEqual((g2["major"], g2["critical"], g2["invalid"], g2["duplicate"]), (1, 1, 2, 1))
+
+    def test_second_opinion_majors_count_critical_but_not_invalid_or_duplicate(self):
+        out = usage_report.summarize(usage_report.join(self.runs(), self.rounds()))
+        self.assertEqual(out["second_opinions"], [{"branch": "feat", "majors": 2, "prior_shape": "single"}])
+
+    def test_recorded_rounds_do_not_hide_the_rest_of_the_state_file(self):
+        self.assertEqual([r["number"] for r in self.rounds()], [1, 2])
+
+    def test_peak_context_includes_cache_reads_and_creation(self):
+        write_agent(
+            self.root / "projects" / "proj" / "sess3",
+            "peak",
+            "branch-review:reviewer",
+            [
+                {
+                    "type": "user",
+                    "timestamp": "2026-11-03T10:00:00Z",
+                    "message": {"content": "MODE: deep\nDIFF_FROM: p\nDIFF_TO: q\n"},
+                },
+                assistant(
+                    "m", 5, "2026-11-03T10:00:00Z", cache_creation_input_tokens=200, cache_read_input_tokens=5000
+                ),
+            ],
+        )
+        run = next(r for r in self.runs() if r.dispatch.get("diff_from") == "p")
+        self.assertEqual(run.peak_context, 5300)
+
+    def test_p90_is_the_ninetieth_percentile_not_the_maximum(self):
+        self.assertEqual(usage_report._p90([float(n) for n in range(1, 11)]), 9.0)
+        self.assertEqual(usage_report._p90([]), 0.0)
+        joined = []
+        for n in range(1, 11):
+            run = usage_report.ReviewerRun(Path("/t"), "t", "opus", float(n), 1, 1, 0, {})
+            joined.append(
+                {"mode": "deep", "focus": None, "model": "opus", "shape": "single", "plugin_version": "v",
+                 "branch": f"b{n}", "number": 1, "findings": [], "runs": [run], "run": run}
+            )  # fmt: skip
+        g = usage_report.summarize(joined)["groups"]["deep/-/opus/single/v"]
+        self.assertEqual((g["cost_p90"], g["cost_median"]), (9.0, 5.5))
+
+    def test_model_without_a_family_is_unpriced_not_opus(self):
+        ts = "2026-11-04T10:00:00Z"
+        prompt = "MODE: deep\nDIFF_FROM: u\nDIFF_TO: v\n"
+        write_agent(
+            self.root / "projects" / "proj" / "sess4",
+            "mystery",
+            "branch-review:reviewer",
+            [
+                {"type": "user", "timestamp": ts, "message": {"content": prompt}},
+                assistant("m", 1_000_000, ts, model="mystery-model-9"),
+            ],
+        )
+        runs = self.runs()
+        run = next(r for r in runs if r.dispatch.get("diff_from") == "u")
+        self.assertEqual(run.cost, 0.0)
+        self.assertEqual(run.unpriced_model, "mystery-model-9")
+        priced = next(r for r in runs if r.dispatch.get("diff_from") == "aaa")
+        self.assertIsNone(priced.unpriced_model)
+        summary = usage_report.summarize(usage_report.join(runs, self.rounds()), runs)
+        self.assertEqual(summary["unpriced"], 1)
+        self.assertEqual(summary["unpriced_models"], ["mystery-model-9"])
+        text = usage_report._format(summary)
+        self.assertRegex(text, r"warning: .*mystery-model-9")
+        clean = usage_report.summarize(usage_report.join([priced], self.rounds()), [priced])
+        self.assertEqual(clean["unpriced"], 0)
+        self.assertNotIn("warning", usage_report._format(clean))
 
 
 if __name__ == "__main__":

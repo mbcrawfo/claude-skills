@@ -78,6 +78,8 @@ The review-loop eval lives in `evals/review-loop/`. Its scaffold script builds a
 claude plugin eval . --case review-loop --runs 1 --scaffold --allow-tools Bash Write Edit SendMessage ToolSearch
 ```
 
+Results go to `evals/results/` (under the plugin, or under the repo root when the eval is run from there); both are gitignored.
+
 `tests/fixture/make_fixture.sh <dir>` builds the same repo for a manual run.
 
 ### Usage report
@@ -96,9 +98,7 @@ Run it with `--help` for the options (`--until`, `--projects-dir`, `--state-dir`
 
 1. `replay.py pick` lists past first deep rounds that a second opinion followed, of 5 to 15 files, from plugin 0.12.0 or later. It spends nothing and writes a set file.
 2. Trim the set file to 3 or 4 entries by hand.
-3. `replay.py run` replays each entry in a scratch worktree with a scratch state directory. It runs the reviewer through `claude -p --agent branch-review:reviewer` with `--strict-mcp-config --tools Read Grep Glob Bash --allowedTools Read Grep Glob Bash`, and then a Sonnet judge. Hard caps: `--round-budget-usd` (default 15) and `--max-total-usd` (default 40).
+3. `replay.py run` replays each entry in a scratch worktree with a scratch state directory. It runs the reviewer through `claude -p --agent branch-review:reviewer` with `--strict-mcp-config --tools Read Grep Glob Bash --allowedTools Read Grep Glob Bash`, and then a Sonnet judge. The worktree is made in a temp directory outside every checkout, so the run loads no other repo's project instructions. Hard caps: `--round-budget-usd` (default 15) and `--max-total-usd` (default 40). An entry is skipped when less than $1 is left for its reviewer. `run` exits 1 when the set fails and 0 when it passes.
 4. `replay.py score` re-scores saved results and spends nothing.
 
-Results stay in `evals/results/`, which is gitignored. Known limits of both tools are in [TD-0012](../../docs/tech-debt/TD-0012-branch-review-measuring-tools-known-limits.md).
-
-Results go to `evals/results/` (under the plugin, or under the repo root when the eval is run from there); both are gitignored.
+Replay results stay in `evals/results/`, which is gitignored. Known limits of both tools are in [TD-0012](../../docs/tech-debt/TD-0012-branch-review-measuring-tools-known-limits.md).
