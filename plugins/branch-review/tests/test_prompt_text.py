@@ -11,6 +11,7 @@ import review_state
 ROOT = Path(__file__).resolve().parent.parent
 REVIEWER = (ROOT / "agents" / "reviewer.md").read_text(encoding="utf-8")
 SCHEMA = (ROOT / "skills" / "review" / "finding-schema.md").read_text(encoding="utf-8")
+REPORT_SCHEMA = (ROOT / "skills" / "review" / "report-schema.md").read_text(encoding="utf-8")
 SKILL = (ROOT / "skills" / "review" / "SKILL.md").read_text(encoding="utf-8")
 PROCESS_SECTIONS = (
     "Process for deep mode",
@@ -49,6 +50,40 @@ class ReviewerPromptTest(unittest.TestCase):
         self.assertIn("CHECK_COMMAND", dispatch)
         self.assertIn("check-report --repo '<repo>' --file '<tmp>/round-<number>.md'", dispatch)
         self.assertIn("`CHECK_COMMAND`", section(REVIEWER, "Inputs"))
+
+    def test_reviewer_definition_is_small(self):
+        self.assertLessEqual(len(REVIEWER.encode()), 24000)
+
+    def test_asks_for_parallel_tool_calls(self):
+        self.assertIn("parallel tool calls", section(REVIEWER, "Context management"))
+
+    def test_final_message_is_one_line(self):
+        output = section(REVIEWER, "Output")
+        self.assertNotIn("same report, word for word", output)
+        self.assertIn("one line", output)
+
+    def test_added_files_are_not_read_twice(self):
+        steps = re.split(r"^(\d+)\. ", section(REVIEWER, "Process for deep mode"), flags=re.MULTILINE)
+        step2 = steps[steps.index("2") + 1]
+        self.assertIn("adds", step2)
+        self.assertIn("the diff", step2)
+
+    def test_required_steps_still_named(self):
+        deep = section(REVIEWER, "Process for deep mode")
+        for step in (
+            "Break each new test on purpose",
+            "Grep the docs for the old statement",
+            "Probe claims about real systems",
+            "Grep for promises the change fulfils",
+            "Run tests that measure process-wide state",
+            "Build what users build",
+            "Check broad mappings",
+            "Probe equivalence classes",
+            "Name the whole family",
+            "Compare related branches",
+        ):
+            with self.subTest(step=step):
+                self.assertIn(step, deep)
 
 
 class ReviewerShapeTest(unittest.TestCase):
@@ -131,13 +166,24 @@ class SchemaDocTest(unittest.TestCase):
     def test_schema_documents_every_coverage_item(self):
         for item in review_state.COVERAGE_ITEMS:
             with self.subTest(item=item):
-                self.assertIn(f"`{item}`", SCHEMA)
+                self.assertIn(f"`{item}`", REPORT_SCHEMA)
 
     def test_schema_documents_every_status(self):
         table = section(SCHEMA, "Statuses and transitions")
         for status in review_state.STATUSES:
             with self.subTest(status=status):
                 self.assertIn(f"| `{status}` |", table)
+
+    def test_report_schema_is_small(self):
+        self.assertLessEqual(len(REPORT_SCHEMA.encode()), 8000)
+
+    def test_report_schema_has_no_state_reference(self):
+        self.assertNotIn("review.json", REPORT_SCHEMA)
+        self.assertNotIn("## Statuses", REPORT_SCHEMA)
+
+    def test_dispatch_passes_report_schema(self):
+        self.assertIn("SCHEMA_PATH: ${CLAUDE_SKILL_DIR}/report-schema.md", section(SKILL, "5. Dispatch"))
+        self.assertIn("skills/review/report-schema.md", section(REVIEWER, "Inputs"))
 
 
 if __name__ == "__main__":

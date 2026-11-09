@@ -2,7 +2,7 @@
 
 This folder records known problems that are not fixed, and intentional choices that are known to be sub-optimal. Each active item has its own file, and the ID column links to it. When a PR fixes an item, that PR removes the row and deletes the file.
 
-Next id: `TD-0016`
+Next id: `TD-0017`
 
 ## Active items
 
@@ -19,6 +19,7 @@ Next id: `TD-0016`
 | [TD-0013](TD-0013-implementation-manager-recorded-check-path.md) | Open | 2026-11-09 | Low | The implementation-manager recorded `rs` path goes stale when branch-review updates mid-run, and each event then costs a fallback check |
 | [TD-0014](TD-0014-implementation-manager-compaction-skill-limit.md) | Open | 2026-11-09 | Low | The implementation-manager compaction design relies on the 5,000-token skill re-injection limit documented on 2026-11-09 |
 | [TD-0015](TD-0015-implementation-manager-eval-gaps.md) | Open | 2026-11-09 | Low | implementation-manager evals: `check-ran` fired in 4 of 7 push-gate runs, runs with a background `wait` hang, hold judge split, unscored verdict check, resume grader passes baseline 2 of 3
+| [TD-0016](TD-0016-branch-review-measuring-tools-known-limits.md) | Open | 2026-11-09 | Low | branch-review's usage report and small replay have known limits: a replay baseline that overstates savings, a major-miss gate stricter than run variance, Phase 1 shipped on real-use judgment with a possible loss of test-breaking depth, a headless run that differs from a subagent, a judge with Bash that shares `.git`, placeholder Haiku and Fable prices, double-counted runs, a one-line recovery, and a reviewer 1 byte under its cap |
 
 ## Columns
 

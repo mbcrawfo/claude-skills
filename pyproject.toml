@@ -30,6 +30,8 @@ known-first-party = [
     "verdict",
     "watcher",
     "run",
+    "usage_report",
+    "replay",
     "fakes",
     "test_*",
 ]
