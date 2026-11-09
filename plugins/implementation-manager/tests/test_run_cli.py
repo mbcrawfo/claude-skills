@@ -1366,5 +1366,64 @@ class ContextTests(CliTestCase):
         self.ok("status", str(self.dir))
 
 
+FAKE_RS = """#!/bin/sh
+echo "$@" > "{args_file}"
+echo '{{"covered": true, "reasons": [], "branch": "feat/a"}}'
+"""
+
+
+class WaitFullTests(CliTestCase):
+    def setUp(self):
+        super().setUp()
+        self.init()
+        self.rs = self.tmp / "rs"
+        self.args_file = self.tmp / "rs-args"
+        self.rs.write_text(FAKE_RS.format(args_file=self.args_file), encoding="utf-8")
+        self.wt = self.tmp / "wt"
+        self.ok("unit", str(self.dir), "a", "--branch", "feat/a", "--worktree", str(self.wt))
+        self.append_request(f"a push {SHA1} feat/a\n")
+
+    def record(self):
+        self.ok("check-cmd", str(self.dir), "--rs", str(self.rs), "--state-dir", str(self.tmp / "sd"))
+
+    def test_plain_wait_is_one_line(self):
+        self.record()
+        self.assertEqual(self.ok("wait", str(self.dir)), f"REQUEST a {SHA1} feat/a\n")
+
+    def test_full_wait_prints_event_verdict_and_status(self):
+        self.record()
+        lines = self.ok("wait", str(self.dir), "--full").splitlines()
+        self.assertEqual(lines[0], f"REQUEST a {SHA1} feat/a")
+        self.assertEqual(lines[1], f'verdict {SHA1} {{"covered":true,"reasons":[],"branch":"feat/a"}}')
+        self.assertEqual(lines[2], "")
+        self.assertTrue(lines[3].startswith("Run my-run ("), lines[3])
+        self.assertIn(f"--commit {SHA1}", self.args_file.read_text(encoding="utf-8"))
+
+    def test_full_wait_without_check_cmd(self):
+        lines = self.ok("wait", str(self.dir), "--full").splitlines()
+        self.assertEqual(lines[1], f"verdict {SHA1} unavailable: no check command recorded")
+
+    def test_full_wait_with_rs_removed(self):
+        self.record()
+        self.rs.unlink()
+        lines = self.ok("wait", str(self.dir), "--full").splitlines()
+        self.assertEqual(lines[1], f"verdict {SHA1} unavailable: rs not found: {self.rs}")
+
+    def test_full_wait_next_event_has_verdict(self):
+        self.record()
+        self.ok("unit", str(self.dir), "b", "--worktree", str(self.tmp / "wtb"))
+        self.ok("go", str(self.dir), "a", SHA1)
+        self.ok("queue", str(self.dir), "b", SHA2)
+        self.ok("yield", str(self.dir), "a", "owner", "question")
+        lines = self.ok("wait", str(self.dir), "--full").splitlines()
+        self.assertEqual(lines[0], f"NEXT b {SHA2}")
+        self.assertTrue(lines[1].startswith(f"verdict {SHA2} "), lines[1])
+
+    def test_check_cmd_refuses_missing_rs(self):
+        result = self.run_cli("check-cmd", str(self.dir), "--rs", str(self.tmp / "nope"), "--state-dir", str(self.tmp))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("rs not found", result.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

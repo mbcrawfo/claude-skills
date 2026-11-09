@@ -118,6 +118,7 @@ def init_run(
         "marks": {},
         "items": empty_items(),
         "compact_asked": None,
+        "check": None,
     }
     if integration is not None:
         state["integration"] = {
@@ -168,6 +169,7 @@ def load(run_dir: Path) -> dict:
     state.setdefault("integration", None)
     state.setdefault("items", empty_items())
     state.setdefault("compact_asked", None)
+    state.setdefault("check", None)
     for unit in state["units"].values():  # fields added since a run began
         unit.setdefault("integration", False)
         unit.setdefault("after", [])

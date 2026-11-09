@@ -66,7 +66,15 @@ The run folder is always the first argument after the subcommand:
                                     NOT-READY - no open PR from <branch>, MERGED <pr>, CLOSED <pr> or ERROR;
                                     in integration mode READY becomes NOT-READY ... blocked: <reason>
                                     (also for a PR on the wrong base) or FINAL-READY
-  wait <dir> [--stall-hours N]      block until one event, print it as one line, exit 0 (also on error)
+  check-cmd <dir> --rs P --state-dir D
+                                    record branch-review's rs script and state folder (stored absolute) for
+                                    wait --full; refused when P is not a file
+  wait <dir> [--stall-hours N] [--full]
+                                    block until one event, print it as one line, exit 0 (also on error);
+                                    --full then prints, for a REQUEST, PENDING, NEXT, READY or REMIND event,
+                                    `verdict <sha> <rs covered JSON>` (or `verdict <sha> unavailable: <reason>`),
+                                    for a STUCK event the unit's last pushes.log and requests.log lines, then an
+                                    empty line and the status block (`status unavailable: <message>` if it fails)
   prune <dir> [--days D]            remove the run folders beside <dir> untouched for D days (default 30),
                                     never <dir>, which need not exist yet; print {removed, skipped, errors}
                                     as JSON, exit 1 when errors is not empty
@@ -86,6 +94,7 @@ import sys
 import time
 
 import context
+import coverage
 
 import items
 from prstate import GhError, check_once, run_gh
@@ -468,8 +477,12 @@ def _parser() -> argparse.ArgumentParser:
     command("clear-bad", "forget the bad request lines status lists")
     p = command("check", "check the unit's PR once")
     p.add_argument("unit")
+    p = command("check-cmd", "record branch-review's rs script for wait --full")
+    p.add_argument("--rs", required=True, metavar="PATH")
+    p.add_argument("--state-dir", required=True, metavar="DIR")
     p = command("wait", "block until one event and print it")
     p.add_argument("--stall-hours", type=_hours, default=3.0)
+    p.add_argument("--full", action="store_true", help="also print the coverage verdict and the status")
     return parser
 
 
@@ -484,8 +497,34 @@ def _wait(args: argparse.Namespace) -> int:
         )
     except Exception as exc:  # a background wait must always end with one line to read
         line = f"ERROR {_describe(args.dir, exc)}"
-    print(" ".join(line.split()), flush=True)
+    line = " ".join(line.split())
+    out = [line]
+    if args.full:
+        out += _full_lines(args.dir, line)
+    print("\n".join(out), flush=True)
     return 0
+
+
+def _full_lines(run_dir: Path, line: str) -> list[str]:
+    """What `wait --full` adds under the event line; it never raises."""
+    out: list[str] = []
+    try:
+        state = load(run_dir)
+        target = coverage.event_target(line)
+        if target:
+            out.append(coverage.verdict_line(state, *target))
+        out += coverage.log_lines(run_dir, line)
+    except Exception as exc:  # the event line must still reach the manager
+        out.append(f"verdict unavailable: {_describe(run_dir, exc)}")
+        state = None
+    out.append("")
+    try:
+        if state is None:
+            raise RunError("no run state")
+        out.append(_status(run_dir, state))
+    except Exception as exc:
+        out.append(f"status unavailable: {_describe(run_dir, exc)}")
+    return out
 
 
 def _describe(run_dir: Path, exc: Exception) -> str:
@@ -683,6 +722,11 @@ def _run(args: argparse.Namespace) -> str | None:
             if tokens is None:
                 raise RunError("context size unknown: no transcript for this session")
             state["compact_asked"] = tokens
+        elif command == "check-cmd":
+            rs = Path(args.rs).absolute()
+            if not rs.is_file():
+                raise RunError(f"rs not found: {rs}")
+            state["check"] = {"rs": str(rs), "state_dir": str(Path(args.state_dir).absolute())}
         elif command == "clear-bad":
             count = len(state["bad_requests"])
             state["bad_requests"] = []
