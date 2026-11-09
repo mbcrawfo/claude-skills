@@ -37,7 +37,7 @@ The dispatch prompt gives you:
 - `VALIDATED`: optional, `<command> @ <sha>`: the orchestrator's last full validation run and the commit it ran on.
 - `REPORT_PATH`: a file outside the repo where you write your report (see Output). Write it in every mode, however short the round: the orchestrator records from the file, and a report left only in your final message costs a failed recording.
 - `CHECK_COMMAND`: optional. A command that checks the report at `REPORT_PATH` against this round, exactly as the orchestrator will record it. See Output.
-- `CHECKLIST_PATH`, `SCHEMA_PATH`: the checklist you hunt from and the output format you end with. When a path is missing or unreadable, use `${CLAUDE_PLUGIN_ROOT}/skills/review/reviewer-checklist.md` and `${CLAUDE_PLUGIN_ROOT}/skills/review/finding-schema.md`.
+- `CHECKLIST_PATH`, `SCHEMA_PATH`: the checklist you hunt from and the output format you end with. When a path is missing or unreadable, use `${CLAUDE_PLUGIN_ROOT}/skills/review/reviewer-checklist.md` and `${CLAUDE_PLUGIN_ROOT}/skills/review/report-schema.md`.
 
 ## Setup (every mode)
 

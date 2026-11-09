@@ -11,6 +11,7 @@ import review_state
 ROOT = Path(__file__).resolve().parent.parent
 REVIEWER = (ROOT / "agents" / "reviewer.md").read_text(encoding="utf-8")
 SCHEMA = (ROOT / "skills" / "review" / "finding-schema.md").read_text(encoding="utf-8")
+REPORT_SCHEMA = (ROOT / "skills" / "review" / "report-schema.md").read_text(encoding="utf-8")
 SKILL = (ROOT / "skills" / "review" / "SKILL.md").read_text(encoding="utf-8")
 PROCESS_SECTIONS = (
     "Process for deep mode",
@@ -131,13 +132,24 @@ class SchemaDocTest(unittest.TestCase):
     def test_schema_documents_every_coverage_item(self):
         for item in review_state.COVERAGE_ITEMS:
             with self.subTest(item=item):
-                self.assertIn(f"`{item}`", SCHEMA)
+                self.assertIn(f"`{item}`", REPORT_SCHEMA)
 
     def test_schema_documents_every_status(self):
         table = section(SCHEMA, "Statuses and transitions")
         for status in review_state.STATUSES:
             with self.subTest(status=status):
                 self.assertIn(f"| `{status}` |", table)
+
+    def test_report_schema_is_small(self):
+        self.assertLessEqual(len(REPORT_SCHEMA.encode()), 8000)
+
+    def test_report_schema_has_no_state_reference(self):
+        self.assertNotIn("review.json", REPORT_SCHEMA)
+        self.assertNotIn("## Statuses", REPORT_SCHEMA)
+
+    def test_dispatch_passes_report_schema(self):
+        self.assertIn("SCHEMA_PATH: ${CLAUDE_SKILL_DIR}/report-schema.md", section(SKILL, "5. Dispatch"))
+        self.assertIn("skills/review/report-schema.md", section(REVIEWER, "Inputs"))
 
 
 if __name__ == "__main__":

@@ -96,7 +96,7 @@ DIFF_TO: <diff_to>
 REPORT_PATH: <tmp>/round-<number>.md
 VALIDATED: <command> @ <sha>
 CHECKLIST_PATH: ${CLAUDE_SKILL_DIR}/reviewer-checklist.md
-SCHEMA_PATH: ${CLAUDE_SKILL_DIR}/finding-schema.md
+SCHEMA_PATH: ${CLAUDE_SKILL_DIR}/report-schema.md
 CHECK_COMMAND (run it after you write REPORT_PATH, and fix the report until it passes):
 CLAUDE_PLUGIN_DATA="${CLAUDE_PLUGIN_DATA}" "${CLAUDE_SKILL_DIR}/../../scripts/rs" check-report --repo '<repo>' --file '<tmp>/round-<number>.md'
 CHANGED_FILES (the review's scope; diff only these, with `git diff DIFF_FROM DIFF_TO -- <files>`):
