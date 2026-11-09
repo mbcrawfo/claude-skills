@@ -51,6 +51,40 @@ class ReviewerPromptTest(unittest.TestCase):
         self.assertIn("check-report --repo '<repo>' --file '<tmp>/round-<number>.md'", dispatch)
         self.assertIn("`CHECK_COMMAND`", section(REVIEWER, "Inputs"))
 
+    def test_reviewer_definition_is_small(self):
+        self.assertLessEqual(len(REVIEWER.encode()), 24000)
+
+    def test_asks_for_parallel_tool_calls(self):
+        self.assertIn("parallel tool calls", section(REVIEWER, "Context management"))
+
+    def test_final_message_is_one_line(self):
+        output = section(REVIEWER, "Output")
+        self.assertNotIn("same report, word for word", output)
+        self.assertIn("one line", output)
+
+    def test_added_files_are_not_read_twice(self):
+        steps = re.split(r"^(\d+)\. ", section(REVIEWER, "Process for deep mode"), flags=re.MULTILINE)
+        step2 = steps[steps.index("2") + 1]
+        self.assertIn("adds", step2)
+        self.assertIn("the diff", step2)
+
+    def test_required_steps_still_named(self):
+        deep = section(REVIEWER, "Process for deep mode")
+        for step in (
+            "Break each new test on purpose",
+            "Grep the docs for the old statement",
+            "Probe claims about real systems",
+            "Grep for promises the change fulfils",
+            "Run tests that measure process-wide state",
+            "Build what users build",
+            "Check broad mappings",
+            "Probe equivalence classes",
+            "Name the whole family",
+            "Compare related branches",
+        ):
+            with self.subTest(step=step):
+                self.assertIn(step, deep)
+
 
 class ReviewerShapeTest(unittest.TestCase):
     """The block shape inlined in reviewer.md must match what the state script accepts."""

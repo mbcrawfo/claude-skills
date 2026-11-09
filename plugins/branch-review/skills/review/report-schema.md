@@ -4,7 +4,7 @@ The reviewer ends its report with one JSON block. `review_state.py record-findin
 
 ## Reviewer output block
 
-The reviewer ends its final message with one fenced `json` block. The block must be the last fenced ```json block in the message: `record-findings` takes the last one and ignores earlier ones, so example snippets earlier in the report are safe. The fence tag matches in any case (```` ```JSON ```` too) and CRLF line endings are accepted. `record-findings --file` also accepts a file that is only the JSON object; when that file is not valid JSON, the error says `invalid JSON`. The file must be UTF-8.
+The reviewer ends its report with one fenced `json` block. The block must be the last fenced ```json block in the report: `record-findings` takes the last one and ignores earlier ones, so example snippets earlier in the report are safe. The fence tag matches in any case (```` ```JSON ```` too) and CRLF line endings are accepted. `record-findings --file` also accepts a file that is only the JSON object; when that file is not valid JSON, the error says `invalid JSON`. The file must be UTF-8.
 
 ```json
 {
