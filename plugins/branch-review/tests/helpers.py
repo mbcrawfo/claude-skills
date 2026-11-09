@@ -15,6 +15,11 @@ SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
+EVALS_DIR = Path(__file__).resolve().parent.parent / "evals"
+for _tool_dir in (EVALS_DIR / "usage", EVALS_DIR / "replay"):
+    if str(_tool_dir) not in sys.path:
+        sys.path.insert(0, str(_tool_dir))
+
 # Drop variables that point git at another repository or index. They are set
 # when the suite runs from a git hook (for example pre-commit), and would make
 # every fixture command act on the outer repository instead.

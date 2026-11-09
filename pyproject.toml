@@ -27,6 +27,8 @@ known-first-party = [
     "runstate",
     "watcher",
     "run",
+    "usage_report",
+    "replay",
     "fakes",
     "test_*",
 ]
