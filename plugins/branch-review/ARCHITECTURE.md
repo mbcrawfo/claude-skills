@@ -12,7 +12,7 @@ The skills drive `scripts/review_state.py`, the state script. Run `python3 scrip
   - `paths-changed`: `--paths` differs from the earlier round's.
 
   A round whose reviewer never reported is not recorded and never anchors a follow-up, and a round with no changes is never saved. Every run, including one after a merge or a redo, starts from set-up and ends with the summary.
-- **Round.** The branch's working tree is snapshotted, and a fresh `branch-review:reviewer` agent reviews the change set against the intent, or verifies the earlier findings and the new delta in a follow-up. The reviewer writes its report to a file outside the repo, which is recorded as written. Before it hands back, the reviewer runs the state script's `check-report` on that file. The command applies the same checks as recording and saves nothing, so the reviewer fixes a malformed JSON block itself. The block's shape is also inlined in the reviewer's own definition, because follow-up reviewers on small rounds were seen to skip the schema file and write a shape of their own (a string `merge_risk`, `verdict` for `status`, no `summary`). A test keeps that inlined shape in step with the script. A refused report lists every part that fails in one line, so one re-emit can fix them all.
+- **Round.** The branch's working tree is snapshotted, and a fresh `branch-review:reviewer` agent reviews the change set against the intent, or verifies the earlier findings and the new delta in a follow-up. The reviewer reads `skills/review/report-schema.md`, which holds only the output rules; `finding-schema.md` is the state reference for contributors and the orchestrator. The reviewer writes its report to a file outside the repo, which is recorded as written. Before it hands back, the reviewer runs the state script's `check-report` on that file. The command applies the same checks as recording and saves nothing, so the reviewer fixes a malformed JSON block itself. The block's shape is also inlined in the reviewer's own definition, because follow-up reviewers on small rounds were seen to skip the schema file and write a shape of their own (a string `merge_risk`, `verdict` for `status`, no `summary`). A test keeps that inlined shape in step with the script. A refused report lists every part that fails in one line, so one re-emit can fix them all.
 - **Model choice.** `--model` overrides everything below. A deep, second-opinion or merge-check round runs on `opus`; a follow-up runs on `sonnet`. A follow-up whose delta reaches 40 non-generated files or 2,000 changed lines becomes a deep round over the whole change set, on `opus`. A follow-up that verifies a claimed fix of a finding the developer resolved with `--decision fix` stays a follow-up but runs on `opus` (`model_reason: decided-fix`).
 - **Record and triage.** The reviewer's findings are recorded. For each open one, the orchestrating agent checks the claim against the code and records what it checked, then fixes it with a regression test shown to fail without the fix, disputes it with evidence, or escalates it. A finding whose fix is a choice for the developer is always escalated, unless the intent settles it. A finding with fix options cannot be marked fixed without the developer's decision or a quote from the intent. Findings outside the change get the status `outside` and stay out of the fix loop, unless the fix is trivial and in changed files or the developer asks for it; when the repo's `AGENTS.md` forbids deferring findings, they are escalated instead.
 - **Second opinion.** Once no finding is open, the state script decides whether a second deep round is due: it is when a deep round rated the merge risk `moderate` or `high`, or the review found a critical or major issue. A fresh reviewer then reviews the whole change set once more, putting first the steps a first pass most often skips. It runs in place of the follow-up that claimed fixes would otherwise get, and verifies them. It also runs in place of a merge-check, and then checks each conflict resolution against both sides as well. It waits while a finding is escalated, since the developer's answer may add code, and runs once the decisions are recorded. Each branch gets at most one automatic second opinion; `--second-opinion` asks for one and `--no-second-opinion` skips it. Branches whose rounds all predate v0.8 get one only when `--second-opinion` asks.
@@ -79,5 +79,26 @@ claude plugin eval . --case review-loop --runs 1 --scaffold --allow-tools Bash W
 ```
 
 `tests/fixture/make_fixture.sh <dir>` builds the same repo for a manual run.
+
+### Usage report
+
+`evals/usage/usage_report.py` reads local Claude Code transcripts (reviewer subagents, found by their `agentType`) and the plugin's `review.json` files for a date range. It prints, per round kind and plugin version, the cost and the findings opened. It writes nothing and costs nothing to run:
+
+```bash
+python3 plugins/branch-review/evals/usage/usage_report.py --since 2026-10-25 --json
+```
+
+Run it with `--help` for the options (`--until`, `--projects-dir`, `--state-dir`).
+
+### Small replay
+
+`evals/replay/replay.py` checks whether a new reviewer version costs less than past first deep rounds and finds as much. Run it before a version goes into real use. Its `--help` epilog holds the procedure.
+
+1. `replay.py pick` lists past first deep rounds that a second opinion followed, of 5 to 15 files, from plugin 0.12.0 or later. It spends nothing and writes a set file.
+2. Trim the set file to 3 or 4 entries by hand.
+3. `replay.py run` replays each entry in a scratch worktree with a scratch state directory. It runs the reviewer through `claude -p --agent branch-review:reviewer` with `--strict-mcp-config --tools Read Grep Glob Bash --allowedTools Read Grep Glob Bash`, and then a Sonnet judge. Hard caps: `--round-budget-usd` (default 15) and `--max-total-usd` (default 40).
+4. `replay.py score` re-scores saved results and spends nothing.
+
+Results stay in `evals/results/`, which is gitignored. Known limits of both tools are in [TD-0012](../../docs/tech-debt/TD-0012-branch-review-measuring-tools-known-limits.md).
 
 Results go to `evals/results/` (under the plugin, or under the repo root when the eval is run from there); both are gitignored.
