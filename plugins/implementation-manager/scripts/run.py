@@ -6,8 +6,10 @@ The run folder is always the first argument after the subcommand:
   init <dir> --repo O/R --base B --method merge|squash|rebase [--wip N] [--queue serial|parallel]
        [--integration BRANCH --final-merge manager|owner --feature-review yes|no]   (not with rebase)
   unit <dir> <name> [--prereq U ...] [--after U ...|none] [--branch B] [--worktree P] [--specs] [--title T]
-       [--integration]              the run's one integration unit (needs init --integration): its branch is the
-                                    integration branch; no --prereq or --after, and no unit may name it in either;
+       [--spec P] [--integration]   --spec: the path of the unit's spec, which its brief names
+                                    --integration: the run's one integration unit (needs init --integration): its
+                                    branch is the integration branch; no --prereq or --after, and no unit may name it
+                                    in either;
                                     open-ready opens its gate at once, outside the WIP limit
                                     names use letters, digits, '-' and '_', starting with a letter or digit;
                                     each --prereq and --after unit must already exist; --prereq gates the start,
@@ -17,8 +19,22 @@ The run folder is always the first argument after the subcommand:
                                     owner items from earlier sessions are dropped (print dropped <id> per item)
   set <dir> wip <N|none> | set <dir> queue <serial|parallel>
                                     in parallel mode, print each request still queued: queued <unit> <sha>
+  set <dir> manager <id>            the manager's session id (letters, digits, '_' and '-'), for the briefs
   set <dir> final-merge <manager|owner> | set <dir> feature-review <yes|no>
                                     integration mode, until the final gate opens
+  brief <dir> <unit> [--extra-file P] [--no-gate] [--designed]
+  brief <dir> <name> --card --title T --spec P [--extra-file P]
+                                    write the unit's child prompt to <dir>/briefs/<unit>.md from the templates
+                                    (the integration unit's own template for it; the integration-mode fragments
+                                    for the other units of such a run) and print that path; part 6 gets
+                                    <dir>/facts.md, if present, then the --extra-file text; --no-gate leaves out
+                                    the gate (part 2), --designed adds the paragraph for a unit the owner designs
+                                    with the child; refused without a manager id, a unit without a spec, or a
+                                    template placeholder the run cannot fill
+                                    --card: a card's prompt for work outside every unit, before it is a unit (the
+                                    unit is added when the user starts the card): <name> must be a valid unit name
+                                    and not a unit yet; the title and spec are given here; the gate is included,
+                                    and an integration run's unit changes apply; refused without a manager id
   open <dir> <unit>                 open one gate
   open-ready <dir>                  open every gate that may open; print one unit name per line, then the
                                     final gate's gates.log line when it opens (integration mode)
@@ -56,14 +72,25 @@ The run folder is always the first argument after the subcommand:
                                     unless a forward due line lists the unit
   item drop <dir> <id> <reason...>  drop an item that is no longer needed
   item list <dir>                   current, queued (in order), parked and answered items, one line each, or none
-  status <dir>                      the tracker and everything waiting on the manager
+  status <dir>                      the tracker and everything waiting on the manager, then the manager's context
+                                    size (`- context: <N>k`, with `, compact due` when the run is quiet and the
+                                    size is past the compact threshold)
+  compact-asked <dir>               record the context size now as the point the owner was asked to compact
   clear-bad <dir>                   forget the bad request lines status lists, once they are handled
   check <dir> <unit>                one readiness check of the unit's PR, printed as one line: READY <pr> <sha>
                                     (two equal clean polls 30 s apart), NOT-READY <pr> head=<sha7><reasons>,
                                     NOT-READY - no open PR from <branch>, MERGED <pr>, CLOSED <pr> or ERROR;
                                     in integration mode READY becomes NOT-READY ... blocked: <reason>
                                     (also for a PR on the wrong base) or FINAL-READY
-  wait <dir> [--stall-hours N]      block until one event, print it as one line, exit 0 (also on error)
+  check-cmd <dir> --rs P --state-dir D
+                                    record branch-review's rs script and state folder (stored absolute) for
+                                    wait --full; refused when P is not a file
+  wait <dir> [--stall-hours N] [--full]
+                                    block until one event, print it as one line, exit 0 (also on error);
+                                    --full then prints, for a REQUEST, PENDING, NEXT, READY or REMIND event,
+                                    `verdict <sha> <rs covered JSON>` (or `verdict <sha> unavailable: <reason>`),
+                                    for a STUCK event the unit's last pushes.log and requests.log lines, then an
+                                    empty line and the status block (`status unavailable: <message>` if it fails)
   prune <dir> [--days D]            remove the run folders beside <dir> untouched for D days (default 30),
                                     never <dir>, which need not exist yet; print {removed, skipped, errors}
                                     as JSON, exit 1 when errors is not empty
@@ -74,17 +101,22 @@ Exit codes: 0 on success, 1 for a refused command (one line on stderr), 2 for a 
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 import json
+import os
 from pathlib import Path
 import re
 import sys
 import time
 
+import brief
+import context
 import items
 from prstate import GhError, check_once, run_gh
 import prune
 import runstate
 from runstate import PUSHES, RunError, load, locked
+import verdict
 import watcher
 
 
@@ -147,8 +179,9 @@ def _label(state: dict, name: str) -> str:
     return f"{name} ({title})" if title else name
 
 
-def _needs(run_dir: Path, state: dict) -> list[str]:
-    """What waits on the manager, one line each."""
+def _needs(run_dir: Path, state: dict, holds: list[str] | None = None) -> list[str]:
+    """What waits on the manager, one line each. Each hold line is also added to `holds`, when given: a hold asks
+    nothing of the manager."""
     units = state["units"]
     needs = [
         f"request {entry['unit']} {entry['sha']} {entry['branch']} unanswered since {_clock(entry['at'])}"
@@ -167,7 +200,10 @@ def _needs(run_dir: Path, state: dict) -> list[str]:
             continue
         hold = record["hold"]
         if hold:
-            needs.append(f"hold {_label(state, name)}: {hold['reason']} since {_clock(hold['at'])}")
+            line = f"hold {_label(state, name)}: {hold['reason']} since {_clock(hold['at'])}"
+            needs.append(line)
+            if holds is not None:
+                holds.append(line)
         ready = marks.get("ready_head")
         owner_final = _owner_merges(state, name)
         if (
@@ -275,7 +311,26 @@ def _item_name(item: dict) -> str:
     return item["id"] + (f" ({item['ref']})" if item["ref"] else "")
 
 
-def _status(run_dir: Path, state: dict) -> str:
+def _reset_compact_ask(run_dir: Path, env: Mapping[str, str] = os.environ) -> None:
+    """Clear `compact_asked` once the context has dropped COMPACT_EVERY or more below it: the owner compacted.
+
+    It never raises: a run folder it cannot read or lock keeps the old ask, and `status` still prints.
+    """
+    tokens = context.current_tokens(env)
+    if tokens is None:
+        return
+    try:
+        asked = load(run_dir)["compact_asked"]
+        if asked is None or tokens > asked - context.COMPACT_EVERY:
+            return
+        with locked(run_dir) as state:
+            if state["compact_asked"] is not None and tokens <= state["compact_asked"] - context.COMPACT_EVERY:
+                state["compact_asked"] = None
+    except (RunError, OSError, json.JSONDecodeError):
+        return
+
+
+def _status(run_dir: Path, state: dict, env: Mapping[str, str] = os.environ) -> str:
     units = state["units"]
     order = _units_in_order(state)
     wip = "none" if state["wip"] is None else str(state["wip"])
@@ -319,12 +374,23 @@ def _status(run_dir: Path, state: dict) -> str:
     lines.append(f"- gated: {', '.join(gated) or 'none'}")
     lines += _item_lines(state)
     lines += _integration_lines(run_dir, state)
-    needs = _needs(run_dir, state)
+    holds: list[str] = []
+    needs = _needs(run_dir, state, holds)
     if needs:
         lines.append("- needs the manager:")
         lines += [f"  - {line}" for line in needs]
     else:
         lines.append("- needs the manager: nothing")
+    tokens = context.current_tokens(env)
+    if tokens is not None:
+        # Quiet: nothing waits on the manager and every started unit has a worktree to resume from. A hold line
+        # asks nothing of the manager (it waits on the owner or the child), so it does not count.
+        actionable = [line for line in needs if line not in holds]
+        quiet = not actionable and all(
+            r["worktree"] for r in units.values() if r["gate"] != "stopped" and not r["done"]
+        )
+        due = context.compact_due(tokens, state["compact_asked"], quiet)
+        lines.append(f"- context: {round(tokens / 1000)}k" + (", compact due" if due else ""))
     return "\n".join(lines)
 
 
@@ -372,11 +438,21 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--worktree")
     p.add_argument("--specs", action="store_true", default=None, help="the manager's own planning PR")
     p.add_argument("--title", help="one-line display label shown beside the name in status")
+    p.add_argument("--spec", metavar="P", help="the unit's spec, which its brief names")
     p.add_argument("--integration", action="store_true", default=None, help="the run's one integration unit")
 
-    p = command("set", "change the WIP limit, the queue mode, or an integration choice")
-    p.add_argument("key", choices=("wip", "queue", "final-merge", "feature-review"))
+    p = command("set", "change the WIP limit, the queue mode, the manager id, or an integration choice")
+    p.add_argument("key", choices=("wip", "queue", "manager", "final-merge", "feature-review"))
     p.add_argument("value")
+
+    p = command("brief", "write a unit's child prompt from the templates and print its path")
+    p.add_argument("unit")
+    p.add_argument("--extra-file", type=Path, metavar="P", help="unit-specific text for part 6")
+    p.add_argument("--no-gate", dest="gate", action="store_false", help="leave out the gate (part 2)")
+    p.add_argument("--designed", action="store_true", help="a unit the owner designs with the child")
+    p.add_argument("--card", action="store_true", help="a card's prompt: <unit> is not a unit yet")
+    p.add_argument("--title", help="with --card: the card's title")
+    p.add_argument("--spec", metavar="P", help="with --card: the card's spec")
 
     p = command("open", "open one unit's gate")
     p.add_argument("unit")
@@ -451,11 +527,16 @@ def _parser() -> argparse.ArgumentParser:
     item_command("list", "list the open items")
 
     command("status", "print the tracker and what waits on the manager")
+    command("compact-asked", "record the context size as the point the owner was asked to compact")
     command("clear-bad", "forget the bad request lines status lists")
     p = command("check", "check the unit's PR once")
     p.add_argument("unit")
+    p = command("check-cmd", "record branch-review's rs script for wait --full")
+    p.add_argument("--rs", required=True, metavar="PATH")
+    p.add_argument("--state-dir", required=True, metavar="DIR")
     p = command("wait", "block until one event and print it")
     p.add_argument("--stall-hours", type=_hours, default=3.0)
+    p.add_argument("--full", action="store_true", help="also print the coverage verdict and the status")
     return parser
 
 
@@ -470,8 +551,44 @@ def _wait(args: argparse.Namespace) -> int:
         )
     except Exception as exc:  # a background wait must always end with one line to read
         line = f"ERROR {_describe(args.dir, exc)}"
-    print(" ".join(line.split()), flush=True)
+    line = " ".join(line.split())
+    out = [line]
+    if args.full:
+        out += _full_lines(args.dir, line)
+    print("\n".join(out), flush=True)
     return 0
+
+
+def _full_lines(run_dir: Path, line: str) -> list[str]:
+    """What `wait --full` adds under the event line; it never raises.
+
+    Each part fails on its own: a verdict that cannot be computed still names the event's sha, and the status
+    block prints whenever the run state can be read.
+    """
+    _reset_compact_ask(run_dir)
+    out: list[str] = []
+    target = verdict.event_target(line)
+    try:
+        state: dict | None = load(run_dir)
+    except Exception as exc:  # the event line must still reach the manager
+        state = None
+        if target:
+            out.append(f"verdict {target[1]} unavailable: {_describe(run_dir, exc)}")
+    else:
+        if target:
+            try:
+                out.append(verdict.verdict_line(state, *target))
+            except Exception as exc:
+                out.append(f"verdict {target[1]} unavailable: {_describe(run_dir, exc)}")
+    out += verdict.log_lines(run_dir, line)
+    out.append("")
+    try:
+        if state is None:
+            raise RunError("no run state")
+        out.append(_status(run_dir, state))
+    except Exception as exc:
+        out.append(f"status unavailable: {_describe(run_dir, exc)}")
+    return out
 
 
 def _describe(run_dir: Path, exc: Exception) -> str:
@@ -593,9 +710,26 @@ def _run(args: argparse.Namespace) -> str | None:
         )
         return None
     if command == "status":
+        _reset_compact_ask(run_dir)
         return _status(run_dir, load(run_dir))
     if command == "item":
         return _item(args, now)
+    if command == "brief":
+        extra = _read_text(args.extra_file) if args.extra_file else ""
+        if args.card:
+            if args.title is None or args.spec is None or not args.gate or args.designed:
+                raise RunError("--card needs --title and --spec, and takes neither --no-gate nor --designed")
+            text = brief.render_card(run_dir, load(run_dir), args.unit, title=args.title, spec=args.spec, extra=extra)
+        else:
+            if args.title is not None or args.spec is not None:
+                raise RunError("--title and --spec go with --card; record a unit's with: unit <dir> <unit>")
+            text = brief.render(run_dir, load(run_dir), args.unit, extra=extra, gate=args.gate, designed=args.designed)
+        path = run_dir.absolute() / "briefs" / f"{args.unit}.md"
+        path.parent.mkdir(exist_ok=True)
+        partial = path.with_name(f".{path.name}.tmp")
+        partial.write_text(text, encoding="utf-8")
+        os.replace(partial, path)  # a child never reads a half-written brief
+        return str(path)
     if command == "check":
         state = load(run_dir)
         record = state["units"].get(args.unit)
@@ -623,6 +757,7 @@ def _run(args: argparse.Namespace) -> str | None:
                 specs=args.specs,
                 title=args.title,
                 integration=args.integration,
+                spec=args.spec,
             )
             if generation is not None and state["units"][args.name]["generation"] != generation:
                 # A new child session: the old session's open items no longer apply.
@@ -664,6 +799,16 @@ def _run(args: argparse.Namespace) -> str | None:
             return "\n".join(runstate.openable(state)) or None
         elif command == "closed":
             runstate.record_closed(state, args.unit, args.pr)
+        elif command == "compact-asked":
+            tokens = context.current_tokens(os.environ)
+            if tokens is None:
+                raise RunError("context size unknown: no transcript for this session")
+            state["compact_asked"] = tokens
+        elif command == "check-cmd":
+            rs = Path(args.rs).absolute()
+            if not rs.is_file():
+                raise RunError(f"rs not found: {rs}")
+            state["check"] = {"rs": str(rs), "state_dir": str(Path(args.state_dir).absolute())}
         elif command == "clear-bad":
             count = len(state["bad_requests"])
             state["bad_requests"] = []

@@ -12,7 +12,7 @@ It exits 0 on success, 1 when a command is refused (one line on stderr, nothing 
 
 ## The push protocol
 
-Pushes go through the manager. A child reviews its change with `/branch-review:review` until it converges, then asks to push by appending `<unit> push <sha> <branch>` to the run's `requests.log` and ending its turn with `[push-request] <sha>`. The run watcher reports the request; the manager runs `branch-review:check` on that commit in the child's worktree and answers through the run script, which appends `<unit> go <sha>`, or `<unit> redo <sha> <reasons>` with the check's reasons joined by `, `, to `pushes.log`. The child's poll reads only lines added after it asked, so it can ask again with the same sha. An Auto-fix wake-up in a child (CI failure, review comment, merge conflict) is never permission to push.
+Pushes go through the manager. A child reviews its change with `/branch-review:review` until it converges, then asks to push by appending `<unit> push <sha> <branch>` to the run's `requests.log` and ending its turn with `[push-request] <sha>`. The run watcher reports the request; the manager reads the coverage verdict for that commit in the child's worktree (the `verdict` line `run.py wait --full` prints for the request's own sha, or `branch-review:check` when that line is unavailable) and answers through the run script, which appends `<unit> go <sha>`, or `<unit> redo <sha> <reasons>` with the check's reasons joined by `, `, to `pushes.log`. The child's poll reads only lines added after it asked, so it can ask again with the same sha. An Auto-fix wake-up in a child (CI failure, review comment, merge conflict) is never permission to push.
 
 Before its last validation ahead of a request, and before it applies an owner's answer, a child syncs with the base if the base moved, so the sync on `go` is usually a no-op. On `go`, the child syncs with the base right before it pushes. A clean merge is pushed after validation, with no new request; the review check counts a clean base merge as covered. A conflicting merge, or a failed validation, sends the child back to ask again; for a conflicting merge the check reports `base-conflict`, and the child's review checks the resolutions in a small merge-check round.
 
@@ -79,7 +79,7 @@ Holds are separate. A blocking item still puts its unit on `hold`, and the hold 
 The manager merges a PR when all of these hold:
 
 - The watcher reported `READY` (or `REMIND`) for its head, or `run.py check` printed `READY`.
-- `branch-review:check`, run in the unit's worktree, says the review covers that head commit.
+- the review covers that head commit: the `verdict` line `wait --full` printed with the READY or REMIND event, when it is for that same head sha, or else `branch-review:check` run in the unit's worktree.
 - The unit has no unanswered or queued request, and in serial mode the slot is free or the unit's own.
 - The unit is not held, and every `--after` unit has merged or stopped (`status` shows neither `hold <unit>` nor `<unit> ... merges after`).
 - The unit is not stopped. The watcher never reports `READY` or `REMIND` for a stopped unit.
@@ -145,6 +145,28 @@ The period is the `retention_days` option (`userConfig` in `plugin.json`, defaul
 
 Timings: `requests.log` is checked every 5 s and PRs are polled every 60 s. Each event is reported once, across restarts of `wait`.
 
+## Skill layout and compaction
+
+After a compaction Claude Code re-injects only the first 5,000 tokens of an invoked skill. So `skills/implementation-manager/SKILL.md` is a short core that carries what the manager needs to resume, and the rest is in `skills/implementation-manager/references/*.md`, which the manager reads when a step needs one. The core must stay under 17,500 characters, the proxy for that limit; `tests/test_skill_text.py` fails above it, and checks the core's compact line and resume rule. `${...}` placeholders (such as `${user_config.retention_days}`) live only in the core: Claude Code substitutes them when the skill loads, and they would reach the manager as literal text from a reference file. The same test fails when a reference holds one.
+
+When the manager's context passes 300k tokens and the run is quiet, `run.py status` prints `- context: <N>k, compact due`. The size is the input side of the last assistant message's `usage` in the manager's transcript (`scripts/context.py`). The manager gives the owner the `/compact` line, then runs `run.py compact-asked`, which records the size; the line is due again after a further 150k tokens. The run is quiet when nothing waits on the manager and every unit that is not done and not stopped has a recorded worktree. When the context size is at least 150k below the recorded size (the owner compacted), `status` and `wait --full` clear it, so the next ask needs only 300k again.
+
+## Child briefs from templates
+
+`run.py brief <run> <unit>` writes a child's prompt to `<run>/briefs/<unit>.md` and prints that path. The prompt is rendered by `scripts/brief.py` from `templates/unit-brief.md` (or `integration-brief.md` for the integration unit) and the run state; `--card` renders it before the card is a unit. The manager starts the child with a one-line prompt that points at the file, and never rewrites it. A `{{name}}` in a template is a fragment slot (`gate`, `start`, `subagent_block`, `parts_8_to_10`, `sandbox` and `designed` are files in `templates/fragments/`; `sync_base` is the `SYNC_BASE` constant in `scripts/brief.py`; each is left out when it does not apply) or a run value (`title`, `spec`, `base`, `run_base`, `repo`, `name`, `run`, `integration`, `manager`, `facts`, `extra`). Values go in last, in one pass, so text from the run is never read for placeholders; a template with a malformed `{{…}}` is refused before they go in. With no facts file and no extra text, part 6 reads "None for this unit." so its header never stands alone. The brief is written to a temporary file and renamed into place. Placeholders for the child (`<sha>`, `<branch>`) stay as they are.
+
+`tests/golden/brief-unit.md`, `brief-integration-unit.md` and `brief-integration-child.md` are the expected output for a fixed run; `tests/test_brief.py` compares against them. After you change a template, regenerate them with `IM_REGEN_GOLDENS=1 python3 -m unittest discover -s plugins/implementation-manager/tests -p test_brief.py`, which rewrites the files instead of comparing. Review the `git diff` of `tests/golden/` by hand before you commit it.
+
+## Wait output and the recorded check
+
+`run.py wait --full` prints the event line, then lines the manager would otherwise fetch with further calls: for a REQUEST, PENDING, NEXT, READY or REMIND event, `verdict <sha> <rs covered JSON>`; for a STUCK event, the unit's last `pushes.log` and `requests.log` lines; then an empty line and the `status` block (`status unavailable: <message>` if that fails). Each part fails on its own, so a failed verdict never hides the status.
+
+The verdict comes from branch-review's `rs` script, which `run.py check-cmd <run> --rs P --state-dir D` records at setup (paths stored absolute). When nothing is recorded, the record is malformed, the run state cannot be read, or the script has moved or fails, the line reads `verdict <sha> unavailable: <reason>` and the manager falls back to invoking `branch-review:check` itself. A recorded path goes stale when branch-review updates mid-run; see [TD-0013](../../docs/tech-debt/TD-0013-implementation-manager-recorded-check-path.md).
+
+## Measuring token use
+
+The cost of a run is measured from the manager's transcript. Sum the `usage` fields of its assistant messages, counting each API response once (Claude Code writes one transcript line per content block, each repeating the response's `usage`, so take one line per `message.id`), per unit, as weighted input-token equivalents: cache reads at 0.1, cache writes at 1.25, uncached input at 1 and output at 5. Compare runs of the same plan before and after a change.
+
 ## Tests
 
 ```bash
@@ -153,7 +175,7 @@ python3 -m unittest discover -s plugins/implementation-manager/tests -v
 
 ## Evals
 
-The eval cases are `push-gate`, `push-queue` and `owner-queue`, in `evals/`. Each case builds its fixture with a scaffold script. Run them from the repository root:
+The eval cases are `push-gate`, `push-queue`, `owner-queue` and `compaction-resume`, in `evals/`. `push-gate` covers the fallback when no check command is recorded. `push-queue` covers the verdict line that `wait --full` prints. `compaction-resume` covers the manager resuming from the core after a compaction. Each case builds its fixture with a scaffold script. Run them from the repository root:
 
 ```bash
 claude plugin eval plugins --case <case> --scaffold --allow-tools Bash Write Edit SendMessage ToolSearch --runs 1 --ablation none --json <file>

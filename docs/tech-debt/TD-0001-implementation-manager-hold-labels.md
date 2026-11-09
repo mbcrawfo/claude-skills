@@ -2,7 +2,7 @@
 
 ## Problem
 
-A unit has one hold, with one reason, and the reason is what `run.py status` shows (`hold <unit>: <reason> since HH:MM`). The manager's rules in [`SKILL.md`](../../plugins/implementation-manager/skills/implementation-manager/SKILL.md) ("Event handling") relabel a hold only in some cases, so the label can name something the unit is no longer waiting on:
+A unit has one hold, with one reason, and the reason is what `run.py status` shows (`hold <unit>: <reason> since HH:MM`). The manager's rules in [`references/events.md`](../../plugins/implementation-manager/skills/implementation-manager/references/events.md) relabel a hold only in some cases, so the label can name something the unit is no longer waiting on:
 
 - **An owner answer while an own-session question is open.** The unit is held for a relayed question, then a designed unit's child sends an own-session notice; the hold stays as it is. When the owner answers the relayed question, an own-session question is still open, so the manager keeps the hold, and its reason still names the question just answered.
 - **A second question under an own-session hold.** A unit held `own session: <topic>` relays a second blocking question; `hold` refuses (`already held`) and the reason stays `own session: <topic>`, though the unit now also waits on the relayed question.

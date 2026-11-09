@@ -39,6 +39,8 @@ class CliTestCase(unittest.TestCase):
         self.tmp = Path(tmp.name)
         self.dir = self.tmp / "my-run"
         self.env = dict(os.environ)
+        self.env.pop("CLAUDE_CODE_SESSION_ID", None)  # never read the real session's transcript
+        self.env["CLAUDE_CONFIG_DIR"] = str(self.tmp / "claude")
 
     def run_cli(self, *args):
         return subprocess.run(
@@ -1297,6 +1299,338 @@ class ItemCliTests(CliTestCase):
         self.assertEqual(self.ok("item", "list", str(self.dir)), "none\n")
         self.assertTrue(self.item_add("a", "Q1").startswith("current a-1"))
         self.assertEqual(self.state()["units"]["a"]["generation"], 1)
+
+
+class ContextTests(CliTestCase):
+    def transcript(self, tokens):
+        path = Path(self.env["CLAUDE_CONFIG_DIR"]) / "projects" / "p" / "s1.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        line = {"type": "assistant", "message": {"usage": {"input_tokens": tokens}}}
+        path.write_text(json.dumps(line) + "\n", encoding="utf-8")
+        self.env["CLAUDE_CODE_SESSION_ID"] = "s1"
+
+    def last(self):
+        return self.ok("status", str(self.dir)).splitlines()[-1]
+
+    def test_unlockable_run_keeps_the_ask_and_status_prints(self):
+        self.init()
+        self.transcript(310_000)
+        self.ok("compact-asked", str(self.dir))
+        self.transcript(40_000)
+        lock = self.dir / "run.lock"
+        lock.unlink()
+        lock.mkdir()  # opening the lock now fails: the reset must not break status
+        self.assertEqual(self.last(), "- context: 40k")
+        self.assertEqual(self.state()["compact_asked"], 310_000)
+
+    def ask_then(self, tokens):
+        """Record an ask at 310k, then move the transcript to `tokens`."""
+        self.transcript(310_000)
+        self.ok("compact-asked", str(self.dir))
+        self.transcript(tokens)
+
+    def test_reset_boundary_is_inclusive(self):
+        self.init()
+        self.ask_then(160_000)  # exactly COMPACT_EVERY below the ask
+        self.ok("status", str(self.dir))
+        self.assertIsNone(self.state()["compact_asked"])
+
+    def test_one_token_short_of_the_boundary_keeps_the_ask(self):
+        self.init()
+        self.ask_then(160_001)
+        self.ok("status", str(self.dir))
+        self.assertEqual(self.state()["compact_asked"], 310_000)
+
+    def test_full_wait_resets_the_ask(self):
+        self.init()
+        self.ok("unit", str(self.dir), "a", "--branch", "feat/a", "--worktree", str(self.tmp / "wt"))
+        self.ask_then(40_000)
+        self.append_request(f"a push {SHA1} feat/a\n")
+        self.ok("wait", str(self.dir), "--full")
+        self.assertIsNone(self.state()["compact_asked"])
+
+    def test_stopped_unit_without_worktree_does_not_block(self):
+        self.init()
+        self.ok("unit", str(self.dir), "a")
+        self.ok("stop", str(self.dir), "a", "dropped")
+        self.transcript(310_000)
+        self.assertEqual(self.last(), "- context: 310k, compact due")
+
+    def test_done_unit_without_worktree_does_not_block(self):
+        self.init()
+        self.ok("unit", str(self.dir), "a", "--branch", "feat/a")
+        self.ok("open", str(self.dir), "a")
+        self.ok("merged", str(self.dir), "a", "7")
+        self.transcript(310_000)
+        self.assertEqual(self.last(), "- context: 310k, compact due")
+
+    def test_held_unit_is_still_compact_due(self):
+        self.init()
+        self.ok("unit", str(self.dir), "a", "--worktree", str(self.tmp / "wt"))
+        self.ok("open", str(self.dir), "a")
+        self.ok("hold", str(self.dir), "a", "answer", "sent:", "widget", "naming")
+        self.transcript(400_000)
+        self.assertIn("hold a: answer sent: widget naming", self.ok("status", str(self.dir)))
+        self.assertEqual(self.last(), "- context: 400k, compact due")
+
+    def test_unit_named_hold_with_a_ready_pr_is_not_quiet(self):
+        self.init()
+        self.ok("unit", str(self.dir), "hold", "--branch", "feat/hold", "--worktree", str(self.tmp / "wt"))
+        self.ok("open", str(self.dir), "hold")
+        state = self.state()
+        state["marks"]["hold"] = {"ready_head": f"5 {SHA1}", "ready_at": 0, "head": SHA1}
+        state["units"]["hold"]["prs"] = {"5": "OPEN"}
+        (self.dir / "run.json").write_text(json.dumps(state), encoding="utf-8")
+        self.transcript(400_000)
+        self.assertIn("hold PR #5 ready since", self.ok("status", str(self.dir)))
+        self.assertEqual(self.last(), "- context: 400k")
+
+    def test_status_has_no_context_line_without_transcript(self):
+        self.init()
+        self.assertFalse(
+            [line for line in self.ok("status", str(self.dir)).splitlines() if line.startswith("- context:")]
+        )
+
+    def test_status_prints_context(self):
+        self.init()
+        self.transcript(120_400)
+        self.assertEqual(self.last(), "- context: 120k")
+
+    def test_status_says_compact_due_when_quiet(self):
+        self.init()
+        self.transcript(310_000)
+        self.assertEqual(self.last(), "- context: 310k, compact due")
+
+    def test_not_due_with_a_request_waiting(self):
+        self.init()
+        self.ok("unit", str(self.dir), "a", "--worktree", str(self.tmp / "wt"))
+        self.ok("open", str(self.dir), "a")
+        self.append_request(f"a push {SHA1} feat/a\n")
+        self.ok("wait", str(self.dir))
+        self.transcript(310_000)
+        self.assertIn("unanswered", self.ok("status", str(self.dir)))
+        self.assertEqual(self.last(), "- context: 310k")
+
+    def test_not_due_for_an_open_unit_without_worktree(self):
+        self.init()
+        self.ok("unit", str(self.dir), "a")
+        self.ok("open", str(self.dir), "a")
+        self.transcript(310_000)
+        self.assertEqual(self.last(), "- context: 310k")
+
+    def test_not_due_for_a_gated_unit_without_worktree(self):
+        self.init()
+        self.ok("unit", str(self.dir), "a", "--worktree", str(self.tmp / "wta"))
+        self.ok("open", str(self.dir), "a")
+        self.ok("unit", str(self.dir), "b", "--prereq", "a")
+        self.transcript(310_000)
+        self.assertEqual(self.last(), "- context: 310k")
+
+    def test_compaction_resets_the_ask(self):
+        self.init()
+        self.transcript(310_000)
+        self.ok("compact-asked", str(self.dir))
+        self.transcript(40_000)
+        self.ok("status", str(self.dir))
+        self.assertIsNone(self.state()["compact_asked"])
+        self.transcript(305_000)
+        self.assertEqual(self.last(), "- context: 305k, compact due")
+
+    def test_small_drop_keeps_the_ask(self):
+        self.init()
+        self.transcript(310_000)
+        self.ok("compact-asked", str(self.dir))
+        self.transcript(200_000)
+        self.ok("status", str(self.dir))
+        self.assertEqual(self.state()["compact_asked"], 310_000)
+
+    def test_compact_asked_records_and_suppresses(self):
+        self.init()
+        self.transcript(310_000)
+        self.assertEqual(self.ok("compact-asked", str(self.dir)), "")
+        self.assertEqual(self.state()["compact_asked"], 310_000)
+        self.assertEqual(self.last(), "- context: 310k")
+        self.transcript(470_000)
+        self.assertEqual(self.last(), "- context: 470k, compact due")
+
+    def test_compact_asked_without_transcript_refuses(self):
+        self.init()
+        result = self.run_cli("compact-asked", str(self.dir))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("context size unknown", result.stderr)
+
+    def test_old_run_json_backfills_compact_asked(self):
+        self.init()
+        state = self.state()
+        del state["compact_asked"]
+        (self.dir / "run.json").write_text(json.dumps(state), encoding="utf-8")
+        self.ok("status", str(self.dir))
+
+
+FAKE_RS = """#!/bin/sh
+echo "$@" > "{args_file}"
+echo '{{"covered": true, "reasons": [], "branch": "feat/a"}}'
+"""
+
+
+class WaitFullTests(CliTestCase):
+    def setUp(self):
+        super().setUp()
+        self.init()
+        self.rs = self.tmp / "rs"
+        self.args_file = self.tmp / "rs-args"
+        self.rs.write_text(FAKE_RS.format(args_file=self.args_file), encoding="utf-8")
+        self.wt = self.tmp / "wt"
+        self.ok("unit", str(self.dir), "a", "--branch", "feat/a", "--worktree", str(self.wt))
+        self.append_request(f"a push {SHA1} feat/a\n")
+
+    def record(self):
+        self.ok("check-cmd", str(self.dir), "--rs", str(self.rs), "--state-dir", str(self.tmp / "sd"))
+
+    def test_plain_wait_is_one_line(self):
+        self.record()
+        self.assertEqual(self.ok("wait", str(self.dir)), f"REQUEST a {SHA1} feat/a\n")
+
+    def test_full_wait_prints_event_verdict_and_status(self):
+        self.record()
+        lines = self.ok("wait", str(self.dir), "--full").splitlines()
+        self.assertEqual(lines[0], f"REQUEST a {SHA1} feat/a")
+        self.assertEqual(lines[1], f'verdict {SHA1} {{"covered":true,"reasons":[],"branch":"feat/a"}}')
+        self.assertEqual(lines[2], "")
+        self.assertTrue(lines[3].startswith("Run my-run ("), lines[3])
+        self.assertIn(f"--commit {SHA1}", self.args_file.read_text(encoding="utf-8"))
+
+    def test_full_wait_without_check_cmd(self):
+        lines = self.ok("wait", str(self.dir), "--full").splitlines()
+        self.assertEqual(lines[1], f"verdict {SHA1} unavailable: no check command recorded")
+
+    def test_full_wait_with_rs_removed(self):
+        self.record()
+        self.rs.unlink()
+        lines = self.ok("wait", str(self.dir), "--full").splitlines()
+        self.assertEqual(lines[1], f"verdict {SHA1} unavailable: rs not found: {self.rs}")
+
+    def test_full_wait_with_failing_rs(self):
+        self.rs.write_text("#!/bin/sh\necho 'commit not found: x' >&2\nexit 1\n", encoding="utf-8")
+        self.record()
+        lines = self.ok("wait", str(self.dir), "--full").splitlines()
+        self.assertEqual(lines[1], f"verdict {SHA1} unavailable: check failed: commit not found: x")
+        self.assertTrue(lines[3].startswith("Run my-run ("), lines[3])
+
+    def test_full_wait_with_malformed_check_still_prints_status(self):
+        self.record()
+        state = self.state()
+        state["check"] = {"rs": 5}
+        (self.dir / "run.json").write_text(json.dumps(state), encoding="utf-8")
+        lines = self.ok("wait", str(self.dir), "--full").splitlines()
+        self.assertEqual(
+            lines[1], f"verdict {SHA1} unavailable: check command record is malformed; record it again with check-cmd"
+        )
+        self.assertTrue(lines[3].startswith("Run my-run ("), lines[3])
+
+    def test_full_wait_next_event_has_verdict(self):
+        self.record()
+        self.ok("unit", str(self.dir), "b", "--worktree", str(self.tmp / "wtb"))
+        self.ok("go", str(self.dir), "a", SHA1)
+        self.ok("queue", str(self.dir), "b", SHA2)
+        self.ok("yield", str(self.dir), "a", "owner", "question")
+        lines = self.ok("wait", str(self.dir), "--full").splitlines()
+        self.assertEqual(lines[0], f"NEXT b {SHA2}")
+        self.assertTrue(lines[1].startswith(f"verdict {SHA2} "), lines[1])
+
+    def test_check_cmd_refuses_missing_rs(self):
+        result = self.run_cli("check-cmd", str(self.dir), "--rs", str(self.tmp / "nope"), "--state-dir", str(self.tmp))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("rs not found", result.stderr)
+
+
+class BriefCliTests(CliTestCase):
+    def setUp(self):
+        super().setUp()
+        self.init()
+        self.ok("unit", str(self.dir), "a", "--title", "Add widgets", "--spec", "docs/specs/widgets.md")
+        self.path = self.dir / "briefs" / "a.md"
+
+    def test_brief_writes_file_and_prints_path(self):
+        self.ok("set", str(self.dir), "manager", "local_abc")
+        extra = self.tmp / "extra.md"
+        extra.write_text("Touch only src/widgets/.\n", encoding="utf-8")
+        self.assertEqual(self.ok("brief", str(self.dir), "a", "--extra-file", str(extra)), f"{self.path}\n")
+        text = self.path.read_text(encoding="utf-8")
+        self.assertTrue(text.startswith("1. **Goal:** implement `Add widgets` as specified in `docs/specs/widgets.md`"))
+        self.assertIn("Touch only src/widgets/.", text)
+        self.assertIn(f'f="{self.dir}/gates.log"', text)
+        self.assertIn("(local_abc)", text)
+
+    def test_brief_leaves_no_partial_file(self):
+        self.ok("set", str(self.dir), "manager", "local_abc")
+        self.ok("brief", str(self.dir), "a")
+        self.assertEqual([p.name for p in self.path.parent.iterdir()], ["a.md"])
+
+    def test_brief_options(self):
+        self.ok("set", str(self.dir), "manager", "local_abc")
+        self.ok("brief", str(self.dir), "a", "--no-gate", "--designed")
+        text = self.path.read_text(encoding="utf-8")
+        self.assertNotIn("**Gate:**", text)
+        self.assertIn("The owner designs this unit with you in this session.", text)
+
+    def test_brief_refuses_without_manager(self):
+        result = self.run_cli("brief", str(self.dir), "a")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stderr, f"run.py brief: no manager session id: run.py set {self.dir} manager <id>\n")
+        self.assertFalse(self.path.exists())
+
+    def test_brief_refuses_without_spec(self):
+        self.ok("set", str(self.dir), "manager", "local_abc")
+        self.ok("unit", str(self.dir), "b")
+        result = self.run_cli("brief", str(self.dir), "b")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stderr, f"run.py brief: unit b has no spec: run.py unit {self.dir} b --spec P\n")
+        self.assertFalse((self.dir / "briefs" / "b.md").exists())
+
+    def test_brief_refuses_unknown_unit(self):
+        self.ok("set", str(self.dir), "manager", "local_abc")
+        result = self.run_cli("brief", str(self.dir), "nope")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("unknown unit", result.stderr)
+
+    def test_set_manager_validates_id(self):
+        for bad in ("", "local abc", "a/b", "local_abc def"):
+            with self.subTest(bad=bad):
+                result = self.run_cli("set", str(self.dir), "manager", bad)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("manager", result.stderr)
+        self.assertIsNone(self.state()["manager"])
+        for good in ("local_0a1b-2c3d", "session_Abc9"):
+            self.ok("set", str(self.dir), "manager", good)
+            self.assertEqual(self.state()["manager"], good)
+
+    def test_brief_card_writes_file_and_leaves_run_json_units_unchanged(self):
+        self.ok("set", str(self.dir), "manager", "local_abc")
+        units = self.state()["units"]
+        path = self.dir / "briefs" / "c1.md"
+        args = ("brief", str(self.dir), "c1", "--card", "--title", "Fix docs", "--spec", "docs/cards/c1.md")
+        self.assertEqual(self.ok(*args), f"{path}\n")
+        text = path.read_text(encoding="utf-8")
+        self.assertTrue(text.startswith("1. **Goal:** implement `Fix docs` as specified in `docs/cards/c1.md`"))
+        self.assertIn("2. **Gate:**", text)
+        self.assertEqual(self.state()["units"], units)
+        result = self.run_cli("brief", str(self.dir), "a", "--card", "--title", "T", "--spec", "s.md")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("already exists", result.stderr)
+        result = self.run_cli("brief", str(self.dir), "c2", "--card", "--title", "T")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("--card needs --title and --spec", result.stderr)
+        result = self.run_cli("brief", str(self.dir), "a", "--title", "T")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("go with --card", result.stderr)
+
+    def test_unit_spec_is_stored_and_kept(self):
+        self.assertEqual(self.state()["units"]["a"]["spec"], "docs/specs/widgets.md")
+        self.ok("unit", str(self.dir), "a", "--title", "Widgets")
+        self.assertEqual(self.state()["units"]["a"]["spec"], "docs/specs/widgets.md")
+        result = self.run_cli("unit", str(self.dir), "a", "--spec", "a\nb")
+        self.assertEqual(result.returncode, 1)
 
 
 if __name__ == "__main__":

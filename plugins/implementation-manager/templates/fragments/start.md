@@ -1,0 +1,1 @@
+bring the branch up to date with `{{base}}` (ccd_host `sync_with_base_branch`); confirm the prerequisites' code is in the tree, and stop and say so if not; read `{{run}}/notes.md`, which records what earlier units actually merged.

@@ -1,0 +1,1 @@
+`git fetch origin {{integration}}`. If HEAD is not `origin/{{integration}}`, run `git reset --hard origin/{{integration}}` before any work; the worktree is new, so nothing is lost. Confirm the prerequisites' code is in the tree, and stop and say so if not; read `{{run}}/notes.md`, which records what earlier units actually merged.

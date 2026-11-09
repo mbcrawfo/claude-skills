@@ -17,7 +17,7 @@ Cost comes from the token counts in each transcript, counted once per distinct
 counts). Prices are USD per million tokens, from public list prices: Opus
 $5/$25, Sonnet $3/$15 (input/output). Cache write is 1.25x input for 5 minutes
 and 2x for 1 hour; cache read is 0.1x input. The Haiku and Fable rows are
-placeholders to check against current list prices (TD-0012). A model with no
+placeholders to check against current list prices (TD-0016). A model with no
 price row costs 0 and is counted under ``unpriced``, with a warning line.
 
 Usage: python3 usage_report.py [--since YYYY-MM-DD] [--until YYYY-MM-DD]

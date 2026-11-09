@@ -10,7 +10,7 @@ No eval case for integration-branch mode in implementation-manager 0.5.0. The mo
 
 - The run script: [`test_runstate.py`](../../plugins/implementation-manager/tests/test_runstate.py), [`test_watcher.py`](../../plugins/implementation-manager/tests/test_watcher.py), [`test_prstate.py`](../../plugins/implementation-manager/tests/test_prstate.py) and [`test_run_cli.py`](../../plugins/implementation-manager/tests/test_run_cli.py): the `init` and `set` options, the integration unit, the final gate, `SYNCED` and `synced`, queue priority, the merge blocks and `FINAL-READY`.
 - branch-review's `record`: [`plugins/branch-review/tests/`](../../plugins/branch-review/tests/), including coverage of a clean base merge after a record and a merge-check limited to the resolutions after a conflicted one.
-- The protocol: "Integration-branch mode" and "The integration child" in [`SKILL.md`](../../plugins/implementation-manager/skills/implementation-manager/SKILL.md).
+- The protocol: "Integration-branch mode" in [`references/setup.md`](../../plugins/implementation-manager/skills/implementation-manager/references/setup.md) and [`references/integration.md`](../../plugins/implementation-manager/skills/implementation-manager/references/integration.md), and the integration child's brief in [`templates/integration-brief.md`](../../plugins/implementation-manager/templates/integration-brief.md).
 
 Nothing tests that a manager follows the integration setup steps, or that an integration child records, merges, resets and redoes as the prompt says.
 

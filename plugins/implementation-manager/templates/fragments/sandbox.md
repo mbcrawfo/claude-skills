@@ -1,0 +1,1 @@
+- If `sync_with_base_branch` refuses because the sync touches sandbox-protected files, push nothing and end your turn with `[blocked]`, "blocks merge: no", and the paths it names.

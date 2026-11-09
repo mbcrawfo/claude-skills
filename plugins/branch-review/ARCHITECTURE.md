@@ -101,4 +101,4 @@ Run it with `--help` for the options (`--until`, `--projects-dir`, `--state-dir`
 3. `replay.py run` replays each entry in a scratch worktree with a scratch state directory. It runs the reviewer through `claude -p --agent branch-review:reviewer` with `--strict-mcp-config --tools Read Grep Glob Bash --allowedTools Read Grep Glob Bash`, and then a Sonnet judge. The worktree is made in a temp directory outside every checkout, so the run loads no other repo's project instructions. Hard caps: `--round-budget-usd` (default 15) and `--max-total-usd` (default 40). An entry is skipped when less than $1 is left for its reviewer. `run` exits 1 when the set fails and 0 when it passes.
 4. `replay.py score` re-scores saved results and spends nothing.
 
-Replay results stay in `evals/results/`, which is gitignored. Known limits of both tools are in [TD-0012](../../docs/tech-debt/TD-0012-branch-review-measuring-tools-known-limits.md).
+Replay results stay in `evals/results/`, which is gitignored. Known limits of both tools are in [TD-0016](../../docs/tech-debt/TD-0016-branch-review-measuring-tools-known-limits.md).
