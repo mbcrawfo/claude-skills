@@ -1301,10 +1301,6 @@ class ItemCliTests(CliTestCase):
         self.assertEqual(self.state()["units"]["a"]["generation"], 1)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class ContextTests(CliTestCase):
     def transcript(self, tokens):
         path = Path(self.env["CLAUDE_CONFIG_DIR"]) / "projects" / "p" / "s1.jsonl"
@@ -1368,3 +1364,7 @@ class ContextTests(CliTestCase):
         del state["compact_asked"]
         (self.dir / "run.json").write_text(json.dumps(state), encoding="utf-8")
         self.ok("status", str(self.dir))
+
+
+if __name__ == "__main__":
+    unittest.main()

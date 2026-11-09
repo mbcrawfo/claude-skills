@@ -10,7 +10,8 @@ import unittest
 
 import helpers  # noqa: F401  (puts the scripts dir on sys.path)
 
-context = __import__("context")
+# isort: split
+import context
 
 
 def assistant(input_tokens, read, created):
