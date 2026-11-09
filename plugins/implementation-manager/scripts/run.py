@@ -23,6 +23,7 @@ The run folder is always the first argument after the subcommand:
   set <dir> final-merge <manager|owner> | set <dir> feature-review <yes|no>
                                     integration mode, until the final gate opens
   brief <dir> <unit> [--extra-file P] [--no-gate] [--designed]
+  brief <dir> <name> --card --title T --spec P [--extra-file P]
                                     write the unit's child prompt to <dir>/briefs/<unit>.md from the templates
                                     (the integration unit's own template for it; the integration-mode fragments
                                     for the other units of such a run) and print that path; part 6 gets
@@ -30,6 +31,10 @@ The run folder is always the first argument after the subcommand:
                                     the gate (part 2), --designed adds the paragraph for a unit the owner designs
                                     with the child; refused without a manager id, a unit without a spec, or a
                                     template placeholder the run cannot fill
+                                    --card: a card's prompt for work outside every unit, before it is a unit (the
+                                    unit is added when the user starts the card): <name> must be a valid unit name
+                                    and not a unit yet; the title and spec are given here; the gate is included,
+                                    and an integration run's unit changes apply; refused without a manager id
   open <dir> <unit>                 open one gate
   open-ready <dir>                  open every gate that may open; print one unit name per line, then the
                                     final gate's gates.log line when it opens (integration mode)
@@ -418,6 +423,9 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--extra-file", type=Path, metavar="P", help="unit-specific text for part 6")
     p.add_argument("--no-gate", dest="gate", action="store_false", help="leave out the gate (part 2)")
     p.add_argument("--designed", action="store_true", help="a unit the owner designs with the child")
+    p.add_argument("--card", action="store_true", help="a card's prompt: <unit> is not a unit yet")
+    p.add_argument("--title", help="with --card: the card's title")
+    p.add_argument("--spec", metavar="P", help="with --card: the card's spec")
 
     p = command("open", "open one unit's gate")
     p.add_argument("unit")
@@ -670,7 +678,14 @@ def _run(args: argparse.Namespace) -> str | None:
         return _item(args, now)
     if command == "brief":
         extra = _read_text(args.extra_file) if args.extra_file else ""
-        text = brief.render(run_dir, load(run_dir), args.unit, extra=extra, gate=args.gate, designed=args.designed)
+        if args.card:
+            if args.title is None or args.spec is None or not args.gate or args.designed:
+                raise RunError("--card needs --title and --spec, and takes neither --no-gate nor --designed")
+            text = brief.render_card(run_dir, load(run_dir), args.unit, title=args.title, spec=args.spec, extra=extra)
+        else:
+            if args.title is not None or args.spec is not None:
+                raise RunError("--title and --spec go with --card; record a unit's with: unit <dir> <unit>")
+            text = brief.render(run_dir, load(run_dir), args.unit, extra=extra, gate=args.gate, designed=args.designed)
         path = run_dir.absolute() / "briefs" / f"{args.unit}.md"
         path.parent.mkdir(exist_ok=True)
         path.write_text(text, encoding="utf-8")

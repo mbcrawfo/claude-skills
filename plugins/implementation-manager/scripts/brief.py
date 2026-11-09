@@ -95,6 +95,31 @@ def render(run_dir: Path, state: dict, unit: str, *, extra: str = "", gate: bool
         raise RunError(f"no manager session id: run.py set {run_dir} manager <id>")
     if not record.get("spec"):
         raise RunError(f"unit {unit} has no spec: run.py unit {run_dir} {unit} --spec P")
+    return _render(run_dir, state, unit, record, extra=extra, gate=gate, designed=designed)
+
+
+def render_card(run_dir: Path, state: dict, name: str, *, title: str, spec: str, extra: str = "") -> str:
+    """The brief for a card: work outside every unit, proposed before it is a unit.
+
+    The unit is added only once the user starts the card, so the title and spec come from the caller. A card's
+    brief is a unit's, gate included, with the integration mode's unit changes in such a run; it is never the
+    integration child's. Refuses a name that is not a valid unit name or is already a unit, a title or spec that
+    is empty or not one line, and a run with no manager id.
+    """
+    if not re.fullmatch(runstate.UNIT_RE, name):
+        raise RunError(f"bad unit name {name!r}: use letters, digits, '_' and '-', starting with a letter or digit")
+    if name in state["units"]:
+        raise RunError(f"unit {name!r} already exists: a card is for work outside every unit")
+    for label, text in (("title", title), ("spec", spec)):
+        if not text or "\n" in text or "\r" in text:
+            raise RunError(f"bad {label} {text!r}: use a single line")
+    if not state.get("manager"):
+        raise RunError(f"no manager session id: run.py set {run_dir} manager <id>")
+    record = {"title": title, "spec": spec, "integration": False}
+    return _render(run_dir, state, name, record, extra=extra, gate=True, designed=False)
+
+
+def _render(run_dir: Path, state: dict, unit: str, record: dict, *, extra: str, gate: bool, designed: bool) -> str:
     integration_child = record.get("integration", False)
     if integration_child and designed:
         raise RunError("the integration unit is not designed with the owner: drop --designed")

@@ -20,7 +20,7 @@ For a unit added mid-run that the owner will design in the child's session, run 
 
 ## A card for work outside every unit
 
-Propose it as a card (`start_session` with `initiation: "own_initiative"`), once. Write what the work is to a spec file in `<run>/`, add it as a unit (`run.py unit <run> <name> --title "<title>" --spec <file>`), write its brief as above, gate included, and give the card the start prompt above: `brief` needs the unit and its spec. It merges like any unit and gates nothing. If the owner turns the card down, stop the unit (`run.py stop <run> <name> <reason>`).
+Propose it as a card (`start_session` with `initiation: "own_initiative"`), once. It is not a unit yet: the unit is added only when the user starts the card (the events.md row for a card the user started). Write what the work is to a spec file in `<run>/`, and its part 6 text as above. Then run `run.py brief <run> <name> --card --title "<title>" --spec <file> --extra-file <file>`, which writes its brief, gate included, without adding the unit, and give the card the start prompt above. It merges like any unit and gates nothing.
 
 ## Red flags
 

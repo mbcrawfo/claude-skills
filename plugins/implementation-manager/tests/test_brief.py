@@ -146,6 +146,51 @@ class OptionTests(BriefTestCase):
         self.assertIn("Use ${{ github.ref }} and {{name}} as written.", text)
 
 
+class CardTests(BriefTestCase):
+    def card(self, state, name="c1", **options):
+        options.setdefault("title", "Fix the widget docs")
+        options.setdefault("spec", "docs/cards/c1.md")
+        return brief.render_card(self.dir, state, name, **options).replace(str(self.dir.absolute()), RUN)
+
+    def test_card_renders_without_unit(self):
+        state = self.make_run()
+        text = self.card(state, extra=EXTRA)
+        self.assertNotIn("c1", state["units"])
+        goal = "1. **Goal:** implement `Fix the widget docs` as specified in `docs/cards/c1.md`"
+        self.assertTrue(text.startswith(goal), text[:120])
+        self.assertIn("2. **Gate:**", text)
+        self.assertIn(f"f=\"{RUN}/gates.log\"; until l=$(grep -E '^c1 (open|stop)'", text)
+        self.assertIn(EXTRA, text)
+        self.assertIn("11. One open PR", text)
+        self.assertNotIn("{{", text)
+
+    def test_card_refuses_existing_unit(self):
+        state = self.make_run()
+        with self.assertRaisesRegex(RunError, "already exists"):
+            self.card(state, "u1")
+
+    def test_card_refuses_bad_name_title_spec_and_no_manager(self):
+        state = self.make_run()
+        with self.assertRaisesRegex(RunError, "bad unit name"):
+            self.card(state, "-c")
+        with self.assertRaisesRegex(RunError, "bad title"):
+            self.card(state, title="a\nb")
+        with self.assertRaisesRegex(RunError, "bad spec"):
+            self.card(state, spec="")
+        state["manager"] = None
+        with self.assertRaisesRegex(RunError, "no manager session id"):
+            self.card(state)
+
+    def test_card_in_integration_run_targets_integration_branch(self):
+        text = self.card(self.make_run(INTEGRATION))
+        self.assertIn("as one PR to `integration/widgets`", text)
+        self.assertIn("/branch-review:review --base origin/integration/widgets", text)
+        self.assertIn(SANDBOX, text.splitlines())
+        self.assertIn("'^c1 (open|stop)'", text)
+        self.assertNotIn("Integration branch.", text)
+        self.assertNotIn("{{", text)
+
+
 class RefusalTests(BriefTestCase):
     def test_unknown_unit(self):
         with self.assertRaisesRegex(RunError, "unknown unit"):

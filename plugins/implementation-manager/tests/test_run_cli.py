@@ -1480,6 +1480,26 @@ class BriefCliTests(CliTestCase):
         self.ok("set", str(self.dir), "manager", "local_0a1b-2c3d")
         self.assertEqual(self.state()["manager"], "local_0a1b-2c3d")
 
+    def test_brief_card_writes_file_and_leaves_run_json_units_unchanged(self):
+        self.ok("set", str(self.dir), "manager", "local_abc")
+        units = self.state()["units"]
+        path = self.dir / "briefs" / "c1.md"
+        args = ("brief", str(self.dir), "c1", "--card", "--title", "Fix docs", "--spec", "docs/cards/c1.md")
+        self.assertEqual(self.ok(*args), f"{path}\n")
+        text = path.read_text(encoding="utf-8")
+        self.assertTrue(text.startswith("1. **Goal:** implement `Fix docs` as specified in `docs/cards/c1.md`"))
+        self.assertIn("2. **Gate:**", text)
+        self.assertEqual(self.state()["units"], units)
+        result = self.run_cli("brief", str(self.dir), "a", "--card", "--title", "T", "--spec", "s.md")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("already exists", result.stderr)
+        result = self.run_cli("brief", str(self.dir), "c2", "--card", "--title", "T")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("--card needs --title and --spec", result.stderr)
+        result = self.run_cli("brief", str(self.dir), "a", "--title", "T")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("go with --card", result.stderr)
+
     def test_unit_spec_is_stored_and_kept(self):
         self.assertEqual(self.state()["units"]["a"]["spec"], "docs/specs/widgets.md")
         self.ok("unit", str(self.dir), "a", "--title", "Widgets")
