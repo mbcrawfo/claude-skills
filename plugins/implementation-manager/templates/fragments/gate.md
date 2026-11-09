@@ -1,0 +1,1 @@
+2. **Gate:** Do not start yet. Run this with Bash `run_in_background`, then end your turn with `[gated]`; it prints when you may start: `f="{{run}}/gates.log"; until l=$(grep -E '^{{name}} (open|stop)' "$f" 2>/dev/null | tail -1) && [ -n "$l" ]; do sleep 60; done; echo "$l"`. On `open`, continue with the next step. On `stop`, do nothing and end your turn quoting the line.

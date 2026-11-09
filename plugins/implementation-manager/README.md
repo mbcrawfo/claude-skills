@@ -37,6 +37,16 @@ During the run:
 - If an item blocks the merge, the PR of that unit does not merge until you answer. An escalated review finding always blocks the merge.
 - At the end, the manager offers to archive the child sessions.
 
+## Compaction
+
+A long run can fill the context of the manager session. The manager then asks you to compact the session. It gives you one line to paste, for example:
+
+```
+/compact Resume as the implementation manager for <run>: read notes.md, then run.py status, before acting.
+```
+
+Paste the line as it is. It is safe at any time: the manager reads its notes and the run state again, and it continues. If you do not compact, the run continues and uses more tokens.
+
 ## Integration-branch mode
 
 By default, each PR merges into the base branch when it is ready. Thus, the base branch can contain a part of the feature during the run. To keep the base branch clean, ask for integration-branch mode when you start the run. Each unit then merges into an `integration/<slug>` branch. One final PR moves the full feature into the base branch.

@@ -6,7 +6,7 @@ The [implementation manager phase 8 review design](../superpowers/specs/2026-10-
 
 ## Delivered instead
 
-The held-unit graders shipped ([`hold.md`](../../plugins/implementation-manager/evals/push-queue/graders/hold.md) and [`hold-ran.md`](../../plugins/implementation-manager/evals/push-queue/graders/hold-ran.md)). The `--after` behaviour is covered by unit tests only, in [`test_runstate.py`](../../plugins/implementation-manager/tests/test_runstate.py) (`AfterTests`, `SlotHolderAfterTests`) and [`test_run_cli.py`](../../plugins/implementation-manager/tests/test_run_cli.py) (`test_after_on_the_slot_holder_frees_the_slot`, `test_status_next_skips_queue_entries_that_are_not_mergeable`). They test the script; nothing tests that the manager follows SKILL.md's "Answering a push request" step 6 when `go` refuses with `merges after`.
+The held-unit graders shipped ([`hold.md`](../../plugins/implementation-manager/evals/push-queue/graders/hold.md) and [`hold-ran.md`](../../plugins/implementation-manager/evals/push-queue/graders/hold-ran.md)). The `--after` behaviour is covered by unit tests only, in [`test_runstate.py`](../../plugins/implementation-manager/tests/test_runstate.py) (`AfterTests`, `SlotHolderAfterTests`) and [`test_run_cli.py`](../../plugins/implementation-manager/tests/test_run_cli.py) (`test_after_on_the_slot_holder_frees_the_slot`, `test_status_next_skips_queue_entries_that_are_not_mergeable`). They test the script; nothing tests that the manager follows "Answering a push request" step 6 in [`references/events.md`](../../plugins/implementation-manager/skills/implementation-manager/references/events.md) when `go` refuses with `merges after`.
 
 ## Why deferred
 

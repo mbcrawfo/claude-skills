@@ -28,6 +28,8 @@ SYNCING_MARK = "syncing"
 # No '.': children match their unit name in `grep -E` patterns, where it would be a wildcard.
 UNIT_RE = r"[A-Za-z0-9][A-Za-z0-9_-]*"
 SHA_RE = r"[0-9a-f]{40}"
+# The manager's own session id, as `get_session "self"` gives it; children send it their questions.
+MANAGER_RE = r"[A-Za-z0-9_-]+"
 
 METHODS = ("merge", "squash", "rebase")
 QUEUE_MODES = ("serial", "parallel")
@@ -117,6 +119,9 @@ def init_run(
         "requests_offset": 0,
         "marks": {},
         "items": empty_items(),
+        "compact_asked": None,
+        "check": None,
+        "manager": None,
     }
     if integration is not None:
         state["integration"] = {
@@ -166,12 +171,16 @@ def load(run_dir: Path) -> dict:
         raise RunError(f"{path} is missing {', '.join(missing)}")
     state.setdefault("integration", None)
     state.setdefault("items", empty_items())
+    state.setdefault("compact_asked", None)
+    state.setdefault("check", None)
+    state.setdefault("manager", None)
     for unit in state["units"].values():  # fields added since a run began
         unit.setdefault("integration", False)
         unit.setdefault("after", [])
         unit.setdefault("hold", None)
         unit.setdefault("title", None)
         unit.setdefault("generation", 1)
+        unit.setdefault("spec", None)
     return state
 
 
@@ -215,7 +224,7 @@ def pr_base(state: dict, unit: str) -> str | None:
     """
     if not _block(state):
         return None
-    return state["base"] if _is_integration(_unit(state, unit)) else unit_base(state)
+    return state["base"] if _is_integration(unit_record(state, unit)) else unit_base(state)
 
 
 def wrong_base(state: dict, unit: str, base: str | None) -> str | None:
@@ -234,7 +243,8 @@ def integration_unit(state: dict) -> str | None:
     return next((name for name, unit in state["units"].items() if _is_integration(unit)), None)
 
 
-def _unit(state: dict, name: str) -> dict:
+def unit_record(state: dict, name: str) -> dict:
+    """The unit's record; refuses an unknown unit."""
     try:
         return state["units"][name]
     except KeyError:
@@ -283,11 +293,13 @@ def add_unit(
     after: list[str] | None = None,
     title: str | None = None,
     integration: bool | None = None,
+    spec: str | None = None,
 ) -> None:
     """Add a unit, or update the fields given on an existing one; None keeps the old value.
 
     `after` lists the units that must merge before this one does; [] clears it. A unit may not wait on itself
     through its prerequisites and `after` units together. `title` is a one-line display label for status.
+    `spec` is the path of the unit's spec, which its brief names.
     Recording a different worktree (compared normalized) on a unit that has one bumps its `generation`, the count
     of its child sessions.
     `integration=True` makes it the run's one integration unit: it needs the integration mode, branches from the
@@ -297,8 +309,9 @@ def add_unit(
     """
     if not re.fullmatch(UNIT_RE, name):
         raise RunError(f"bad unit name {name!r}: use letters, digits, '_' and '-', starting with a letter or digit")
-    if title is not None and ("\n" in title or "\r" in title):
-        raise RunError(f"bad title {title!r}: use a single line")
+    for label, text in (("title", title), ("spec", spec)):
+        if text is not None and ("\n" in text or "\r" in text):
+            raise RunError(f"bad {label} {text!r}: use a single line")
     unit = state["units"].get(name)
     _check_order_edges(
         state,
@@ -325,6 +338,7 @@ def add_unit(
             "done": False,
             "prs": {},
             "generation": 1,
+            "spec": None,
         }
         if _block(state):
             unit["integration"] = False
@@ -342,6 +356,7 @@ def add_unit(
         ("specs", specs),
         ("integration", integration or None),  # False is the default and not written
         ("title", title),
+        ("spec", spec),
     ):
         if value is not None:
             unit[key] = list(value) if key in ("prereqs", "after") else value
@@ -381,8 +396,9 @@ def _check_integration_unit(
 
 
 def set_option(state: dict, key: str, value: str) -> None:
-    """Set `wip` (an int of at least 1, or `none`), `queue` (`serial` or `parallel`), or, in the integration mode
-    and before the final gate opens, `final-merge` (`manager` or `owner`) or `feature-review` (`yes` or `no`)."""
+    """Set `wip` (an int of at least 1, or `none`), `queue` (`serial` or `parallel`), `manager` (the manager's
+    session id: letters, digits, `_` and `-`), or, in the integration mode and before the final gate opens,
+    `final-merge` (`manager` or `owner`) or `feature-review` (`yes` or `no`)."""
     if key == "wip":
         if value == "none":
             state["wip"] = None
@@ -394,6 +410,10 @@ def set_option(state: dict, key: str, value: str) -> None:
         if value not in QUEUE_MODES:
             raise RunError(f"queue must be one of {', '.join(QUEUE_MODES)}, got {value!r}")
         state["queue_mode"] = value
+    elif key == "manager":
+        if not re.fullmatch(MANAGER_RE, value):
+            raise RunError(f"manager must be a session id of letters, digits, '_' and '-', got {value!r}")
+        state["manager"] = value
     elif key in ("final-merge", "feature-review"):
         block = _block(state)
         if not block:
@@ -409,12 +429,12 @@ def set_option(state: dict, key: str, value: str) -> None:
                 raise RunError(f"feature-review must be yes or no, got {value!r}")
             block["feature_review"] = value == "yes"
     else:
-        raise RunError(f"unknown option {key!r}: use wip, queue, final-merge or feature-review")
+        raise RunError(f"unknown option {key!r}: use wip, queue, manager, final-merge or feature-review")
 
 
 def mergeable(state: dict, unit: str) -> bool:
     """True when the unit is not held and every unit it merges after is done or stopped."""
-    record = _unit(state, unit)
+    record = unit_record(state, unit)
     units = state["units"]
     return record["hold"] is None and all(units[u]["done"] or units[u]["gate"] == "stopped" for u in record["after"])
 
@@ -473,7 +493,7 @@ def _append(run_dir: Path, filename: str, line: str) -> None:
 
 def open_gate(run_dir: Path, state: dict, unit: str, now: float) -> None:
     """Open a unit's gate and log it; opening twice is an error."""
-    record = _unit(state, unit)
+    record = unit_record(state, unit)
     if record["gate"] == "open":
         raise RunError(f"gate for {unit!r} is already open")
     _refuse_stopped(record, unit)
@@ -541,7 +561,7 @@ def stop_gate(run_dir: Path, state: dict, unit: str, reason: str) -> None:
     Its gate is now `stopped`: it never opens, counts to WIP, gets `go` or joins the queue. It gives up the slot,
     its hold is lifted, and its queued and pending requests are dropped.
     """
-    record = _unit(state, unit)
+    record = unit_record(state, unit)
     if "\n" in reason or "\r" in reason:
         raise RunError("a stop reason must be a single line")
     _append(run_dir, GATES, f"{unit} stop {reason}\n")
@@ -568,7 +588,7 @@ def _refuse_held(record: dict, unit: str) -> None:
 
 def has_open_pr(state: dict, unit: str) -> bool:
     """True when any of the unit's PRs is still open."""
-    return any(status == "OPEN" for status in _unit(state, unit)["prs"].values())
+    return any(status == "OPEN" for status in unit_record(state, unit)["prs"].values())
 
 
 def _check_sha(sha: str) -> None:
@@ -625,7 +645,7 @@ def go(run_dir: Path, state: dict, unit: str, sha: str, now: float) -> None:
     It refuses a held unit. In serial mode it also refuses while the unit merges after an unmerged unit, while
     another unit holds the slot, or while the slot is free and another unit is first in the queue.
     """
-    record = _unit(state, unit)
+    record = unit_record(state, unit)
     _check_sha(sha)
     if record["done"]:
         raise RunError(f"unit {unit!r} is done; answer its push requests with: redo <sha> pr-merged")
@@ -668,7 +688,7 @@ def redo(run_dir: Path, state: dict, unit: str, sha: str, reasons: str) -> None:
     Any earlier `go` is spent: the child asks again, so the watcher stops holding READY for a push. A sync the
     integration unit announced (`syncing`) is spent too, so a dead one stops blocking unit merges.
     """
-    _unit(state, unit)
+    unit_record(state, unit)
     _check_sha(sha)
     if not reasons.strip() or "\n" in reasons or "\r" in reasons:
         raise RunError("redo reasons must be a single non-empty line")
@@ -687,7 +707,7 @@ def enqueue(run_dir: Path, state: dict, unit: str, sha: str, now: float) -> None
 
     A slot holder that can no longer merge (it gained an `--after` unit) gives the slot up and is queued.
     """
-    record = _unit(state, unit)
+    record = unit_record(state, unit)
     _refuse_stopped(record, unit)
     _refuse_held(record, unit)
     _check_sha(sha)
@@ -723,7 +743,7 @@ def yield_slot(state: dict, unit: str, reason: str, now: float) -> None:
     blocking unit merges, though: nothing else would clear it. Its child re-checks that the remote branch is an
     ancestor and never force-pushes, so a late push of that go is rejected rather than landing under a unit merge.
     """
-    record = _unit(state, unit)
+    record = unit_record(state, unit)
     if not _holds_slot(state, unit):
         raise RunError(f"unit {unit!r} does not hold the push slot")
     state["slot"] = None
@@ -746,7 +766,7 @@ def hold(run_dir: Path, state: dict, unit: str, reason: str, now: float) -> None
     pending and queued requests are answered `redo held`, and it gives up the slot. A `go` it has not pushed yet
     stays outstanding, as for `yield`.
     """
-    record = _unit(state, unit)
+    record = unit_record(state, unit)
     if "\n" in reason or "\r" in reason or not reason.strip():
         raise RunError("a hold reason must be a single non-empty line")
     if record["done"]:
@@ -770,7 +790,7 @@ def release(state: dict, unit: str) -> None:
     The stall clock restarts: the hold was waiting on purpose, so the watcher starts a new stall window. A READY
     or REMIND reported before the hold is forgotten, so the same head is reported READY again.
     """
-    record = _unit(state, unit)
+    record = unit_record(state, unit)
     if record["hold"] is None:
         raise RunError(f"unit {unit!r} is not held")
     record["hold"] = None
@@ -781,7 +801,7 @@ def release(state: dict, unit: str) -> None:
 
 def record_merged(state: dict, unit: str, pr: int, *, more: bool) -> None:
     """Note a merged PR: free the slot if held, lift any hold, and mark the unit done unless more PRs are coming."""
-    record = _unit(state, unit)
+    record = unit_record(state, unit)
     _forget_freed(state, unit)
     record["prs"][str(pr)] = "MERGED"
     record["hold"] = None
@@ -794,7 +814,7 @@ def record_merged(state: dict, unit: str, pr: int, *, more: bool) -> None:
 
 def record_closed(state: dict, unit: str, pr: int) -> None:
     """Note a PR closed without merging, lift any hold, and free the slot if the unit holds it."""
-    record = _unit(state, unit)
+    record = unit_record(state, unit)
     _forget_freed(state, unit)
     record["prs"][str(pr)] = "CLOSED"
     record["hold"] = None
@@ -856,7 +876,7 @@ def record_synced(state: dict, unit: str, sha: str) -> None:
     REMIND reported for another unit's PR while the sync was in flight is forgotten, so the same head is reported
     READY again rather than waiting for a REMIND.
     """
-    record = _unit(state, unit)
+    record = unit_record(state, unit)
     if not _is_integration(record):
         raise RunError("only the integration unit pushes directly")
     marks = state["marks"].get(unit, {})
@@ -875,6 +895,6 @@ def record_synced(state: dict, unit: str, sha: str) -> None:
 def reportable(state: dict, unit: str) -> bool:
     """True when the unit may be reported on (READY/REMIND): it is not stopped, it is mergeable, nothing blocks it
     for the integration branch, and the run is in parallel mode or the slot is free or its own."""
-    if _unit(state, unit)["gate"] == "stopped" or not mergeable(state, unit) or integration_block(state, unit):
+    if unit_record(state, unit)["gate"] == "stopped" or not mergeable(state, unit) or integration_block(state, unit):
         return False
     return state["queue_mode"] == "parallel" or state["slot"] is None or state["slot"]["unit"] == unit
