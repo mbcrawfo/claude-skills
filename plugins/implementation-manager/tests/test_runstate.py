@@ -96,6 +96,7 @@ class InitTests(RunStateTestCase):
                 "requests_offset": 0,
                 "marks": {},
                 "items": EMPTY_ITEMS,
+                "compact_asked": None,
             },
         )
 

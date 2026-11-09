@@ -56,7 +56,10 @@ The run folder is always the first argument after the subcommand:
                                     unless a forward due line lists the unit
   item drop <dir> <id> <reason...>  drop an item that is no longer needed
   item list <dir>                   current, queued (in order), parked and answered items, one line each, or none
-  status <dir>                      the tracker and everything waiting on the manager
+  status <dir>                      the tracker and everything waiting on the manager, then the manager's context
+                                    size (`- context: <N>k`, with `, compact due` when the run is quiet and the
+                                    size is past the compact threshold)
+  compact-asked <dir>               record the context size now as the point the owner was asked to compact
   clear-bad <dir>                   forget the bad request lines status lists, once they are handled
   check <dir> <unit>                one readiness check of the unit's PR, printed as one line: READY <pr> <sha>
                                     (two equal clean polls 30 s apart), NOT-READY <pr> head=<sha7><reasons>,
@@ -74,11 +77,15 @@ Exit codes: 0 on success, 1 for a refused command (one line on stderr), 2 for a 
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 import json
+import os
 from pathlib import Path
 import re
 import sys
 import time
+
+import context
 
 import items
 from prstate import GhError, check_once, run_gh
@@ -275,7 +282,7 @@ def _item_name(item: dict) -> str:
     return item["id"] + (f" ({item['ref']})" if item["ref"] else "")
 
 
-def _status(run_dir: Path, state: dict) -> str:
+def _status(run_dir: Path, state: dict, env: Mapping[str, str] = os.environ) -> str:
     units = state["units"]
     order = _units_in_order(state)
     wip = "none" if state["wip"] is None else str(state["wip"])
@@ -325,6 +332,12 @@ def _status(run_dir: Path, state: dict) -> str:
         lines += [f"  - {line}" for line in needs]
     else:
         lines.append("- needs the manager: nothing")
+    tokens = context.current_tokens(env)
+    if tokens is not None:
+        # Quiet: nothing waits on the manager and every running unit has a worktree to resume from.
+        quiet = not needs and all(r["worktree"] for r in units.values() if r["gate"] == "open" and not r["done"])
+        due = context.compact_due(tokens, state["compact_asked"], quiet)
+        lines.append(f"- context: {round(tokens / 1000)}k" + (", compact due" if due else ""))
     return "\n".join(lines)
 
 
@@ -451,6 +464,7 @@ def _parser() -> argparse.ArgumentParser:
     item_command("list", "list the open items")
 
     command("status", "print the tracker and what waits on the manager")
+    command("compact-asked", "record the context size as the point the owner was asked to compact")
     command("clear-bad", "forget the bad request lines status lists")
     p = command("check", "check the unit's PR once")
     p.add_argument("unit")
@@ -664,6 +678,11 @@ def _run(args: argparse.Namespace) -> str | None:
             return "\n".join(runstate.openable(state)) or None
         elif command == "closed":
             runstate.record_closed(state, args.unit, args.pr)
+        elif command == "compact-asked":
+            tokens = context.current_tokens(os.environ)
+            if tokens is None:
+                raise RunError("context size unknown: no transcript for this session")
+            state["compact_asked"] = tokens
         elif command == "clear-bad":
             count = len(state["bad_requests"])
             state["bad_requests"] = []

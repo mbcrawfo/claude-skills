@@ -39,6 +39,8 @@ class CliTestCase(unittest.TestCase):
         self.tmp = Path(tmp.name)
         self.dir = self.tmp / "my-run"
         self.env = dict(os.environ)
+        self.env.pop("CLAUDE_CODE_SESSION_ID", None)  # never read the real session's transcript
+        self.env["CLAUDE_CONFIG_DIR"] = str(self.tmp / "claude")
 
     def run_cli(self, *args):
         return subprocess.run(
@@ -1301,3 +1303,68 @@ class ItemCliTests(CliTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ContextTests(CliTestCase):
+    def transcript(self, tokens):
+        path = Path(self.env["CLAUDE_CONFIG_DIR"]) / "projects" / "p" / "s1.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        line = {"type": "assistant", "message": {"usage": {"input_tokens": tokens}}}
+        path.write_text(json.dumps(line) + "\n", encoding="utf-8")
+        self.env["CLAUDE_CODE_SESSION_ID"] = "s1"
+
+    def last(self):
+        return self.ok("status", str(self.dir)).splitlines()[-1]
+
+    def test_status_has_no_context_line_without_transcript(self):
+        self.init()
+        self.assertFalse(
+            [line for line in self.ok("status", str(self.dir)).splitlines() if line.startswith("- context:")]
+        )
+
+    def test_status_prints_context(self):
+        self.init()
+        self.transcript(120_400)
+        self.assertEqual(self.last(), "- context: 120k")
+
+    def test_status_says_compact_due_when_quiet(self):
+        self.init()
+        self.transcript(310_000)
+        self.assertEqual(self.last(), "- context: 310k, compact due")
+
+    def test_not_due_with_a_request_waiting(self):
+        self.init()
+        self.ok("unit", str(self.dir), "a")
+        self.append_request(f"a push {SHA1} feat/a\n")
+        self.ok("wait", str(self.dir))
+        self.transcript(310_000)
+        self.assertEqual(self.last(), "- context: 310k")
+
+    def test_not_due_for_an_open_unit_without_worktree(self):
+        self.init()
+        self.ok("unit", str(self.dir), "a")
+        self.ok("open", str(self.dir), "a")
+        self.transcript(310_000)
+        self.assertEqual(self.last(), "- context: 310k")
+
+    def test_compact_asked_records_and_suppresses(self):
+        self.init()
+        self.transcript(310_000)
+        self.assertEqual(self.ok("compact-asked", str(self.dir)), "")
+        self.assertEqual(self.state()["compact_asked"], 310_000)
+        self.assertEqual(self.last(), "- context: 310k")
+        self.transcript(470_000)
+        self.assertEqual(self.last(), "- context: 470k, compact due")
+
+    def test_compact_asked_without_transcript_refuses(self):
+        self.init()
+        result = self.run_cli("compact-asked", str(self.dir))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("context size unknown", result.stderr)
+
+    def test_old_run_json_backfills_compact_asked(self):
+        self.init()
+        state = self.state()
+        del state["compact_asked"]
+        (self.dir / "run.json").write_text(json.dumps(state), encoding="utf-8")
+        self.ok("status", str(self.dir))

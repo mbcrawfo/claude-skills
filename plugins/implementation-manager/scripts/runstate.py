@@ -117,6 +117,7 @@ def init_run(
         "requests_offset": 0,
         "marks": {},
         "items": empty_items(),
+        "compact_asked": None,
     }
     if integration is not None:
         state["integration"] = {
@@ -166,6 +167,7 @@ def load(run_dir: Path) -> dict:
         raise RunError(f"{path} is missing {', '.join(missing)}")
     state.setdefault("integration", None)
     state.setdefault("items", empty_items())
+    state.setdefault("compact_asked", None)
     for unit in state["units"].values():  # fields added since a run began
         unit.setdefault("integration", False)
         unit.setdefault("after", [])
