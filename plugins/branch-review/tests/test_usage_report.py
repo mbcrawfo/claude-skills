@@ -286,6 +286,22 @@ class UsageReportTests(unittest.TestCase):
         out = usage_report.summarize(usage_report.join(self.runs(), self.rounds()))
         self.assertEqual(out["second_opinions"], [{"branch": "feat", "majors": 2, "prior_shape": "single"}])
 
+    def test_round_intent_and_base_ref_win_over_the_states(self):
+        ts = "2026-11-01T10:00:00.000Z"
+        write_state(
+            self.state,
+            "o__r",
+            "own",
+            [
+                round_(1, "deep", "opus", "a0", "a1", ts, intent="round one intent", base_ref="dev"),
+                round_(2, "deep", "opus", "a1", "a2", ts),
+            ],
+            [],
+        )
+        rounds = [r for r in self.rounds() if r["branch"] == "own"]
+        self.assertEqual((rounds[0]["intent"], rounds[0]["base_ref"]), ("round one intent", "dev"))
+        self.assertEqual((rounds[1]["intent"], rounds[1]["base_ref"]), ("i", "main"))
+
     def test_recorded_rounds_do_not_hide_the_rest_of_the_state_file(self):
         self.assertEqual([r["number"] for r in self.rounds()], [1, 2])
 

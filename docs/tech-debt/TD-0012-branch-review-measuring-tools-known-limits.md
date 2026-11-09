@@ -5,7 +5,7 @@
 The branch-review [usage report](../../plugins/branch-review/evals/usage/usage_report.py) and [small replay](../../plugins/branch-review/evals/replay/replay.py) have these known, unresolved limits:
 
 - The replay's real `claude` path (the reviewer and judge calls, and the `total_cost_usd` it reads) has not run. It is unexercised until the first owner-approved run.
-- A headless `claude -p --agent` run is not the same as a subagent dispatch. It loads the main-thread system prompt and settings hooks. The replay runs it in a temp directory outside every checkout, so it loads no project instructions. So replay cost is close to a real round's, not equal to it.
+- A headless `claude -p --agent` run is not the same as a subagent dispatch. It loads the main-thread system prompt and settings hooks. The replay runs it in a temp worktree of the replayed repo, outside every checkout, so only that repo's own project instructions load, as in a real round, and no other checkout's. So replay cost is close to a real round's, not equal to it.
 - The judge has Bash, in a worktree that shares `.git` with the real repo.
 - The usage report prices Haiku and Fable at placeholder rates (`usage_report.PRICES`), which are not checked against current list prices.
 - The usage report lets two rounds with the same range, mode and focus both claim the same reviewer runs, so those runs are counted twice.

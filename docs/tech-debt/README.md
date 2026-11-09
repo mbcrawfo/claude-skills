@@ -15,7 +15,7 @@ Next id: `TD-0013`
 | [TD-0009](TD-0009-agents-md-cleanup-doc-destinations.md) | Open | 2026-10-28 | Low | agents-md-cleanup's doc page choice, root `references` seed, output-read test detection, over-limit re-dispatch, unchecked user splits, unrecorded over-limit files, word-count scanner edge cases, missing size tests, the uncapped `(whole)` fix, an overlapping eval statement and `_docs` cap are known gaps |
 | [TD-0010](TD-0010-implementation-manager-owner-queue-known-gaps.md) | Open | 2026-10-30 | Low | implementation-manager owner-queue known gaps: duplicated ref scope and id formatting, quiet `item drop` and `stop`, loose refusal tests, skill rules that disagree or need an extra `status`, and a thin `owner-queue` eval |
 | [TD-0011](TD-0011-plugin-data-per-repo-retention.md) | Open | 2026-11-05 | Low | branch-review and implementation-manager prune only the repo they run in, and implementation-manager judges a run's liveness by age alone |
-| [TD-0012](TD-0012-branch-review-measuring-tools-known-limits.md) | Open | 2026-11-09 | Low | branch-review's usage report and small replay have known limits: an unexercised real `claude` path, a headless run that differs from a subagent, a judge with Bash and no strict MCP, a zero exit on a failed set, double-counted runs, a one-line recovery, and a reviewer 10 bytes under its cap |
+| [TD-0012](TD-0012-branch-review-measuring-tools-known-limits.md) | Open | 2026-11-09 | Low | branch-review's usage report and small replay have known limits: an unexercised real `claude` path, a headless run that differs from a subagent, a judge with Bash that shares `.git`, placeholder Haiku and Fable prices, double-counted runs, a one-line recovery, and a reviewer 10 bytes under its cap |
 
 ## Columns
 

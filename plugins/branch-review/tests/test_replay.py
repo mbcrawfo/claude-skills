@@ -1,6 +1,7 @@
 """Tests for the small replay (evals/replay/replay.py). No test calls `claude`."""
 
 import contextlib
+from datetime import date
 import io
 import json
 from pathlib import Path
@@ -95,6 +96,36 @@ class PickTest(unittest.TestCase):
         self.assertEqual(e["repo"], "/r")
         self.assertEqual((e["diff_from"], e["diff_to"], e["base_ref"]), ("aaa", "bbb", "main"))
         json.dumps(picked)
+
+
+class PickIntentTest(unittest.TestCase):
+    def test_picked_entry_carries_round_one_intent_from_the_state(self):
+        ts = "2026-11-01T10:00:00.000Z"
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        rounds = [
+            {"number": 1, "mode": "deep", "focus": None, "model": "opus", "mode_reason": "no-state",
+             "plugin_version": "0.13.0", "diff_from": "aaa", "diff_to": "bbb", "started": ts,
+             "changed_files": [f"f{i}.py" for i in range(6)], "intent": "round one intent"},
+            {"number": 2, "mode": "deep", "focus": "second-opinion", "model": "opus", "mode_reason": "second-opinion",
+             "plugin_version": "0.13.0", "diff_from": "aaa", "diff_to": "ccc", "started": ts,
+             "changed_files": ["f0.py"], "intent": "final intent naming the defects"},
+        ]  # fmt: skip
+        d = tmp / "o__r" / "b1"
+        d.mkdir(parents=True)
+        (d / "review.json").write_text(
+            json.dumps({"branch": "b1", "base_ref": "main", "intent": "final intent naming the defects",
+                        "rounds": rounds, "findings": []}),
+            encoding="utf-8",
+        )  # fmt: skip
+        state_rounds = usage_report.state_rounds([tmp], date(2026, 10, 1), date(2026, 12, 1))
+        run = run_obj(2.0, {"repo": "/r", "diff_from": "aaa", "diff_to": "bbb", "mode": "deep", "focus": None})
+        by_key = {(r["diff_from"], r["diff_to"]): [run] for r in state_rounds[:1]}
+        joined = [{**r, "runs": by_key.get((r["diff_from"], r["diff_to"]), []), "run": None} for r in state_rounds]
+        states = {r["state_file"]: {"findings": []} for r in joined}
+        picked = replay.pick_candidates(joined, states, repo_for=lambda repo, sha: repo)
+        self.assertEqual(len(picked), 1)
+        self.assertEqual(picked[0]["intent"], "round one intent")
 
 
 class ResolveRepoTest(unittest.TestCase):
@@ -616,6 +647,16 @@ class RunTest(unittest.TestCase):
         results = self.go(runner, max_total=2.5)
         self.assertEqual([(r["status"], r["reason"]) for r in results], [("skipped", "budget")] * 2)
         self.assertEqual(runner.calls, [])
+
+    def test_judge_cost_counts_toward_the_running_total(self):
+        runner = FakeRunner()
+        judge_json = '[{"replay": 0, "label": "matches", "of": "R1-F1", "holds": null, "check": "x"}]'
+        # judge reported cost $1.50; reviewer ~$2.50: spend 4.0, left 6.5 - 4.0 - 2 = 0.5 < 1.
+        runner.judge = lambda prompt, cwd, budget: (
+            runner.calls.append("judge") or stream(1000, "ok\n```json\n" + judge_json + "\n```\n", reported=1.5)
+        )
+        results = self.go(runner, max_total=6.5)
+        self.assertEqual([(r["status"], r["reason"]) for r in results], [("ok", ""), ("skipped", "budget")])
 
     def test_run_starts_an_entry_with_exactly_a_dollar_left(self):
         runner = FakeRunner()

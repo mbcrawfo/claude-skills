@@ -264,8 +264,8 @@ def state_rounds(state_dirs: list[Path], since: date, until: date) -> list[dict]
                         "started": rnd.get("started"),
                         "mode_reason": rnd.get("mode_reason"),
                         "state_file": str(path),
-                        "base_ref": state.get("base_ref"),
-                        "intent": state.get("intent"),
+                        "base_ref": rnd["base_ref"] if "base_ref" in rnd else state.get("base_ref"),
+                        "intent": rnd["intent"] if "intent" in rnd else state.get("intent"),
                     }
                 )
     return out
