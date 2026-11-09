@@ -138,10 +138,19 @@ class OptionTests(BriefTestCase):
         self.assertLess(text.index("6. **Unit-specific instructions:**"), text.index(paragraph))
         self.assertLess(text.index(paragraph), text.index("7. **Pull request:**"))
 
-    def test_empty_facts_and_extra_leave_no_gap(self):
+    def test_empty_facts_and_extra_say_none(self):
         state = self.make_run()
         (self.dir / "facts.md").unlink()
-        self.assertIn("6. **Unit-specific instructions:**\n\n7. **Pull request:**", self.render(state, extra=""))
+        self.assertIn(
+            "6. **Unit-specific instructions:**\n\nNone for this unit.\n\n7. **Pull request:**",
+            self.render(state, extra=""),
+        )
+
+    def test_integration_brief_never_ends_on_a_bare_header(self):
+        state = self.make_run(INTEGRATION)
+        (self.dir / "facts.md").unlink()
+        text = self.render(state, "integration", extra="")
+        self.assertTrue(text.endswith("**Unit-specific instructions:**\n\nNone for this unit.\n"), text[-200:])
 
     def test_title_defaults_to_the_name(self):
         state = self.make_run()
@@ -218,6 +227,22 @@ class RefusalTests(BriefTestCase):
     def test_designed_integration_unit(self):
         with self.assertRaisesRegex(RunError, "integration unit"):
             brief.render(self.dir, self.make_run(INTEGRATION), "integration", designed=True)
+
+    def test_no_gate_integration_unit(self):
+        with self.assertRaisesRegex(RunError, "drop --no-gate"):
+            brief.render(self.dir, self.make_run(INTEGRATION), "integration", gate=False)
+
+    def test_malformed_placeholder(self):
+        templates = self.dir.parent / "templates"
+        shutil.copytree(brief.TEMPLATES / "fragments", templates / "fragments")
+        (templates / "unit-brief.md").write_text("{{name}} {{ spaced }}\n", encoding="utf-8")
+        with mock.patch.object(brief, "TEMPLATES", templates):
+            with self.assertRaisesRegex(RunError, "malformed placeholder"):
+                brief.render(self.dir, self.make_run(), "u1")
+
+    def test_braces_in_extra_are_kept(self):
+        text = self.render(self.make_run(), extra="Use ${{ secrets.TOKEN }} in the workflow.")
+        self.assertIn("${{ secrets.TOKEN }}", text)
 
     def test_unknown_placeholder(self):
         templates = self.dir.parent / "templates"

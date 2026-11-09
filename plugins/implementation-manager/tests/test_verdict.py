@@ -1,4 +1,4 @@
-"""Tests for coverage.py: the coverage verdict under a wait --full event."""
+"""Tests for verdict.py: the coverage verdict under a wait --full event."""
 
 from __future__ import annotations
 
@@ -8,9 +8,7 @@ import tempfile
 import unittest
 
 import helpers  # noqa: F401  (puts the scripts dir on sys.path)
-
-# isort: split
-import coverage
+import verdict
 
 SHA1 = "1" * 40
 SHA2 = "2" * 40
@@ -34,7 +32,7 @@ class EventTargetTests(unittest.TestCase):
             ("ERROR x", None),
         ):
             with self.subTest(line=line):
-                self.assertEqual(coverage.event_target(line), want)
+                self.assertEqual(verdict.event_target(line), want)
 
 
 class VerdictTests(unittest.TestCase):
@@ -62,48 +60,57 @@ class VerdictTests(unittest.TestCase):
     def test_no_check_recorded(self):
         self.state["check"] = None
         self.assertEqual(
-            coverage.verdict_line(self.state, "a", SHA1), f"verdict {SHA1} unavailable: no check command recorded"
+            verdict.verdict_line(self.state, "a", SHA1), f"verdict {SHA1} unavailable: no check command recorded"
         )
+
+    def test_malformed_check(self):
+        for check in ({"rs": 5, "state_dir": "/sd"}, {"state_dir": "/sd"}, ["rs"]):
+            with self.subTest(check=check):
+                self.state["check"] = check
+                self.assertEqual(
+                    verdict.verdict_line(self.state, "a", SHA1),
+                    f"verdict {SHA1} unavailable: check command record is malformed; record it again with check-cmd",
+                )
 
     def test_rs_missing(self):
         self.rs.unlink()
         self.assertEqual(
-            coverage.verdict_line(self.state, "a", SHA1), f"verdict {SHA1} unavailable: rs not found: {self.rs}"
+            verdict.verdict_line(self.state, "a", SHA1), f"verdict {SHA1} unavailable: rs not found: {self.rs}"
         )
 
     def test_unit_without_worktree(self):
         self.assertEqual(
-            coverage.verdict_line(self.state, "b", SHA1), f"verdict {SHA1} unavailable: unit b has no worktree"
+            verdict.verdict_line(self.state, "b", SHA1), f"verdict {SHA1} unavailable: unit b has no worktree"
         )
 
     def test_covered_json_is_compacted(self):
         run = self.fake(completed('{\n "covered": true,\n "reasons": []\n}\n'))
         self.assertEqual(
-            coverage.verdict_line(self.state, "a", SHA1, run=run), f'verdict {SHA1} {{"covered":true,"reasons":[]}}'
+            verdict.verdict_line(self.state, "a", SHA1, run=run), f'verdict {SHA1} {{"covered":true,"reasons":[]}}'
         )
 
     def test_exit_1_reports_stderr(self):
         run = self.fake(completed(stderr="commit not found: abc\nmore", returncode=1))
         self.assertEqual(
-            coverage.verdict_line(self.state, "a", SHA1, run=run),
+            verdict.verdict_line(self.state, "a", SHA1, run=run),
             f"verdict {SHA1} unavailable: check failed: commit not found: abc",
         )
 
     def test_timeout(self):
         run = self.fake(exc=subprocess.TimeoutExpired("rs", 120))
         self.assertEqual(
-            coverage.verdict_line(self.state, "a", SHA1, run=run), f"verdict {SHA1} unavailable: check timed out"
+            verdict.verdict_line(self.state, "a", SHA1, run=run), f"verdict {SHA1} unavailable: check timed out"
         )
 
     def test_no_json(self):
         run = self.fake(completed("not json"))
         self.assertEqual(
-            coverage.verdict_line(self.state, "a", SHA1, run=run), f"verdict {SHA1} unavailable: check printed no JSON"
+            verdict.verdict_line(self.state, "a", SHA1, run=run), f"verdict {SHA1} unavailable: check printed no JSON"
         )
 
     def test_command_shape(self):
         run = self.fake(completed("{}"))
-        coverage.verdict_line(self.state, "a", SHA1, run=run)
+        verdict.verdict_line(self.state, "a", SHA1, run=run)
         self.assertEqual(
             self.argv,
             [
@@ -121,9 +128,9 @@ class VerdictTests(unittest.TestCase):
 
     def test_ready_verdict_uses_head_sha(self):
         line = f"READY a 7 {SHA2}"
-        unit, sha = coverage.event_target(line)
+        unit, sha = verdict.event_target(line)
         run = self.fake(completed("{}"))
-        self.assertTrue(coverage.verdict_line(self.state, unit, sha, run=run).startswith(f"verdict {SHA2} "))
+        self.assertTrue(verdict.verdict_line(self.state, unit, sha, run=run).startswith(f"verdict {SHA2} "))
         self.assertEqual(self.argv[self.argv.index("--commit") + 1], SHA2)
 
 
@@ -134,11 +141,11 @@ class LogLinesTests(unittest.TestCase):
             (run / "pushes.log").write_text(f"a go {SHA1}\nb go {SHA2}\n", encoding="utf-8")
             (run / "requests.log").write_text(f"a syncing {SHA3} integration/x\n", encoding="utf-8")
             self.assertEqual(
-                coverage.log_lines(run, "STUCK a - syncing"),
+                verdict.log_lines(run, "STUCK a - syncing"),
                 [f"pushes: a go {SHA1}", f"requests: a syncing {SHA3} integration/x"],
             )
-            self.assertEqual(coverage.log_lines(run, f"READY a 7 {SHA1}"), [])
-            self.assertEqual(coverage.log_lines(run, "STUCK c - x"), [])
+            self.assertEqual(verdict.log_lines(run, f"READY a 7 {SHA1}"), [])
+            self.assertEqual(verdict.log_lines(run, "STUCK c - x"), [])
 
 
 if __name__ == "__main__":

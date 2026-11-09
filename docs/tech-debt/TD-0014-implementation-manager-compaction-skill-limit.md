@@ -2,7 +2,7 @@
 
 ## Problem
 
-After a compaction, Claude Code re-injects only the first 5,000 tokens of an invoked skill (documented on 2026-11-09). The manager skill is split into a short core and `references/*.md` because of that limit. The core is about 11.9k characters, and `tests/test_skill_text.py` fails above 17,500 characters, the proxy for the limit. If the limit becomes smaller, the core no longer fits, and a compacted manager loses rules it needs to resume. A smaller limit would cut the core.
+After a compaction, Claude Code re-injects only the first 5,000 tokens of an invoked skill (documented on 2026-11-09). The manager skill is split into a short core and `references/*.md` because of that limit. The core is about 12.3k characters, and `tests/test_skill_text.py` fails above 17,500 characters, the proxy for the limit. If the limit becomes smaller, the core no longer fits, and a compacted manager loses rules it needs to resume.
 
 ## Why it exists
 

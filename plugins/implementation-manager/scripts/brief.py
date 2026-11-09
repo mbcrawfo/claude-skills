@@ -20,6 +20,7 @@ from runstate import RunError
 TEMPLATES = Path(__file__).resolve().parent.parent / "templates"
 FACTS = "facts.md"
 PLACEHOLDER = re.compile(r"\{\{(\w+)\}\}")
+NO_INSTRUCTIONS = "None for this unit."
 
 # In the integration mode every sync a unit makes names its base, the integration branch: the tool would
 # otherwise sync with the repository's default branch.
@@ -82,6 +83,8 @@ def _values(run_dir: Path, state: dict, name: str, record: dict, extra: str) -> 
         "facts": facts.lstrip("\n").rstrip(),
         "extra": extra.lstrip("\n").rstrip(),
     }
+    if not values["facts"] and not values["extra"]:
+        values["extra"] = NO_INSTRUCTIONS  # the part's header never stands alone
     if state.get("integration"):
         values["integration"] = state["integration"]["branch"]
     return values
@@ -90,7 +93,7 @@ def _values(run_dir: Path, state: dict, name: str, record: dict, extra: str) -> 
 def render(run_dir: Path, state: dict, unit: str, *, extra: str = "", gate: bool = True, designed: bool = False) -> str:
     """The brief for `unit`: its template filled in. Refuses a run with no manager id, a unit with no spec, and a
     template that names a placeholder the run cannot fill."""
-    record = runstate._unit(state, unit)
+    record = runstate.unit_record(state, unit)
     if not state.get("manager"):
         raise RunError(f"no manager session id: run.py set {run_dir} manager <id>")
     if not record.get("spec"):
@@ -123,6 +126,8 @@ def _render(run_dir: Path, state: dict, unit: str, record: dict, *, extra: str, 
     integration_child = record.get("integration", False)
     if integration_child and designed:
         raise RunError("the integration unit is not designed with the owner: drop --designed")
+    if integration_child and not gate:
+        raise RunError("the integration unit's gate carries its final line: drop --no-gate")
     values = _values(run_dir, state, unit, record, extra)
     slots = _slots(state, integration_child, gate=gate, designed=designed)
     empty = {name for name, source in {**slots, **values}.items() if source == ""}
@@ -130,6 +135,8 @@ def _render(run_dir: Path, state: dict, unit: str, record: dict, *, extra: str, 
         encoding="utf-8"
     )
     text = re.sub(r"\n{3,}", "\n\n", _expand(template, slots, empty)).strip("\n") + "\n"
+    if "{{" in PLACEHOLDER.sub("", text):  # before the values go in, so run text may hold "{{"
+        raise RunError("brief template has a malformed placeholder: use {{name}} with letters, digits and '_'")
     left: list[str] = []
 
     def fill(m: re.Match) -> str:

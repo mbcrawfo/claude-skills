@@ -43,6 +43,10 @@ class CurrentTokensTests(unittest.TestCase):
         self.path.write_text(assistant(5, 1000, 200) + '{"type": "assist')
         self.assertEqual(context.current_tokens(self.env), 1205)
 
+    def test_zero_usage_line_is_skipped(self):
+        self.path.write_text(assistant(5, 1000, 200) + assistant(0, 0, 0))
+        self.assertEqual(context.current_tokens(self.env), 1205)
+
     def test_large_file_reads_tail_only(self):
         filler = json.dumps({"type": "user", "text": "x" * 1000}) + "\n"
         with open(self.path, "w") as f:

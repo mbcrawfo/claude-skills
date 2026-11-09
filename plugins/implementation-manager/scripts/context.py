@@ -51,9 +51,11 @@ def current_tokens(env: Mapping[str, str]) -> int | None:
             if entry["type"] != "assistant":
                 continue
             usage = entry["message"]["usage"]
-            return sum(int(usage.get(key) or 0) for key in _USAGE_KEYS)
+            total = sum(int(usage.get(key) or 0) for key in _USAGE_KEYS)
         except (ValueError, KeyError, TypeError, AttributeError):
             continue
+        if total:  # a line with no usage counted (a synthetic message) says nothing about the context
+            return total
     return None
 
 

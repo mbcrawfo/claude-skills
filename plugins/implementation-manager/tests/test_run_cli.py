@@ -1312,6 +1312,17 @@ class ContextTests(CliTestCase):
     def last(self):
         return self.ok("status", str(self.dir)).splitlines()[-1]
 
+    def test_unlockable_run_keeps_the_ask_and_status_prints(self):
+        self.init()
+        self.transcript(310_000)
+        self.ok("compact-asked", str(self.dir))
+        self.transcript(40_000)
+        lock = self.dir / "run.lock"
+        lock.unlink()
+        lock.mkdir()  # opening the lock now fails: the reset must not break status
+        self.assertEqual(self.last(), "- context: 40k")
+        self.assertEqual(self.state()["compact_asked"], 310_000)
+
     def test_status_has_no_context_line_without_transcript(self):
         self.init()
         self.assertFalse(
@@ -1330,10 +1341,12 @@ class ContextTests(CliTestCase):
 
     def test_not_due_with_a_request_waiting(self):
         self.init()
-        self.ok("unit", str(self.dir), "a")
+        self.ok("unit", str(self.dir), "a", "--worktree", str(self.tmp / "wt"))
+        self.ok("open", str(self.dir), "a")
         self.append_request(f"a push {SHA1} feat/a\n")
         self.ok("wait", str(self.dir))
         self.transcript(310_000)
+        self.assertIn("unanswered", self.ok("status", str(self.dir)))
         self.assertEqual(self.last(), "- context: 310k")
 
     def test_not_due_for_an_open_unit_without_worktree(self):
@@ -1435,6 +1448,24 @@ class WaitFullTests(CliTestCase):
         lines = self.ok("wait", str(self.dir), "--full").splitlines()
         self.assertEqual(lines[1], f"verdict {SHA1} unavailable: rs not found: {self.rs}")
 
+    def test_full_wait_with_failing_rs(self):
+        self.rs.write_text("#!/bin/sh\necho 'commit not found: x' >&2\nexit 1\n", encoding="utf-8")
+        self.record()
+        lines = self.ok("wait", str(self.dir), "--full").splitlines()
+        self.assertEqual(lines[1], f"verdict {SHA1} unavailable: check failed: commit not found: x")
+        self.assertTrue(lines[3].startswith("Run my-run ("), lines[3])
+
+    def test_full_wait_with_malformed_check_still_prints_status(self):
+        self.record()
+        state = self.state()
+        state["check"] = {"rs": 5}
+        (self.dir / "run.json").write_text(json.dumps(state), encoding="utf-8")
+        lines = self.ok("wait", str(self.dir), "--full").splitlines()
+        self.assertEqual(
+            lines[1], f"verdict {SHA1} unavailable: check command record is malformed; record it again with check-cmd"
+        )
+        self.assertTrue(lines[3].startswith("Run my-run ("), lines[3])
+
     def test_full_wait_next_event_has_verdict(self):
         self.record()
         self.ok("unit", str(self.dir), "b", "--worktree", str(self.tmp / "wtb"))
@@ -1468,6 +1499,11 @@ class BriefCliTests(CliTestCase):
         self.assertIn("Touch only src/widgets/.", text)
         self.assertIn(f'f="{self.dir}/gates.log"', text)
         self.assertIn("(local_abc)", text)
+
+    def test_brief_leaves_no_partial_file(self):
+        self.ok("set", str(self.dir), "manager", "local_abc")
+        self.ok("brief", str(self.dir), "a")
+        self.assertEqual([p.name for p in self.path.parent.iterdir()], ["a.md"])
 
     def test_brief_options(self):
         self.ok("set", str(self.dir), "manager", "local_abc")

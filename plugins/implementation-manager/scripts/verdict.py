@@ -38,6 +38,8 @@ def verdict_line(state: dict, unit: str, sha: str, *, run: Callable = subprocess
     check = state.get("check")
     if not check:
         return _unavailable(sha, "no check command recorded")
+    if not isinstance(check, dict) or not all(isinstance(check.get(key), str) for key in ("rs", "state_dir")):
+        return _unavailable(sha, "check command record is malformed; record it again with check-cmd")
     rs = check["rs"]
     if not Path(rs).is_file():
         return _unavailable(sha, f"rs not found: {rs}")

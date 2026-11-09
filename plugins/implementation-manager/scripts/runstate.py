@@ -224,7 +224,7 @@ def pr_base(state: dict, unit: str) -> str | None:
     """
     if not _block(state):
         return None
-    return state["base"] if _is_integration(_unit(state, unit)) else unit_base(state)
+    return state["base"] if _is_integration(unit_record(state, unit)) else unit_base(state)
 
 
 def wrong_base(state: dict, unit: str, base: str | None) -> str | None:
@@ -243,7 +243,8 @@ def integration_unit(state: dict) -> str | None:
     return next((name for name, unit in state["units"].items() if _is_integration(unit)), None)
 
 
-def _unit(state: dict, name: str) -> dict:
+def unit_record(state: dict, name: str) -> dict:
+    """The unit's record; refuses an unknown unit."""
     try:
         return state["units"][name]
     except KeyError:
@@ -433,7 +434,7 @@ def set_option(state: dict, key: str, value: str) -> None:
 
 def mergeable(state: dict, unit: str) -> bool:
     """True when the unit is not held and every unit it merges after is done or stopped."""
-    record = _unit(state, unit)
+    record = unit_record(state, unit)
     units = state["units"]
     return record["hold"] is None and all(units[u]["done"] or units[u]["gate"] == "stopped" for u in record["after"])
 
@@ -492,7 +493,7 @@ def _append(run_dir: Path, filename: str, line: str) -> None:
 
 def open_gate(run_dir: Path, state: dict, unit: str, now: float) -> None:
     """Open a unit's gate and log it; opening twice is an error."""
-    record = _unit(state, unit)
+    record = unit_record(state, unit)
     if record["gate"] == "open":
         raise RunError(f"gate for {unit!r} is already open")
     _refuse_stopped(record, unit)
@@ -560,7 +561,7 @@ def stop_gate(run_dir: Path, state: dict, unit: str, reason: str) -> None:
     Its gate is now `stopped`: it never opens, counts to WIP, gets `go` or joins the queue. It gives up the slot,
     its hold is lifted, and its queued and pending requests are dropped.
     """
-    record = _unit(state, unit)
+    record = unit_record(state, unit)
     if "\n" in reason or "\r" in reason:
         raise RunError("a stop reason must be a single line")
     _append(run_dir, GATES, f"{unit} stop {reason}\n")
@@ -587,7 +588,7 @@ def _refuse_held(record: dict, unit: str) -> None:
 
 def has_open_pr(state: dict, unit: str) -> bool:
     """True when any of the unit's PRs is still open."""
-    return any(status == "OPEN" for status in _unit(state, unit)["prs"].values())
+    return any(status == "OPEN" for status in unit_record(state, unit)["prs"].values())
 
 
 def _check_sha(sha: str) -> None:
@@ -644,7 +645,7 @@ def go(run_dir: Path, state: dict, unit: str, sha: str, now: float) -> None:
     It refuses a held unit. In serial mode it also refuses while the unit merges after an unmerged unit, while
     another unit holds the slot, or while the slot is free and another unit is first in the queue.
     """
-    record = _unit(state, unit)
+    record = unit_record(state, unit)
     _check_sha(sha)
     if record["done"]:
         raise RunError(f"unit {unit!r} is done; answer its push requests with: redo <sha> pr-merged")
@@ -687,7 +688,7 @@ def redo(run_dir: Path, state: dict, unit: str, sha: str, reasons: str) -> None:
     Any earlier `go` is spent: the child asks again, so the watcher stops holding READY for a push. A sync the
     integration unit announced (`syncing`) is spent too, so a dead one stops blocking unit merges.
     """
-    _unit(state, unit)
+    unit_record(state, unit)
     _check_sha(sha)
     if not reasons.strip() or "\n" in reasons or "\r" in reasons:
         raise RunError("redo reasons must be a single non-empty line")
@@ -706,7 +707,7 @@ def enqueue(run_dir: Path, state: dict, unit: str, sha: str, now: float) -> None
 
     A slot holder that can no longer merge (it gained an `--after` unit) gives the slot up and is queued.
     """
-    record = _unit(state, unit)
+    record = unit_record(state, unit)
     _refuse_stopped(record, unit)
     _refuse_held(record, unit)
     _check_sha(sha)
@@ -742,7 +743,7 @@ def yield_slot(state: dict, unit: str, reason: str, now: float) -> None:
     blocking unit merges, though: nothing else would clear it. Its child re-checks that the remote branch is an
     ancestor and never force-pushes, so a late push of that go is rejected rather than landing under a unit merge.
     """
-    record = _unit(state, unit)
+    record = unit_record(state, unit)
     if not _holds_slot(state, unit):
         raise RunError(f"unit {unit!r} does not hold the push slot")
     state["slot"] = None
@@ -765,7 +766,7 @@ def hold(run_dir: Path, state: dict, unit: str, reason: str, now: float) -> None
     pending and queued requests are answered `redo held`, and it gives up the slot. A `go` it has not pushed yet
     stays outstanding, as for `yield`.
     """
-    record = _unit(state, unit)
+    record = unit_record(state, unit)
     if "\n" in reason or "\r" in reason or not reason.strip():
         raise RunError("a hold reason must be a single non-empty line")
     if record["done"]:
@@ -789,7 +790,7 @@ def release(state: dict, unit: str) -> None:
     The stall clock restarts: the hold was waiting on purpose, so the watcher starts a new stall window. A READY
     or REMIND reported before the hold is forgotten, so the same head is reported READY again.
     """
-    record = _unit(state, unit)
+    record = unit_record(state, unit)
     if record["hold"] is None:
         raise RunError(f"unit {unit!r} is not held")
     record["hold"] = None
@@ -800,7 +801,7 @@ def release(state: dict, unit: str) -> None:
 
 def record_merged(state: dict, unit: str, pr: int, *, more: bool) -> None:
     """Note a merged PR: free the slot if held, lift any hold, and mark the unit done unless more PRs are coming."""
-    record = _unit(state, unit)
+    record = unit_record(state, unit)
     _forget_freed(state, unit)
     record["prs"][str(pr)] = "MERGED"
     record["hold"] = None
@@ -813,7 +814,7 @@ def record_merged(state: dict, unit: str, pr: int, *, more: bool) -> None:
 
 def record_closed(state: dict, unit: str, pr: int) -> None:
     """Note a PR closed without merging, lift any hold, and free the slot if the unit holds it."""
-    record = _unit(state, unit)
+    record = unit_record(state, unit)
     _forget_freed(state, unit)
     record["prs"][str(pr)] = "CLOSED"
     record["hold"] = None
@@ -875,7 +876,7 @@ def record_synced(state: dict, unit: str, sha: str) -> None:
     REMIND reported for another unit's PR while the sync was in flight is forgotten, so the same head is reported
     READY again rather than waiting for a REMIND.
     """
-    record = _unit(state, unit)
+    record = unit_record(state, unit)
     if not _is_integration(record):
         raise RunError("only the integration unit pushes directly")
     marks = state["marks"].get(unit, {})
@@ -894,6 +895,6 @@ def record_synced(state: dict, unit: str, sha: str) -> None:
 def reportable(state: dict, unit: str) -> bool:
     """True when the unit may be reported on (READY/REMIND): it is not stopped, it is mergeable, nothing blocks it
     for the integration branch, and the run is in parallel mode or the slot is free or its own."""
-    if _unit(state, unit)["gate"] == "stopped" or not mergeable(state, unit) or integration_block(state, unit):
+    if unit_record(state, unit)["gate"] == "stopped" or not mergeable(state, unit) or integration_block(state, unit):
         return False
     return state["queue_mode"] == "parallel" or state["slot"] is None or state["slot"]["unit"] == unit

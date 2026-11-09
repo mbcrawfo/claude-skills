@@ -1,6 +1,6 @@
 # The run script's commands
 
-`run.py` is the shorthand SKILL.md defines ("The run script"). `<run>`, the absolute run folder, always comes right after the command (for `item`, after its subcommand). A refused command exits 1 with one line on stderr and changes nothing.
+`run.py` is the shorthand SKILL.md defines ("The run script and the run folder"). `<run>`, the absolute run folder, always comes right after the command (for `item`, after its subcommand). A refused command exits 1 with one line on stderr and changes nothing.
 
 | Command | Does |
 |---|---|

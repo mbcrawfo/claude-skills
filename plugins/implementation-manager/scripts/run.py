@@ -19,7 +19,7 @@ The run folder is always the first argument after the subcommand:
                                     owner items from earlier sessions are dropped (print dropped <id> per item)
   set <dir> wip <N|none> | set <dir> queue <serial|parallel>
                                     in parallel mode, print each request still queued: queued <unit> <sha>
-  set <dir> manager <local_id>      the manager's session id (local_ then hex digits and '-'), for the briefs
+  set <dir> manager <id>            the manager's session id (letters, digits, '_' and '-'), for the briefs
   set <dir> final-merge <manager|owner> | set <dir> feature-review <yes|no>
                                     integration mode, until the final gate opens
   brief <dir> <unit> [--extra-file P] [--no-gate] [--designed]
@@ -111,13 +111,12 @@ import time
 
 import brief
 import context
-import coverage
-
 import items
 from prstate import GhError, check_once, run_gh
 import prune
 import runstate
 from runstate import PUSHES, RunError, load, locked
+import verdict
 import watcher
 
 
@@ -309,14 +308,22 @@ def _item_name(item: dict) -> str:
 
 
 def _reset_compact_ask(run_dir: Path, env: Mapping[str, str] = os.environ) -> None:
-    """Clear `compact_asked` once the context has dropped COMPACT_EVERY or more below it: the owner compacted."""
+    """Clear `compact_asked` once the context has dropped COMPACT_EVERY or more below it: the owner compacted.
+
+    It never raises: a run folder it cannot read or lock keeps the old ask, and `status` still prints.
+    """
     tokens = context.current_tokens(env)
-    asked = load(run_dir)["compact_asked"]
-    if tokens is None or asked is None or tokens > asked - context.COMPACT_EVERY:
+    if tokens is None:
         return
-    with locked(run_dir) as state:
-        if state["compact_asked"] is not None and tokens <= state["compact_asked"] - context.COMPACT_EVERY:
-            state["compact_asked"] = None
+    try:
+        asked = load(run_dir)["compact_asked"]
+        if asked is None or tokens > asked - context.COMPACT_EVERY:
+            return
+        with locked(run_dir) as state:
+            if state["compact_asked"] is not None and tokens <= state["compact_asked"] - context.COMPACT_EVERY:
+                state["compact_asked"] = None
+    except (RunError, OSError, json.JSONDecodeError):
+        return
 
 
 def _status(run_dir: Path, state: dict, env: Mapping[str, str] = os.environ) -> str:
@@ -544,18 +551,27 @@ def _wait(args: argparse.Namespace) -> int:
 
 
 def _full_lines(run_dir: Path, line: str) -> list[str]:
-    """What `wait --full` adds under the event line; it never raises."""
+    """What `wait --full` adds under the event line; it never raises.
+
+    Each part fails on its own: a verdict that cannot be computed still names the event's sha, and the status
+    block prints whenever the run state can be read.
+    """
+    _reset_compact_ask(run_dir)
     out: list[str] = []
+    target = verdict.event_target(line)
     try:
-        _reset_compact_ask(run_dir)
-        state = load(run_dir)
-        target = coverage.event_target(line)
-        if target:
-            out.append(coverage.verdict_line(state, *target))
-        out += coverage.log_lines(run_dir, line)
+        state: dict | None = load(run_dir)
     except Exception as exc:  # the event line must still reach the manager
-        out.append(f"verdict unavailable: {_describe(run_dir, exc)}")
         state = None
+        if target:
+            out.append(f"verdict {target[1]} unavailable: {_describe(run_dir, exc)}")
+    else:
+        if target:
+            try:
+                out.append(verdict.verdict_line(state, *target))
+            except Exception as exc:
+                out.append(f"verdict {target[1]} unavailable: {_describe(run_dir, exc)}")
+    out += verdict.log_lines(run_dir, line)
     out.append("")
     try:
         if state is None:
@@ -701,7 +717,9 @@ def _run(args: argparse.Namespace) -> str | None:
             text = brief.render(run_dir, load(run_dir), args.unit, extra=extra, gate=args.gate, designed=args.designed)
         path = run_dir.absolute() / "briefs" / f"{args.unit}.md"
         path.parent.mkdir(exist_ok=True)
-        path.write_text(text, encoding="utf-8")
+        partial = path.with_name(f".{path.name}.tmp")
+        partial.write_text(text, encoding="utf-8")
+        os.replace(partial, path)  # a child never reads a half-written brief
         return str(path)
     if command == "check":
         state = load(run_dir)

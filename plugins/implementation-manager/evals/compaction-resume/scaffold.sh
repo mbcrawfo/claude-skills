@@ -6,8 +6,10 @@
 #   state/   branch-review state for both branches (the eval sandbox only lets
 #            the agent write inside the workspace, so state lives here too).
 #   run/     the run folder, built with run.py: both units' gates open, both
-#            push requests in requests.log, an empty pushes.log, and notes.md
-#            (the units table with the worktree paths).
+#            push requests in requests.log, an empty pushes.log, the check
+#            command recorded (check-cmd, with state/), the manager's id set,
+#            and notes.md (the units table with the worktree paths, and a
+#            Decisions section that holds u2's push).
 # Both checkouts share the origin URL, so they share one state key.
 #
 # The commits use fixed dates, identity and messages, so sha1 and sha2 are the

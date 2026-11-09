@@ -28,6 +28,7 @@ Arguments: `$ARGUMENTS`
 | Command | Does |
 |---|---|
 | `status <run>` | The tracker and every line under "needs the manager"; its last line may be `- context: <N>k`. |
+| `wait <run> --full` | Blocks until one event and prints it with its `verdict`, log and `status` lines ("The wake loop"). Always with `run_in_background`. |
 | `go <run> <unit> <sha>` | Allows the push. Serial mode: takes the slot, and refuses while another unit holds it or heads the queue, or the unit merges after a unit not yet merged. |
 | `queue <run> <unit> <sha>` | Holds a covered request until the slot frees; the watcher then reports `NEXT`. |
 | `redo <run> <unit> <sha> <reasons>` | Refuses the push with one line of reasons. |
@@ -46,7 +47,7 @@ A turn that finds the conversation compacted (a compaction summary), or that has
 
 ## The wake loop
 
-Every turn: handle what woke you, then make sure exactly one `run.py wait <run> --full` is running before you end the turn (start one when the last one has printed its output, or when you cannot tell whether it survived an app restart). Its output is the event line; for `REQUEST`, `PENDING`, `NEXT`, `READY` and `REMIND` a `verdict` line; for a `STUCK` event `pushes:` and `requests:` lines (the unit's last line in each log); then an empty line and the `status` block. Handle the event with those lines (references/events.md has a row for each event): where a row or the merge bar reads `run.py status`, the printed block is that status, unless you have since run a command that changes the run. A user message has no `wait` output: run `run.py status <run>` first ("On every user message", references/events.md). Unless a row says otherwise, the whole reply is one short line, with nothing about a child's progress.
+Every turn: handle what woke you, then make sure exactly one `run.py wait <run> --full` is running before you end the turn (start one when the last one has printed its output, or when you cannot tell whether it survived an app restart). Its output is the event line; for `REQUEST`, `PENDING`, `NEXT`, `READY` and `REMIND` a `verdict` line; for a `STUCK` event `pushes:` and `requests:` lines (the unit's last line in each log); then an empty line and the `status` block. Handle the event with those lines (references/events.md has a row for each event): where a row or the merge bar reads `run.py status`, the printed block is that status, unless you have since run a command that changes the run. If it printed `status unavailable: …` instead, run `run.py status <run>` yourself. A user message has no `wait` output: run `run.py status <run>` first ("On every user message", references/events.md). Unless a row says otherwise, the whole reply is one short line, with nothing about a child's progress.
 
 ## The verdict rule
 
