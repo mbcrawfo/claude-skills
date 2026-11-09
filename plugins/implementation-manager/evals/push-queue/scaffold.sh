@@ -120,4 +120,7 @@ cat >run/notes.md <<NOTES
 | u2 | Unit two | none | none | child-u2 | u2 | $ws/wt-u2 | none yet |
 NOTES
 
+# Record the review check, so `run.py wait --full` prints the coverage verdicts.
+python3 "$runpy" check-cmd run --rs "$here/../../../branch-review/scripts/rs" --state-dir "$ws/state"
+
 echo "workspace $ws: u1 $sha1 in repo, u2 $sha2 in wt-u2, state in state, run folder run"
