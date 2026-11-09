@@ -37,6 +37,7 @@ import argparse
 from collections.abc import Callable
 from datetime import date, datetime, timedelta, timezone
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -301,19 +302,59 @@ class Runner:
         return done.stdout
 
     def reviewer(self, prompt: str, cwd: Path, budget: float) -> str:
+        # --strict-mcp-config and --tools keep the user's MCP servers and other
+        # tools out of the context, so it matches a subagent's (agent tools only).
         args = ["--plugin-dir", str(self.plugin), "--agent", "branch-review:reviewer", "--model", "opus"]
+        args += ["--strict-mcp-config", "--tools", *ALLOWED_TOOLS]
         return self._claude([*args, "--allowedTools", *ALLOWED_TOOLS], prompt, cwd, budget)
 
     def judge(self, prompt: str, cwd: Path, budget: float) -> str:
         return self._claude(["--model", "sonnet", "--allowedTools", *ALLOWED_TOOLS], prompt, cwd, budget)
 
 
-def stream_cost(stream_text: str, default_family: str) -> float:
+def stream_costs(stream_text: str, default_family: str) -> dict:
+    """Return the token-count estimate, claude's reported cost and their max.
+
+    The reported cost is the final `result` event's `total_cost_usd` (None when
+    absent). Spend is the larger of the two, so the caps never rest on our price
+    table alone.
+    """
     lines = stream_text.splitlines()
-    return sum(
+    estimate = sum(
         usage_report.cost_usd(u, usage_report.model_family(m) or default_family)
         for m, u in usage_report.message_usages(lines)
     )
+    reported = None
+    for line in lines:
+        obj = usage_report._load(line)
+        if obj and obj.get("type") == "result" and isinstance(obj.get("total_cost_usd"), (int, float)):
+            reported = float(obj["total_cost_usd"])
+    return {"estimate": estimate, "reported": reported, "spend": max(estimate, reported or 0.0)}
+
+
+def check_context(stream_text: str, plugin: Path) -> str | None:
+    """Return why the run's context is wrong, or None when it is right.
+
+    The first `system`/`init` event lists the tools, agents and plugins the run
+    loaded. The reviewer must have only ALLOWED_TOOLS, and `branch-review` must
+    come from `plugin`, not from an installed copy.
+    """
+    for line in stream_text.splitlines():
+        obj = usage_report._load(line)
+        if obj and obj.get("type") == "system" and obj.get("subtype") == "init":
+            extra = sorted(set(obj.get("tools") or []) - set(ALLOWED_TOOLS))
+            if extra:
+                return f"unexpected tools {extra}"
+            if obj.get("mcp_servers"):
+                return "MCP servers loaded"
+            if "branch-review:reviewer" not in (obj.get("agents") or []):
+                return "reviewer agent not loaded"
+            paths = [p.get("path") for p in obj.get("plugins") or [] if p.get("name") == "branch-review"]
+            want = os.path.realpath(plugin)
+            if not paths or any(os.path.realpath(p or "") != want for p in paths):
+                return f"branch-review plugin loaded from {paths}, not {want}"
+            return None
+    return "no init event in the stream"
 
 
 def final_text(stream_text: str) -> str:
@@ -408,7 +449,12 @@ def _replay_entry(entry: dict, i: int, plugin: Path, out: Path, budget: float, r
         )
         stream = runner.reviewer(prompt, tree, budget)
         (work / "stream.jsonl").write_text(stream, encoding="utf-8")
-        result["new_cost"] = stream_cost(stream, "opus")
+        costs = stream_costs(stream, "opus")
+        result.update(new_cost=costs["spend"], new_cost_estimate=costs["estimate"], new_cost_reported=costs["reported"])
+        problem = check_context(stream, plugin)
+        if problem:
+            result.update(status="failed", reason=f"wrong context: {problem}")
+            return
         parsed = last_json_block(report.read_text(encoding="utf-8")) if report.is_file() else None
         if not isinstance(parsed, dict) or not isinstance(parsed.get("findings"), list):
             result.update(status="failed", reason="no report")
@@ -419,7 +465,10 @@ def _replay_entry(entry: dict, i: int, plugin: Path, out: Path, budget: float, r
         if parsed["findings"]:
             judged = runner.judge(_fill_judge_prompt(known, parsed["findings"]), tree, JUDGE_BUDGET_USD)
             (work / "judge.jsonl").write_text(judged, encoding="utf-8")
-            result["judge_cost"] = stream_cost(judged, "sonnet")
+            costs = stream_costs(judged, "sonnet")
+            result.update(
+                judge_cost=costs["spend"], judge_cost_estimate=costs["estimate"], judge_cost_reported=costs["reported"]
+            )
             labels = last_json_block(final_text(judged))
             if not isinstance(labels, list):
                 result.update(status="failed", reason="no judge output")

@@ -240,7 +240,22 @@ class ScoreTest(unittest.TestCase):
         self.assertFalse(s["passed"])
 
 
-def stream(out_tokens, text="done", model="claude-opus-5-5"):
+def init_event(tools=("Read", "Grep", "Glob", "Bash"), plugin="/plugin", mcp=()):
+    return {
+        "type": "system",
+        "subtype": "init",
+        "tools": list(tools),
+        "mcp_servers": list(mcp),
+        "agents": ["branch-review:reviewer", "Explore"],
+        "plugins": [
+            {"name": "branch-review", "path": plugin},
+            {"name": "superpowers", "path": "/cache/superpowers"},
+            {"name": "cc-plugin-privacy", "path": "builtin"},
+        ],
+    }
+
+
+def stream(out_tokens, text="done", model="claude-opus-5-5", init=None, reported=None):
     msg = {
         "type": "assistant",
         "message": {
@@ -250,7 +265,11 @@ def stream(out_tokens, text="done", model="claude-opus-5-5"):
             "usage": {"input_tokens": 0, "output_tokens": out_tokens},
         },
     }
-    return json.dumps(msg) + "\n" + json.dumps({"type": "result", "result": text}) + "\n"
+    final = {"type": "result", "result": text}
+    if reported is not None:
+        final["total_cost_usd"] = reported
+    first = json.dumps(init_event() if init is None else init) + "\n"
+    return first + json.dumps(msg) + "\n" + json.dumps(final) + "\n"
 
 
 REPORT = (
@@ -258,6 +277,27 @@ REPORT = (
     '"trigger": "x", "consequence": "y"}]}\n```\n'
 )
 JUDGE = 'ok\n```json\n[{"replay": 0, "label": "matches", "of": "R1-F1", "holds": null, "check": "same"}]\n```\n'
+
+
+class ContextCheckTest(unittest.TestCase):
+    def check(self, init):
+        return replay.check_context(json.dumps(init) + "\n", Path("/plugin"))
+
+    def test_check_context(self):
+        self.assertIsNone(self.check(init_event()))
+        self.assertIn("unexpected tools", self.check(init_event(tools=("Read", "mcp__srv__t"))))
+        self.assertIn("not /plugin", self.check(init_event(plugin="/installed/x")))
+        self.assertIn("MCP", self.check(init_event(mcp=("srv",))))
+        self.assertIn("no init", replay.check_context("", Path("/plugin")))
+
+
+class StreamCostTest(unittest.TestCase):
+    def test_stream_costs_takes_the_larger(self):
+        low = replay.stream_costs(stream(1_000_000, reported=1.0), "opus")
+        self.assertAlmostEqual(low["spend"], 25.0)
+        high = replay.stream_costs(stream(1_000_000, reported=30.0), "opus")
+        self.assertEqual((high["spend"], high["reported"]), (30.0, 30.0))
+        self.assertIsNone(replay.stream_costs(stream(10), "opus")["reported"])
 
 
 class RealGitPathTest(unittest.TestCase):
@@ -300,7 +340,9 @@ class RealGitPathTest(unittest.TestCase):
 
 
 class FakeRunner:
-    def __init__(self, diff_from="aaa", reports=(True, True), cost_tokens=100_000):
+    def __init__(self, diff_from="aaa", reports=(True, True), cost_tokens=100_000, reviewer_init=None, reported=None):
+        self.reviewer_init = reviewer_init
+        self.reported = reported
         self.diff_from = diff_from
         self.reports = list(reports)
         self.cost_tokens = cost_tokens
@@ -330,7 +372,7 @@ class FakeRunner:
         if self.reports.pop(0):
             path = re.search(r"^REPORT_PATH: (.*)$", prompt, re.M).group(1)
             Path(path).write_text(REPORT, encoding="utf-8")
-        return stream(self.cost_tokens)
+        return stream(self.cost_tokens, init=self.reviewer_init, reported=self.reported)
 
     def judge(self, prompt, cwd, budget):
         self.calls.append("judge")
@@ -409,6 +451,23 @@ class RunTest(unittest.TestCase):
         results = self.go(runner, max_total=20.0)
         self.assertEqual([r["status"] for r in results], ["ok", "skipped"])
         self.assertEqual(runner.calls.count("reviewer"), 1)
+
+    def test_run_fails_on_wrong_context_and_records_spend(self):
+        for init in (init_event(tools=("Read", "mcp__x__tool")), init_event(plugin="/installed/branch-review")):
+            runner = FakeRunner(reviewer_init=init)
+            results = self.go(runner)
+            self.assertEqual(results[0]["status"], "failed")
+            self.assertTrue(results[0]["reason"].startswith("wrong context"))
+            self.assertGreater(results[0]["new_cost"], 0)
+            self.assertNotIn("judge", runner.calls)
+
+    def test_spend_uses_reported_cost_when_higher(self):
+        runner = FakeRunner(reported=7.0)
+        results = self.go(runner)
+        self.assertEqual(results[0]["new_cost"], 7.0)
+        self.assertAlmostEqual(results[0]["new_cost_estimate"], 2.5)
+        self.assertEqual(results[0]["new_cost_reported"], 7.0)
+        self.assertIn("judge_cost_estimate", results[0])
 
     def test_reviewer_budget_never_exceeds_remaining_cap(self):
         runner = FakeRunner()
