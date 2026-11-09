@@ -1425,5 +1425,68 @@ class WaitFullTests(CliTestCase):
         self.assertIn("rs not found", result.stderr)
 
 
+class BriefCliTests(CliTestCase):
+    def setUp(self):
+        super().setUp()
+        self.init()
+        self.ok("unit", str(self.dir), "a", "--title", "Add widgets", "--spec", "docs/specs/widgets.md")
+        self.path = self.dir / "briefs" / "a.md"
+
+    def test_brief_writes_file_and_prints_path(self):
+        self.ok("set", str(self.dir), "manager", "local_abc")
+        extra = self.tmp / "extra.md"
+        extra.write_text("Touch only src/widgets/.\n", encoding="utf-8")
+        self.assertEqual(self.ok("brief", str(self.dir), "a", "--extra-file", str(extra)), f"{self.path}\n")
+        text = self.path.read_text(encoding="utf-8")
+        self.assertTrue(text.startswith("1. **Goal:** implement `Add widgets` as specified in `docs/specs/widgets.md`"))
+        self.assertIn("Touch only src/widgets/.", text)
+        self.assertIn(f'f="{self.dir}/gates.log"', text)
+        self.assertIn("(local_abc)", text)
+
+    def test_brief_options(self):
+        self.ok("set", str(self.dir), "manager", "local_abc")
+        self.ok("brief", str(self.dir), "a", "--no-gate", "--designed")
+        text = self.path.read_text(encoding="utf-8")
+        self.assertNotIn("**Gate:**", text)
+        self.assertIn("The owner designs this unit with you in this session.", text)
+
+    def test_brief_refuses_without_manager(self):
+        result = self.run_cli("brief", str(self.dir), "a")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stderr, f"run.py brief: no manager session id: run.py set {self.dir} manager <id>\n")
+        self.assertFalse(self.path.exists())
+
+    def test_brief_refuses_without_spec(self):
+        self.ok("set", str(self.dir), "manager", "local_abc")
+        self.ok("unit", str(self.dir), "b")
+        result = self.run_cli("brief", str(self.dir), "b")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stderr, f"run.py brief: unit b has no spec: run.py unit {self.dir} b --spec P\n")
+        self.assertFalse((self.dir / "briefs" / "b.md").exists())
+
+    def test_brief_refuses_unknown_unit(self):
+        self.ok("set", str(self.dir), "manager", "local_abc")
+        result = self.run_cli("brief", str(self.dir), "nope")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("unknown unit", result.stderr)
+
+    def test_set_manager_validates_id(self):
+        for bad in ("abc", "local_", "local_XYZ", "local_abc def", "session_abc"):
+            with self.subTest(bad=bad):
+                result = self.run_cli("set", str(self.dir), "manager", bad)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("manager", result.stderr)
+        self.assertIsNone(self.state()["manager"])
+        self.ok("set", str(self.dir), "manager", "local_0a1b-2c3d")
+        self.assertEqual(self.state()["manager"], "local_0a1b-2c3d")
+
+    def test_unit_spec_is_stored_and_kept(self):
+        self.assertEqual(self.state()["units"]["a"]["spec"], "docs/specs/widgets.md")
+        self.ok("unit", str(self.dir), "a", "--title", "Widgets")
+        self.assertEqual(self.state()["units"]["a"]["spec"], "docs/specs/widgets.md")
+        result = self.run_cli("unit", str(self.dir), "a", "--spec", "a\nb")
+        self.assertEqual(result.returncode, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

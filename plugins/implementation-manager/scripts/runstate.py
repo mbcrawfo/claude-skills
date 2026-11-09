@@ -28,6 +28,8 @@ SYNCING_MARK = "syncing"
 # No '.': children match their unit name in `grep -E` patterns, where it would be a wildcard.
 UNIT_RE = r"[A-Za-z0-9][A-Za-z0-9_-]*"
 SHA_RE = r"[0-9a-f]{40}"
+# The manager's own session id, as `get_session "self"` gives it; children send it their questions.
+MANAGER_RE = r"local_[0-9a-f-]+"
 
 METHODS = ("merge", "squash", "rebase")
 QUEUE_MODES = ("serial", "parallel")
@@ -119,6 +121,7 @@ def init_run(
         "items": empty_items(),
         "compact_asked": None,
         "check": None,
+        "manager": None,
     }
     if integration is not None:
         state["integration"] = {
@@ -170,12 +173,14 @@ def load(run_dir: Path) -> dict:
     state.setdefault("items", empty_items())
     state.setdefault("compact_asked", None)
     state.setdefault("check", None)
+    state.setdefault("manager", None)
     for unit in state["units"].values():  # fields added since a run began
         unit.setdefault("integration", False)
         unit.setdefault("after", [])
         unit.setdefault("hold", None)
         unit.setdefault("title", None)
         unit.setdefault("generation", 1)
+        unit.setdefault("spec", None)
     return state
 
 
@@ -287,11 +292,13 @@ def add_unit(
     after: list[str] | None = None,
     title: str | None = None,
     integration: bool | None = None,
+    spec: str | None = None,
 ) -> None:
     """Add a unit, or update the fields given on an existing one; None keeps the old value.
 
     `after` lists the units that must merge before this one does; [] clears it. A unit may not wait on itself
     through its prerequisites and `after` units together. `title` is a one-line display label for status.
+    `spec` is the path of the unit's spec, which its brief names.
     Recording a different worktree (compared normalized) on a unit that has one bumps its `generation`, the count
     of its child sessions.
     `integration=True` makes it the run's one integration unit: it needs the integration mode, branches from the
@@ -301,8 +308,9 @@ def add_unit(
     """
     if not re.fullmatch(UNIT_RE, name):
         raise RunError(f"bad unit name {name!r}: use letters, digits, '_' and '-', starting with a letter or digit")
-    if title is not None and ("\n" in title or "\r" in title):
-        raise RunError(f"bad title {title!r}: use a single line")
+    for label, text in (("title", title), ("spec", spec)):
+        if text is not None and ("\n" in text or "\r" in text):
+            raise RunError(f"bad {label} {text!r}: use a single line")
     unit = state["units"].get(name)
     _check_order_edges(
         state,
@@ -329,6 +337,7 @@ def add_unit(
             "done": False,
             "prs": {},
             "generation": 1,
+            "spec": None,
         }
         if _block(state):
             unit["integration"] = False
@@ -346,6 +355,7 @@ def add_unit(
         ("specs", specs),
         ("integration", integration or None),  # False is the default and not written
         ("title", title),
+        ("spec", spec),
     ):
         if value is not None:
             unit[key] = list(value) if key in ("prereqs", "after") else value
@@ -385,8 +395,9 @@ def _check_integration_unit(
 
 
 def set_option(state: dict, key: str, value: str) -> None:
-    """Set `wip` (an int of at least 1, or `none`), `queue` (`serial` or `parallel`), or, in the integration mode
-    and before the final gate opens, `final-merge` (`manager` or `owner`) or `feature-review` (`yes` or `no`)."""
+    """Set `wip` (an int of at least 1, or `none`), `queue` (`serial` or `parallel`), `manager` (the manager's
+    session id, `local_` and hex digits or `-`), or, in the integration mode and before the final gate opens,
+    `final-merge` (`manager` or `owner`) or `feature-review` (`yes` or `no`)."""
     if key == "wip":
         if value == "none":
             state["wip"] = None
@@ -398,6 +409,10 @@ def set_option(state: dict, key: str, value: str) -> None:
         if value not in QUEUE_MODES:
             raise RunError(f"queue must be one of {', '.join(QUEUE_MODES)}, got {value!r}")
         state["queue_mode"] = value
+    elif key == "manager":
+        if not re.fullmatch(MANAGER_RE, value):
+            raise RunError(f"manager must be a session id like local_<hex digits and '-'>, got {value!r}")
+        state["manager"] = value
     elif key in ("final-merge", "feature-review"):
         block = _block(state)
         if not block:
@@ -413,7 +428,7 @@ def set_option(state: dict, key: str, value: str) -> None:
                 raise RunError(f"feature-review must be yes or no, got {value!r}")
             block["feature_review"] = value == "yes"
     else:
-        raise RunError(f"unknown option {key!r}: use wip, queue, final-merge or feature-review")
+        raise RunError(f"unknown option {key!r}: use wip, queue, manager, final-merge or feature-review")
 
 
 def mergeable(state: dict, unit: str) -> bool:

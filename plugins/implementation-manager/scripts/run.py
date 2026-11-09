@@ -6,8 +6,10 @@ The run folder is always the first argument after the subcommand:
   init <dir> --repo O/R --base B --method merge|squash|rebase [--wip N] [--queue serial|parallel]
        [--integration BRANCH --final-merge manager|owner --feature-review yes|no]   (not with rebase)
   unit <dir> <name> [--prereq U ...] [--after U ...|none] [--branch B] [--worktree P] [--specs] [--title T]
-       [--integration]              the run's one integration unit (needs init --integration): its branch is the
-                                    integration branch; no --prereq or --after, and no unit may name it in either;
+       [--spec P] [--integration]   --spec: the path of the unit's spec, which its brief names
+                                    --integration: the run's one integration unit (needs init --integration): its
+                                    branch is the integration branch; no --prereq or --after, and no unit may name it
+                                    in either;
                                     open-ready opens its gate at once, outside the WIP limit
                                     names use letters, digits, '-' and '_', starting with a letter or digit;
                                     each --prereq and --after unit must already exist; --prereq gates the start,
@@ -17,8 +19,17 @@ The run folder is always the first argument after the subcommand:
                                     owner items from earlier sessions are dropped (print dropped <id> per item)
   set <dir> wip <N|none> | set <dir> queue <serial|parallel>
                                     in parallel mode, print each request still queued: queued <unit> <sha>
+  set <dir> manager <local_id>      the manager's session id (local_ then hex digits and '-'), for the briefs
   set <dir> final-merge <manager|owner> | set <dir> feature-review <yes|no>
                                     integration mode, until the final gate opens
+  brief <dir> <unit> [--extra-file P] [--no-gate] [--designed]
+                                    write the unit's child prompt to <dir>/briefs/<unit>.md from the templates
+                                    (the integration unit's own template for it; the integration-mode fragments
+                                    for the other units of such a run) and print that path; part 6 gets
+                                    <dir>/facts.md, if present, then the --extra-file text; --no-gate leaves out
+                                    the gate (part 2), --designed adds the paragraph for a unit the owner designs
+                                    with the child; refused without a manager id, a unit without a spec, or a
+                                    template placeholder the run cannot fill
   open <dir> <unit>                 open one gate
   open-ready <dir>                  open every gate that may open; print one unit name per line, then the
                                     final gate's gates.log line when it opens (integration mode)
@@ -93,6 +104,7 @@ import re
 import sys
 import time
 
+import brief
 import context
 import coverage
 
@@ -394,11 +406,18 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--worktree")
     p.add_argument("--specs", action="store_true", default=None, help="the manager's own planning PR")
     p.add_argument("--title", help="one-line display label shown beside the name in status")
+    p.add_argument("--spec", metavar="P", help="the unit's spec, which its brief names")
     p.add_argument("--integration", action="store_true", default=None, help="the run's one integration unit")
 
-    p = command("set", "change the WIP limit, the queue mode, or an integration choice")
-    p.add_argument("key", choices=("wip", "queue", "final-merge", "feature-review"))
+    p = command("set", "change the WIP limit, the queue mode, the manager id, or an integration choice")
+    p.add_argument("key", choices=("wip", "queue", "manager", "final-merge", "feature-review"))
     p.add_argument("value")
+
+    p = command("brief", "write a unit's child prompt from the templates and print its path")
+    p.add_argument("unit")
+    p.add_argument("--extra-file", type=Path, metavar="P", help="unit-specific text for part 6")
+    p.add_argument("--no-gate", dest="gate", action="store_false", help="leave out the gate (part 2)")
+    p.add_argument("--designed", action="store_true", help="a unit the owner designs with the child")
 
     p = command("open", "open one unit's gate")
     p.add_argument("unit")
@@ -649,6 +668,13 @@ def _run(args: argparse.Namespace) -> str | None:
         return _status(run_dir, load(run_dir))
     if command == "item":
         return _item(args, now)
+    if command == "brief":
+        extra = _read_text(args.extra_file) if args.extra_file else ""
+        text = brief.render(run_dir, load(run_dir), args.unit, extra=extra, gate=args.gate, designed=args.designed)
+        path = run_dir.absolute() / "briefs" / f"{args.unit}.md"
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        return str(path)
     if command == "check":
         state = load(run_dir)
         record = state["units"].get(args.unit)
@@ -676,6 +702,7 @@ def _run(args: argparse.Namespace) -> str | None:
                 specs=args.specs,
                 title=args.title,
                 integration=args.integration,
+                spec=args.spec,
             )
             if generation is not None and state["units"][args.name]["generation"] != generation:
                 # A new child session: the old session's open items no longer apply.

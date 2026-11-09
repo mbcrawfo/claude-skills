@@ -98,6 +98,7 @@ class InitTests(RunStateTestCase):
                 "items": EMPTY_ITEMS,
                 "compact_asked": None,
                 "check": None,
+                "manager": None,
             },
         )
 
@@ -121,6 +122,16 @@ class InitTests(RunStateTestCase):
         state = load(self.dir)
         self.assertEqual(state["items"], EMPTY_ITEMS)
         self.assertEqual(state["units"]["a"]["generation"], 1)
+
+    def test_load_backfills_manager_and_spec(self):
+        self.init()
+        raw = json.loads((self.dir / "run.json").read_text())
+        del raw["manager"]
+        raw["units"]["a"] = {"order": 0, "prereqs": [], "worktree": None, "specs": False}
+        (self.dir / "run.json").write_text(json.dumps(raw))
+        state = load(self.dir)
+        self.assertIsNone(state["manager"])
+        self.assertIsNone(state["units"]["a"]["spec"])
 
     def test_load_keeps_stored_items_and_generation(self):
         self.init()
@@ -205,6 +216,7 @@ class UnitTests(RunStateTestCase):
                 "done": False,
                 "prs": {},
                 "generation": 1,
+                "spec": None,
             },
         )
         self.assertEqual(state["units"]["b"]["order"], 1)
