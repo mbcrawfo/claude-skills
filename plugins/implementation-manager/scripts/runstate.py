@@ -397,7 +397,7 @@ def _check_integration_unit(
 
 def set_option(state: dict, key: str, value: str) -> None:
     """Set `wip` (an int of at least 1, or `none`), `queue` (`serial` or `parallel`), `manager` (the manager's
-    session id, `local_` and hex digits or `-`), or, in the integration mode and before the final gate opens,
+    session id: letters, digits, `_` and `-`), or, in the integration mode and before the final gate opens,
     `final-merge` (`manager` or `owner`) or `feature-review` (`yes` or `no`)."""
     if key == "wip":
         if value == "none":

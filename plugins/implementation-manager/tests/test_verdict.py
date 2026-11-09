@@ -147,6 +147,13 @@ class LogLinesTests(unittest.TestCase):
             self.assertEqual(verdict.log_lines(run, f"READY a 7 {SHA1}"), [])
             self.assertEqual(verdict.log_lines(run, "STUCK c - x"), [])
 
+    def test_log_lines_match_the_unit_exactly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run = Path(tmp)
+            (run / "pushes.log").write_text(f"ab go {SHA1}\n", encoding="utf-8")
+            (run / "requests.log").write_text(f"ab push {SHA1} feat/ab\n", encoding="utf-8")
+            self.assertEqual(verdict.log_lines(run, "STUCK a - syncing"), [])
+
 
 if __name__ == "__main__":
     unittest.main()

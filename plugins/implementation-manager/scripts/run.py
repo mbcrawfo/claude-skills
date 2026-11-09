@@ -378,8 +378,12 @@ def _status(run_dir: Path, state: dict, env: Mapping[str, str] = os.environ) -> 
         lines.append("- needs the manager: nothing")
     tokens = context.current_tokens(env)
     if tokens is not None:
-        # Quiet: nothing waits on the manager and every started unit has a worktree to resume from.
-        quiet = not needs and all(r["worktree"] for r in units.values() if r["gate"] != "stopped" and not r["done"])
+        # Quiet: nothing waits on the manager and every started unit has a worktree to resume from. A hold line
+        # asks nothing of the manager (it waits on the owner or the child), so it does not count.
+        actionable = [line for line in needs if not line.startswith("hold ")]
+        quiet = not actionable and all(
+            r["worktree"] for r in units.values() if r["gate"] != "stopped" and not r["done"]
+        )
         due = context.compact_due(tokens, state["compact_asked"], quiet)
         lines.append(f"- context: {round(tokens / 1000)}k" + (", compact due" if due else ""))
     return "\n".join(lines)

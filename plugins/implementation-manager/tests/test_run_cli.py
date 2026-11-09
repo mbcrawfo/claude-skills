@@ -1323,6 +1323,56 @@ class ContextTests(CliTestCase):
         self.assertEqual(self.last(), "- context: 40k")
         self.assertEqual(self.state()["compact_asked"], 310_000)
 
+    def ask_then(self, tokens):
+        """Record an ask at 310k, then move the transcript to `tokens`."""
+        self.transcript(310_000)
+        self.ok("compact-asked", str(self.dir))
+        self.transcript(tokens)
+
+    def test_reset_boundary_is_inclusive(self):
+        self.init()
+        self.ask_then(160_000)  # exactly COMPACT_EVERY below the ask
+        self.ok("status", str(self.dir))
+        self.assertIsNone(self.state()["compact_asked"])
+
+    def test_one_token_short_of_the_boundary_keeps_the_ask(self):
+        self.init()
+        self.ask_then(160_001)
+        self.ok("status", str(self.dir))
+        self.assertEqual(self.state()["compact_asked"], 310_000)
+
+    def test_full_wait_resets_the_ask(self):
+        self.init()
+        self.ok("unit", str(self.dir), "a", "--branch", "feat/a", "--worktree", str(self.tmp / "wt"))
+        self.ask_then(40_000)
+        self.append_request(f"a push {SHA1} feat/a\n")
+        self.ok("wait", str(self.dir), "--full")
+        self.assertIsNone(self.state()["compact_asked"])
+
+    def test_stopped_unit_without_worktree_does_not_block(self):
+        self.init()
+        self.ok("unit", str(self.dir), "a")
+        self.ok("stop", str(self.dir), "a", "dropped")
+        self.transcript(310_000)
+        self.assertEqual(self.last(), "- context: 310k, compact due")
+
+    def test_done_unit_without_worktree_does_not_block(self):
+        self.init()
+        self.ok("unit", str(self.dir), "a", "--branch", "feat/a")
+        self.ok("open", str(self.dir), "a")
+        self.ok("merged", str(self.dir), "a", "7")
+        self.transcript(310_000)
+        self.assertEqual(self.last(), "- context: 310k, compact due")
+
+    def test_held_unit_is_still_compact_due(self):
+        self.init()
+        self.ok("unit", str(self.dir), "a", "--worktree", str(self.tmp / "wt"))
+        self.ok("open", str(self.dir), "a")
+        self.ok("hold", str(self.dir), "a", "answer", "sent:", "widget", "naming")
+        self.transcript(400_000)
+        self.assertIn("hold a: answer sent: widget naming", self.ok("status", str(self.dir)))
+        self.assertEqual(self.last(), "- context: 400k, compact due")
+
     def test_status_has_no_context_line_without_transcript(self):
         self.init()
         self.assertFalse(

@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import tempfile
-import time
 import unittest
 
 import helpers  # noqa: F401  (puts the scripts dir on sys.path)
@@ -48,14 +47,13 @@ class CurrentTokensTests(unittest.TestCase):
         self.assertEqual(context.current_tokens(self.env), 1205)
 
     def test_large_file_reads_tail_only(self):
+        # The only line with usage sits more than TAIL_BYTES before the end: a whole-file read would find it.
         filler = json.dumps({"type": "user", "text": "x" * 1000}) + "\n"
         with open(self.path, "w") as f:
-            for _ in range(5 * 1024):
-                f.write(filler)
             f.write(assistant(1, 2, 3))
-        start = time.monotonic()
-        self.assertEqual(context.current_tokens(self.env), 6)
-        self.assertLess(time.monotonic() - start, 2)
+            for _ in range(context.TAIL_BYTES // len(filler) + 16):
+                f.write(filler)
+        self.assertIsNone(context.current_tokens(self.env))
 
 
 class CompactDueTests(unittest.TestCase):

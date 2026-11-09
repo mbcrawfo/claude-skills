@@ -2,7 +2,7 @@
 
 ## Problem
 
-In integration-branch mode the integration child merges the base into `integration/<slug>`. When that merge conflicts, its `/branch-review:review` runs a merge-check round that sees only the resolutions and the files both sides changed (see "The integration child" in [`SKILL.md`](../../plugins/implementation-manager/skills/implementation-manager/SKILL.md)). If that round finds a critical or major issue, branch-review's automatic second opinion becomes due (`_second_opinion_triggers` in [`review_state.py`](../../plugins/branch-review/scripts/review_state.py), reason `major-finding`), and `branch-review:check` reports `second-opinion-pending` until it runs.
+In integration-branch mode the integration child merges the base into `integration/<slug>`. When that merge conflicts, its `/branch-review:review` runs a merge-check round that sees only the resolutions and the files both sides changed (see the integration child's brief, [`templates/integration-brief.md`](../../plugins/implementation-manager/templates/integration-brief.md)). If that round finds a critical or major issue, branch-review's automatic second opinion becomes due (`_second_opinion_triggers` in [`review_state.py`](../../plugins/branch-review/scripts/review_state.py), reason `major-finding`), and `branch-review:check` reports `second-opinion-pending` until it runs.
 
 A second opinion is a deep review of the whole branch against `main`. On the integration branch that is the whole feature so far: a whole-feature review the owner may not have asked for (`--feature-review no`), run in the middle of the run. Since branch-review 0.11 a due second opinion can also replace the merge-check round itself, so the whole-branch review is what checks the resolutions.
 
