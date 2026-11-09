@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import re
 import shutil
@@ -61,6 +62,12 @@ class BriefTestCase(unittest.TestCase):
     def golden(self, name):
         return (GOLDEN / name).read_text(encoding="utf-8")
 
+    def assert_golden(self, actual, name):
+        """Compare with a golden file; with IM_REGEN_GOLDENS=1, rewrite the file instead (review the diff)."""
+        if os.environ.get("IM_REGEN_GOLDENS") == "1":
+            (GOLDEN / name).write_text(actual, encoding="utf-8")
+        self.assertEqual(actual, self.golden(name))
+
     def renders(self):
         plain = self.render(self.make_run())
         self.dir = self.dir.with_name("run2")
@@ -70,14 +77,14 @@ class BriefTestCase(unittest.TestCase):
 
 class GoldenTests(BriefTestCase):
     def test_unit_brief_matches_golden(self):
-        self.assertEqual(self.render(self.make_run()), self.golden("brief-unit.md"))
+        self.assert_golden(self.render(self.make_run()), "brief-unit.md")
 
     def test_integration_unit_brief_matches_golden(self):
-        self.assertEqual(self.render(self.make_run(INTEGRATION)), self.golden("brief-integration-unit.md"))
+        self.assert_golden(self.render(self.make_run(INTEGRATION)), "brief-integration-unit.md")
 
     def test_integration_child_brief_matches_golden(self):
         state = self.make_run(INTEGRATION)
-        self.assertEqual(self.render(state, "integration"), self.golden("brief-integration-child.md"))
+        self.assert_golden(self.render(state, "integration"), "brief-integration-child.md")
 
     def test_no_placeholders_left(self):
         for text in self.renders():

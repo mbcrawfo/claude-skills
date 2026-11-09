@@ -145,6 +145,28 @@ The period is the `retention_days` option (`userConfig` in `plugin.json`, defaul
 
 Timings: `requests.log` is checked every 5 s and PRs are polled every 60 s. Each event is reported once, across restarts of `wait`.
 
+## Skill layout and compaction
+
+After a compaction Claude Code re-injects only the first 5,000 tokens of an invoked skill. So `skills/implementation-manager/SKILL.md` is a short core that carries what the manager needs to resume, and the rest is in `skills/implementation-manager/references/*.md`, which the manager reads when a step needs one. The core must stay under 17,500 characters, the proxy for that limit; `tests/test_skill_text.py` fails above it, and checks the core's compact line and resume rule. `${...}` placeholders (such as `${user_config.retention_days}`) live only in the core: Claude Code substitutes them when the skill loads, and they would reach the manager as literal text from a reference file. The same test fails when a reference holds one.
+
+When the manager's context passes 300k tokens and the run is quiet, `run.py status` prints `- context: <N>k, compact due`. The size is the input side of the last assistant message's `usage` in the manager's transcript (`scripts/context.py`). The manager gives the owner the `/compact` line, then runs `run.py compact-asked`, which records the size; the line is due again after a further 150k tokens.
+
+## Child briefs from templates
+
+`run.py brief <run> <unit>` prints a child's prompt, rendered by `scripts/brief.py` from `templates/unit-brief.md` (or `integration-brief.md` for the integration unit) and the run state; `--card` renders it before the card is a unit. The manager passes the output on without rewriting it. A `{{name}}` in a template is a fragment slot (a file in `templates/fragments/`: `gate`, `start`, `subagent_block`, `parts_8_to_10`, `sandbox`, `sync_base`, `designed`, left out when it does not apply) or a run value (`title`, `spec`, `base`, `run_base`, `repo`, `name`, `run`, `integration`, `manager`, `facts`, `extra`). Values go in last, in one pass, so text from the run is never read for placeholders. Placeholders for the child (`<sha>`, `<branch>`) stay as they are.
+
+`tests/golden/brief-unit.md`, `brief-integration-unit.md` and `brief-integration-child.md` are the expected output for a fixed run; `tests/test_brief.py` compares against them. After you change a template, regenerate them with `IM_REGEN_GOLDENS=1 python3 -m unittest discover -s plugins/implementation-manager/tests -p test_brief.py`, which rewrites the files instead of comparing. Review the `git diff` of `tests/golden/` by hand before you commit it.
+
+## Wait output and the recorded check
+
+`run.py wait --full` prints the event line, then lines the manager would otherwise fetch with further calls: for a REQUEST, PENDING, NEXT, READY or REMIND event, `verdict <sha> <rs covered JSON>`; for a STUCK event, the unit's last `pushes.log` and `requests.log` lines; then an empty line and the `status` block (`status unavailable: <message>` if that fails).
+
+The verdict comes from branch-review's `rs` script, which `run.py check-cmd <run> --rs P --state-dir D` records at setup (paths stored absolute). When nothing is recorded, or the script has moved or fails, the line reads `verdict <sha> unavailable: <reason>` and the manager falls back to invoking `branch-review:check` itself. A recorded path goes stale when branch-review updates mid-run; see [TD-0013](../../docs/tech-debt/TD-0013-implementation-manager-recorded-check-path.md).
+
+## Measuring token use
+
+The cost of a run is measured from the manager's transcript. Sum the `usage` fields of its assistant messages, per unit, as weighted input-token equivalents: cache reads at 0.1, cache writes at 1.25, uncached input at 1 and output at 5. Compare runs of the same plan before and after a change.
+
 ## Tests
 
 ```bash
@@ -153,7 +175,7 @@ python3 -m unittest discover -s plugins/implementation-manager/tests -v
 
 ## Evals
 
-The eval cases are `push-gate`, `push-queue` and `owner-queue`, in `evals/`. Each case builds its fixture with a scaffold script. Run them from the repository root:
+The eval cases are `push-gate`, `push-queue`, `owner-queue` and `compaction-resume`, in `evals/`. `push-gate` covers the fallback when no check command is recorded. `push-queue` covers the verdict line that `wait --full` prints. `compaction-resume` covers the manager resuming from the core after a compaction. Each case builds its fixture with a scaffold script. Run them from the repository root:
 
 ```bash
 claude plugin eval plugins --case <case> --scaffold --allow-tools Bash Write Edit SendMessage ToolSearch --runs 1 --ablation none --json <file>
