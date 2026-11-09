@@ -97,6 +97,7 @@ class InitTests(RunStateTestCase):
                 "marks": {},
                 "items": EMPTY_ITEMS,
                 "compact_asked": None,
+                "check": None,
             },
         )
 
