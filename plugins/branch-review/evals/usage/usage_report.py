@@ -267,13 +267,24 @@ def state_rounds(state_dirs: list[Path], since: date, until: date) -> list[dict]
 
 
 def join(runs: list[ReviewerRun], rounds: list[dict]) -> list[dict]:
-    """Attach to each round the reviewer run with the same diff range, or None."""
-    by_range = {}
+    """Attach to each round every reviewer run that matches it.
+
+    A run matches on diff range, mode and focus. `runs` lists them all (a round
+    can have several reviewer runs); `run` is the first, or None, kept for
+    callers that expect one.
+    """
+    by_key: dict[tuple, list[ReviewerRun]] = {}
     for run in runs:
-        key = (run.dispatch.get("diff_from"), run.dispatch.get("diff_to"))
-        if key[0] and key[1]:
-            by_range.setdefault(key, run)
-    return [{**r, "run": by_range.get((r["diff_from"], r["diff_to"]))} for r in rounds]
+        d = run.dispatch
+        if d.get("diff_from") and d.get("diff_to"):
+            key = (d["diff_from"], d["diff_to"], d.get("mode"), d.get("focus"))
+            by_key.setdefault(key, []).append(run)
+    out = []
+    for r in rounds:
+        key = (r["diff_from"], r["diff_to"], r["mode"], r["focus"])
+        matched = by_key.get(key, [])
+        out.append({**r, "runs": matched, "run": matched[0] if matched else None})
+    return out
 
 
 def _p90(values: list[float]) -> float:
@@ -289,8 +300,9 @@ def summarize(joined: list[dict]) -> dict:
         grouped[key].append(r)
     groups = {}
     for key, items in sorted(grouped.items()):
-        runs = [r["run"] for r in items if r["run"]]
-        costs = [x.cost for x in runs]
+        with_runs = [r["runs"] for r in items if r["runs"]]
+        runs = [x for rs in with_runs for x in rs]
+        costs = [sum(x.cost for x in rs) for rs in with_runs]
         turns = sum(x.turns for x in runs)
         counts = defaultdict(int)
         for r in items:
@@ -303,8 +315,8 @@ def summarize(joined: list[dict]) -> dict:
             "cost_total": sum(costs),
             "cost_median": statistics.median(costs) if costs else 0.0,
             "cost_p90": _p90(costs),
-            "turns_median": statistics.median([x.turns for x in runs]) if runs else 0,
-            "peak_median": statistics.median([x.peak_context for x in runs]) if runs else 0,
+            "turns_median": statistics.median([sum(x.turns for x in rs) for rs in with_runs]) if runs else 0,
+            "peak_median": statistics.median([max(x.peak_context for x in rs) for rs in with_runs]) if runs else 0,
             "calls_per_turn": sum(x.tool_calls for x in runs) / turns if turns else 0.0,
             "major": counts["major"],
             "minor": counts["minor"],

@@ -212,6 +212,53 @@ class UsageReportTests(unittest.TestCase):
         self.assertIsNone(joined[0]["run"])
         self.assertEqual(joined[1]["run"].dispatch["diff_from"], "aaa")
 
+    def _run(self, name, mode, focus, out):
+        prompt = f"MODE: {mode}\n" + (f"FOCUS: {focus}\n" if focus else "")
+        prompt += "DIFF_FROM: same\nDIFF_TO: range\n"
+        ts = "2026-11-02T10:00:00.000Z"
+        write_agent(
+            self.root / "projects" / "proj" / "sess2",
+            name,
+            "branch-review:reviewer",
+            [
+                {"type": "user", "timestamp": ts, "message": {"content": prompt}},
+                assistant("m", out, ts),
+            ],
+        )
+
+    def _round_pair(self):
+        ts = "2026-11-02T10:00:00.000Z"
+        return [
+            {
+                **round_(n, "deep", "opus", "same", "range", ts, focus=f),
+                "shape": "single",
+                "branch": "b",
+                "findings": [],
+            }
+            for n, f in ((1, None), (2, "second-opinion"))
+        ]
+
+    def test_same_range_rounds_get_their_own_run(self):
+        self._run("deep", "deep", None, 1000)
+        self._run("second", "deep", "second-opinion", 2000)
+        runs = [r for r in self.runs() if r.dispatch["diff_from"] == "same"]
+        joined = usage_report.join(runs, self._round_pair())
+        self.assertEqual([len(j["runs"]) for j in joined], [1, 1])
+        self.assertNotEqual(joined[0]["runs"][0].path, joined[1]["runs"][0].path)
+
+    def test_round_sums_all_its_runs(self):
+        self._run("a", "deep", None, 1000)
+        self._run("b", "deep", None, 1000)
+        runs = [r for r in self.runs() if r.dispatch["diff_from"] == "same"]
+        joined = usage_report.join(runs, self._round_pair())
+        self.assertEqual(len(joined[0]["runs"]), 2)
+        self.assertEqual(joined[1]["runs"], [])
+        groups = usage_report.summarize(joined)["groups"]
+        g = groups["deep/-/opus/single/0.14.0"]
+        self.assertAlmostEqual(g["cost_total"], sum(r.cost for r in runs))
+        self.assertAlmostEqual(g["cost_median"], g["cost_total"])
+        self.assertEqual(g["turns_median"], 2)
+
     def test_summarize_groups_and_counts(self):
         out = usage_report.summarize(usage_report.join(self.runs(), self.rounds()))
         self.assertEqual(
