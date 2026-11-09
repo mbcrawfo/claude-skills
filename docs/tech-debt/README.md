@@ -18,7 +18,7 @@ Next id: `TD-0016`
 | [TD-0012](TD-0012-implementation-manager-context-from-transcript.md) | Open | 2026-11-09 | Low | The implementation-manager `context` line parses the transcript's undocumented JSON layout, so a layout change silently stops compact prompts |
 | [TD-0013](TD-0013-implementation-manager-recorded-check-path.md) | Open | 2026-11-09 | Low | The implementation-manager recorded `rs` path goes stale when branch-review updates mid-run, and each event then costs a fallback check |
 | [TD-0014](TD-0014-implementation-manager-compaction-skill-limit.md) | Open | 2026-11-09 | Low | The implementation-manager compaction design relies on the 5,000-token skill re-injection limit documented on 2026-11-09 |
-| [TD-0015](TD-0015-implementation-manager-eval-gaps.md) | Open | 2026-11-09 | Low | implementation-manager evals: a flaky push-gate indicator, background `wait` hangs, a split hold judge, an unscored verdict check and a trace-focus resume grader |
+| [TD-0015](TD-0015-implementation-manager-eval-gaps.md) | Open | 2026-11-09 | Low | implementation-manager evals: `check-ran` fired in 4 of 7 push-gate runs, runs with a background `wait` hang, hold judge split, unscored verdict check, resume grader passes baseline 2 of 3
 
 ## Columns
 
