@@ -179,8 +179,9 @@ def _label(state: dict, name: str) -> str:
     return f"{name} ({title})" if title else name
 
 
-def _needs(run_dir: Path, state: dict) -> list[str]:
-    """What waits on the manager, one line each."""
+def _needs(run_dir: Path, state: dict, holds: list[str] | None = None) -> list[str]:
+    """What waits on the manager, one line each. Each hold line is also added to `holds`, when given: a hold asks
+    nothing of the manager."""
     units = state["units"]
     needs = [
         f"request {entry['unit']} {entry['sha']} {entry['branch']} unanswered since {_clock(entry['at'])}"
@@ -199,7 +200,10 @@ def _needs(run_dir: Path, state: dict) -> list[str]:
             continue
         hold = record["hold"]
         if hold:
-            needs.append(f"hold {_label(state, name)}: {hold['reason']} since {_clock(hold['at'])}")
+            line = f"hold {_label(state, name)}: {hold['reason']} since {_clock(hold['at'])}"
+            needs.append(line)
+            if holds is not None:
+                holds.append(line)
         ready = marks.get("ready_head")
         owner_final = _owner_merges(state, name)
         if (
@@ -370,7 +374,8 @@ def _status(run_dir: Path, state: dict, env: Mapping[str, str] = os.environ) -> 
     lines.append(f"- gated: {', '.join(gated) or 'none'}")
     lines += _item_lines(state)
     lines += _integration_lines(run_dir, state)
-    needs = _needs(run_dir, state)
+    holds: list[str] = []
+    needs = _needs(run_dir, state, holds)
     if needs:
         lines.append("- needs the manager:")
         lines += [f"  - {line}" for line in needs]
@@ -380,7 +385,7 @@ def _status(run_dir: Path, state: dict, env: Mapping[str, str] = os.environ) -> 
     if tokens is not None:
         # Quiet: nothing waits on the manager and every started unit has a worktree to resume from. A hold line
         # asks nothing of the manager (it waits on the owner or the child), so it does not count.
-        actionable = [line for line in needs if not line.startswith("hold ")]
+        actionable = [line for line in needs if line not in holds]
         quiet = not actionable and all(
             r["worktree"] for r in units.values() if r["gate"] != "stopped" and not r["done"]
         )

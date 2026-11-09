@@ -1373,6 +1373,18 @@ class ContextTests(CliTestCase):
         self.assertIn("hold a: answer sent: widget naming", self.ok("status", str(self.dir)))
         self.assertEqual(self.last(), "- context: 400k, compact due")
 
+    def test_unit_named_hold_with_a_ready_pr_is_not_quiet(self):
+        self.init()
+        self.ok("unit", str(self.dir), "hold", "--branch", "feat/hold", "--worktree", str(self.tmp / "wt"))
+        self.ok("open", str(self.dir), "hold")
+        state = self.state()
+        state["marks"]["hold"] = {"ready_head": f"5 {SHA1}", "ready_at": 0, "head": SHA1}
+        state["units"]["hold"]["prs"] = {"5": "OPEN"}
+        (self.dir / "run.json").write_text(json.dumps(state), encoding="utf-8")
+        self.transcript(400_000)
+        self.assertIn("hold PR #5 ready since", self.ok("status", str(self.dir)))
+        self.assertEqual(self.last(), "- context: 400k")
+
     def test_status_has_no_context_line_without_transcript(self):
         self.init()
         self.assertFalse(

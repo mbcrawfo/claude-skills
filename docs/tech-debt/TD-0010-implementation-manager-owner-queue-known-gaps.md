@@ -11,7 +11,7 @@ Code:
 - **`depends` is not deduplicated.** `scripts/items.py:158`: `--depends Q1 Q1` stores the id twice and the header shows it twice. Impact: cosmetic.
 - **Single resume slot.** `scripts/items.py:267` and [`ARCHITECTURE.md:65`](../../plugins/implementation-manager/ARCHITECTURE.md) (documented): a second unpark while a resume item is set displaces the first one back to arrival order. Impact: after two "back to" moves in a row, the first displaced item can come later than the owner expects.
 - **An unreachable resume clear.** `scripts/items.py:271` (`unpark_item`): the item being unparked is never the resume item, since `park_item` clears the resume slot when it parks it. Impact: dead code.
-- **`item drop` and `stop` print no queue state.** [`scripts/run.py:568`](../../plugins/implementation-manager/scripts/run.py) prints nothing and `scripts/run.py:641` prints only `dropped <id>` lines: neither prints the new current item or `forward due` lines, unlike `item done` and `item park`. [`SKILL.md:50`](../../plugins/implementation-manager/skills/implementation-manager/SKILL.md) has the manager run `status` after them. Impact: one extra command per drop; a manager that skips it misses a `forward due`.
+- **`item drop` and `stop` print no queue state.** [`scripts/run.py:568`](../../plugins/implementation-manager/scripts/run.py) prints nothing and `scripts/run.py:641` prints only `dropped <id>` lines: neither prints the new current item or `forward due` lines, unlike `item done` and `item park`. The `item drop` row of [`references/commands.md`](../../plugins/implementation-manager/skills/implementation-manager/references/commands.md) and "Stale items" in [`references/owner-queue.md`](../../plugins/implementation-manager/skills/implementation-manager/references/owner-queue.md) have the manager run `status` after them. Impact: one extra command per drop; a manager that skips it misses a `forward due`.
 - **Duplicated id formatting.** `scripts/run.py:270` (`_item_name`) repeats the `<id> (<ref>)` formatting of `scripts/items.py:31` (`header`). Impact: the two can drift.
 - **`--depends` and `--with` take `nargs="+"`.** `scripts/run.py:426` and `scripts/run.py:436`: a note or other positional placed after them is read as more ids. It is refused at run time (unknown ref or id), not by the parser. Impact: a confusing refusal for a misordered command line.
 - **A unit named `run`.** `scripts/run.py:259` labels run-wide items `run` (`scripts/items.py:22`) in the `status` counts, the same label as a unit named `run`. Impact: the counts merge the two groups for that one unit name.
@@ -22,13 +22,13 @@ Tests:
 - **No true chain in the done/drop parked-parent tests.** `tests/test_items.py:573` and `tests/test_items.py:578`: `park_item` parks a-2 and a-3 both with a-1, so `_release` walks one level only. `tests/test_items.py:496` (`test_unpark_returns_a_chain`) covers a real chain through `_release`. Impact: low; the shared `_release` is covered once.
 - **`setUp()` inside `subTest`.** `tests/test_items.py:591` (`test_closing_the_resume_item_clears_resume`) calls `self.setUp()` for each sub-test, which registers a new temporary folder cleanup each time. Impact: works, but an unusual pattern that a later change to `setUp` can break.
 
-Skill text (`skills/implementation-manager/SKILL.md`):
+Skill text (`skills/implementation-manager/SKILL.md` and its `references/`):
 
-- **Headerless items and `[blocked]` disagree.** `SKILL.md:271` (Splitting: an item with no header blocks unless it says "blocks merge: no") and `SKILL.md:248` (a `[blocked]` message blocks only when it says "blocks merge: yes") give opposite defaults for an unmarked `[blocked]` message. Impact: the manager has to pick one, and two managers can pick differently.
-- **The Showing count needs a `status`.** `SKILL.md:272`: `item add` prints no per-unit counts, so the `<N> more waiting: <unit> ×<n>` line needs a `run.py status` after it. Impact: one extra command per shown item.
-- **`specs` findings and `--blocks`.** `SKILL.md:312` files the `specs` unit's escalated findings as items but leaves `--blocks yes` to the general Splitting rule at `SKILL.md:271`. Impact: an indirect rule the manager can miss.
-- **The deferring red flag says "question".** `SKILL.md:354` still says to give outside findings to the owner "as a question", not as an item. Impact: wording only; the owner-queue rules still file it as an item.
-- **The tracker's `Parked:` template differs from the CLI.** `SKILL.md:331` (`<id> (<summary>), <note>, since <HH:MM>`) differs from `status`'s `- parked:` line at `scripts/run.py:265` (`<id> (<ref>) <summary>, <note>, since <HH:MM>`). Impact: the manager reformats the line, or shows it in a slightly different shape.
+- **Headerless items and `[blocked]` disagree.** "Splitting" in `references/owner-queue.md` (an item with no header blocks unless it says "blocks merge: no") and the child-message row of `references/events.md` (a `[blocked]` message blocks only when it says "blocks merge: yes") give opposite defaults for an unmarked `[blocked]` message. Impact: the manager has to pick one, and two managers can pick differently.
+- **The Showing count needs a `status`.** "Showing" in `references/owner-queue.md`: `item add` prints no per-unit counts, so the `<N> more waiting: <unit> ×<n>` line needs a `run.py status` after it. Impact: one extra command per shown item.
+- **`specs` findings and `--blocks`.** "The `specs` unit" in `references/finishing.md` files the `specs` unit's escalated findings as items but leaves `--blocks yes` to the general Splitting rule in `references/owner-queue.md`. Impact: an indirect rule the manager can miss.
+- **The deferring red flag says "question".** The red flag in `SKILL.md` ("Red flags: pushes and merges") still says to give outside findings to the owner "as a question", not as an item. Impact: wording only; the owner-queue rules still file it as an item.
+- **The tracker's `Parked:` template differs from the CLI.** The tracker in `references/finishing.md` (`<id> (<summary>), <note>, since <HH:MM>`) differs from `status`'s `- parked:` line at `scripts/run.py:265` (`<id> (<ref>) <summary>, <note>, since <HH:MM>`). Impact: the manager reformats the line, or shows it in a slightly different shape.
 
 Eval (`evals/owner-queue/`):
 
@@ -55,4 +55,4 @@ Low overall. None of these makes an item reach the wrong child, merges a PR earl
 
 ## Trigger
 
-The next change to `items.py`, the owner-queue rules in `SKILL.md` or the `owner-queue` eval, or a release of implementation-manager.
+The next change to `items.py`, the owner-queue rules in `references/owner-queue.md` or the `owner-queue` eval, or a release of implementation-manager.

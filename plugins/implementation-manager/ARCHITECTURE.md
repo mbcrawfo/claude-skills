@@ -165,7 +165,7 @@ The verdict comes from branch-review's `rs` script, which `run.py check-cmd <run
 
 ## Measuring token use
 
-The cost of a run is measured from the manager's transcript. Sum the `usage` fields of its assistant messages, per unit, as weighted input-token equivalents: cache reads at 0.1, cache writes at 1.25, uncached input at 1 and output at 5. Compare runs of the same plan before and after a change.
+The cost of a run is measured from the manager's transcript. Sum the `usage` fields of its assistant messages, counting each API response once (Claude Code writes one transcript line per content block, each repeating the response's `usage`, so take one line per `message.id`), per unit, as weighted input-token equivalents: cache reads at 0.1, cache writes at 1.25, uncached input at 1 and output at 5. Compare runs of the same plan before and after a change.
 
 ## Tests
 
