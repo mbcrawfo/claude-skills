@@ -5,6 +5,7 @@
 Task 5 of the token-efficiency work found these problems in the evals and did not fix them:
 
 - `push-gate`: the `check-ran` indicator fired in 4 of 7 runs with the plugin. No failing trace was kept. No run answered a push without a coverage check, because the grader's expected `redo` reason comes only from `rs covered`. Either the manager sometimes checks by a route other than the `branch-review:check` skill after `verdict ... unavailable: no check command recorded`, or it invokes the skill without `--state-dir` in the Skill args and the strict grader regex misses it.
+- `push-gate`: its prompt says `run.py wait` without `--full`, so it covers the no-check fallback only when the agent adds `--full` itself, which the skill tells it to do.
 - Eval runs that leave a background `run.py wait` running hang until about 580 to 720 s, or until the 1200 s timeout.
 - `push-queue`: the haiku judge in `graders/hold.md` still splits its votes (FAIL, PASS, PASS) on correct state.
 - `push-queue`: `graders/verdict-used.md` only counts zero `branch-review:check` Skill calls, and it is unscored. It does not prove that the manager used the printed verdict line.

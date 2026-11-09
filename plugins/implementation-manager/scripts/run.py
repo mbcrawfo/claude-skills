@@ -308,6 +308,17 @@ def _item_name(item: dict) -> str:
     return item["id"] + (f" ({item['ref']})" if item["ref"] else "")
 
 
+def _reset_compact_ask(run_dir: Path, env: Mapping[str, str] = os.environ) -> None:
+    """Clear `compact_asked` once the context has dropped COMPACT_EVERY or more below it: the owner compacted."""
+    tokens = context.current_tokens(env)
+    asked = load(run_dir)["compact_asked"]
+    if tokens is None or asked is None or tokens > asked - context.COMPACT_EVERY:
+        return
+    with locked(run_dir) as state:
+        if state["compact_asked"] is not None and tokens <= state["compact_asked"] - context.COMPACT_EVERY:
+            state["compact_asked"] = None
+
+
 def _status(run_dir: Path, state: dict, env: Mapping[str, str] = os.environ) -> str:
     units = state["units"]
     order = _units_in_order(state)
@@ -360,8 +371,8 @@ def _status(run_dir: Path, state: dict, env: Mapping[str, str] = os.environ) -> 
         lines.append("- needs the manager: nothing")
     tokens = context.current_tokens(env)
     if tokens is not None:
-        # Quiet: nothing waits on the manager and every running unit has a worktree to resume from.
-        quiet = not needs and all(r["worktree"] for r in units.values() if r["gate"] == "open" and not r["done"])
+        # Quiet: nothing waits on the manager and every started unit has a worktree to resume from.
+        quiet = not needs and all(r["worktree"] for r in units.values() if r["gate"] != "stopped" and not r["done"])
         due = context.compact_due(tokens, state["compact_asked"], quiet)
         lines.append(f"- context: {round(tokens / 1000)}k" + (", compact due" if due else ""))
     return "\n".join(lines)
@@ -536,6 +547,7 @@ def _full_lines(run_dir: Path, line: str) -> list[str]:
     """What `wait --full` adds under the event line; it never raises."""
     out: list[str] = []
     try:
+        _reset_compact_ask(run_dir)
         state = load(run_dir)
         target = coverage.event_target(line)
         if target:
@@ -673,6 +685,7 @@ def _run(args: argparse.Namespace) -> str | None:
         )
         return None
     if command == "status":
+        _reset_compact_ask(run_dir)
         return _status(run_dir, load(run_dir))
     if command == "item":
         return _item(args, now)

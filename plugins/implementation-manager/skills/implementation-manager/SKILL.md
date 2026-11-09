@@ -42,7 +42,7 @@ The rest of these instructions are reference files in `${CLAUDE_SKILL_DIR}/refer
 
 ## After a compaction
 
-A turn that finds the conversation compacted (a compaction summary), or that has no memory of the run's details, first reads `<run>/notes.md`, its `## Decisions` section included, and runs `run.py status <run>`, before acting. Then it reads the reference file for what it is about to do. Never re-run Setup and never start sessions again: every child already has one.
+A turn that finds the conversation compacted (a compaction summary), or that has no memory of the run's details, first reads `<run>/notes.md`, its `## Decisions` section included, and runs `run.py status <run>`, before acting. Then it reads the reference file for what it is about to do. Never re-run Setup and never start sessions again: every child already has one. A `wait` started before the compaction is still running and its output will wake you; start another only if none is running.
 
 ## The wake loop
 
@@ -53,11 +53,11 @@ Every turn: handle what woke you, then make sure exactly one `run.py wait <run> 
 The `verdict` line is `verdict <sha> {…}`, branch-review's `rs covered` JSON (`covered`, `reasons`, `branch`, …), or `verdict <sha> unavailable: <reason>`. A JSON verdict for the event's own sha is the check, in place of invoking `branch-review:check`:
 - For a push request (`REQUEST`, `PENDING`, `NEXT`), it is step 3 of "Answering a push request" (references/events.md), whose other steps still apply in order: covered gets `go` (or `queue`), not covered gets `redo` with its `reasons`.
 - For `READY` or `REMIND`, it satisfies the merge bar's check only when its sha is the event's head sha.
-- `unavailable`, or a verdict for any other sha: invoke `branch-review:check --repo <worktree> --commit <sha>` as before. If the reason is `rs not found: <path>`, branch-review was updated: re-record its paths with `run.py check-cmd <run> --rs <rs path> --state-dir <state folder>`, from the paths the loaded check skill shows.
+- `unavailable`, or a verdict for any other sha: invoke `branch-review:check --repo <worktree> --commit <sha>`. If the reason is `rs not found: <path>` (branch-review was updated) or `no check command recorded` (a run begun before 0.10.0): re-record its paths with `run.py check-cmd <run> --rs <rs path> --state-dir <state folder>`, from the paths the loaded check skill shows.
 
 ## Asking the owner to compact
 
-When the last line of `status` (the block `wait --full` printed, or `run.py status <run>`) ends `, compact due` and a `wait` is running, run `run.py compact-asked <run>` and end the reply with this line, exact, with `<run>` written out:
+When the last line of `status` (the block `wait --full` printed, or `run.py status <run>`) ends `, compact due` and a `wait` is running, run `run.py compact-asked <run>` and make this line, exact, with `<run>` written out, the last of the reply, after any item or tracker the reply ends with:
 
 `/compact Resume as the implementation manager for <run>: read notes.md, then run.py status, before acting.`
 
@@ -80,7 +80,7 @@ An owner decision that is not an item answer (a WIP change, a scope ruling, a "d
 | "I'll append the go to `pushes.log` myself" or "I'll message the go" | `run.py go`; it keeps the slot and the queue. Never a message. |
 | "The holder is waiting on the owner; it keeps the slot" | A blocking question or an escalation: `run.py hold`, which frees the slot. It asks again once you forward the answer. |
 | "I'll hold this PR until the owner answers" | `run.py hold`, never memory. Only `hold` stops the watcher reporting it `READY`. |
-| "I forwarded the answer, so the hold can go" | `release`, then `hold <unit> answer sent: <topic>`. The old head stays unmergeable until the child asks again. |
+| "I forwarded the answer, so the hold can go" | `release`, then `run.py hold <run> <unit> answer sent: <topic>`. The old head stays unmergeable until the child asks again. |
 | "Auto-fix woke the child; it can push the fix" | It asks first, every time. |
 | "The final PR is ready; merge it" | Only when the owner chose `manager`. `FINAL-READY` is never merged: the owner merges it. |
 

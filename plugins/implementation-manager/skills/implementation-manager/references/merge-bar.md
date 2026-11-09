@@ -1,5 +1,7 @@
 # The merge bar
 
+Before merging, run one fresh `run.py status <run>` and apply the request, slot, hold, stopped, `--after`, push and integration checks below to it: the `wait --full` status may be up to two minutes old.
+
 All of:
 - `READY` or `REMIND` for that PR and head, or `run.py check <run> <unit>` printing `READY <pr> <sha>`;
 - covered on that head: the `verdict` line `wait --full` printed with a `READY` or `REMIND` event counts only when it is a JSON verdict for the same sha as that event's head sha (SKILL.md, the verdict rule); otherwise `branch-review:check --repo <worktree> --commit <sha>` covered, `<worktree>` the unit's worktree;

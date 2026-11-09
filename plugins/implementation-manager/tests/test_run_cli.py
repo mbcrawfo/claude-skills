@@ -1343,6 +1343,32 @@ class ContextTests(CliTestCase):
         self.transcript(310_000)
         self.assertEqual(self.last(), "- context: 310k")
 
+    def test_not_due_for_a_gated_unit_without_worktree(self):
+        self.init()
+        self.ok("unit", str(self.dir), "a", "--worktree", str(self.tmp / "wta"))
+        self.ok("open", str(self.dir), "a")
+        self.ok("unit", str(self.dir), "b", "--prereq", "a")
+        self.transcript(310_000)
+        self.assertEqual(self.last(), "- context: 310k")
+
+    def test_compaction_resets_the_ask(self):
+        self.init()
+        self.transcript(310_000)
+        self.ok("compact-asked", str(self.dir))
+        self.transcript(40_000)
+        self.ok("status", str(self.dir))
+        self.assertIsNone(self.state()["compact_asked"])
+        self.transcript(305_000)
+        self.assertEqual(self.last(), "- context: 305k, compact due")
+
+    def test_small_drop_keeps_the_ask(self):
+        self.init()
+        self.transcript(310_000)
+        self.ok("compact-asked", str(self.dir))
+        self.transcript(200_000)
+        self.ok("status", str(self.dir))
+        self.assertEqual(self.state()["compact_asked"], 310_000)
+
     def test_compact_asked_records_and_suppresses(self):
         self.init()
         self.transcript(310_000)
@@ -1471,14 +1497,15 @@ class BriefCliTests(CliTestCase):
         self.assertIn("unknown unit", result.stderr)
 
     def test_set_manager_validates_id(self):
-        for bad in ("abc", "local_", "local_XYZ", "local_abc def", "session_abc"):
+        for bad in ("", "local abc", "a/b", "local_abc def"):
             with self.subTest(bad=bad):
                 result = self.run_cli("set", str(self.dir), "manager", bad)
                 self.assertEqual(result.returncode, 1)
                 self.assertIn("manager", result.stderr)
         self.assertIsNone(self.state()["manager"])
-        self.ok("set", str(self.dir), "manager", "local_0a1b-2c3d")
-        self.assertEqual(self.state()["manager"], "local_0a1b-2c3d")
+        for good in ("local_0a1b-2c3d", "session_Abc9"):
+            self.ok("set", str(self.dir), "manager", good)
+            self.assertEqual(self.state()["manager"], good)
 
     def test_brief_card_writes_file_and_leaves_run_json_units_unchanged(self):
         self.ok("set", str(self.dir), "manager", "local_abc")

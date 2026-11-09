@@ -29,7 +29,7 @@ SYNCING_MARK = "syncing"
 UNIT_RE = r"[A-Za-z0-9][A-Za-z0-9_-]*"
 SHA_RE = r"[0-9a-f]{40}"
 # The manager's own session id, as `get_session "self"` gives it; children send it their questions.
-MANAGER_RE = r"local_[0-9a-f-]+"
+MANAGER_RE = r"[A-Za-z0-9_-]+"
 
 METHODS = ("merge", "squash", "rebase")
 QUEUE_MODES = ("serial", "parallel")
@@ -411,7 +411,7 @@ def set_option(state: dict, key: str, value: str) -> None:
         state["queue_mode"] = value
     elif key == "manager":
         if not re.fullmatch(MANAGER_RE, value):
-            raise RunError(f"manager must be a session id like local_<hex digits and '-'>, got {value!r}")
+            raise RunError(f"manager must be a session id of letters, digits, '_' and '-', got {value!r}")
         state["manager"] = value
     elif key in ("final-merge", "feature-review"):
         block = _block(state)
