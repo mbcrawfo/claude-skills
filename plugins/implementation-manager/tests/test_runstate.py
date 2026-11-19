@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import errno
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
-import helpers  # noqa: F401  (puts the scripts dir on sys.path)
+import helpers  # puts the scripts dir on sys.path
+import runstate
 from runstate import (
     RunError,
     add_unit,
@@ -190,6 +194,18 @@ class LockedTests(RunStateTestCase):
         child.stdout.close()
         self.assertEqual(child.wait(), 0)
         self.assertGreater(waited, 10)
+
+    @unittest.skipUnless(os.name == "nt", "msvcrt locking exists only on Windows")
+    def test_lock_retries_only_while_another_process_holds_it(self):
+        held = OSError(errno.EDEADLOCK, "Resource deadlock avoided")
+        with tempfile.TemporaryFile() as f:
+            with mock.patch.object(runstate.msvcrt, "locking", side_effect=[held, held, None]) as locking:
+                runstate._lock(f)
+            self.assertEqual(locking.call_count, 3)
+            refused = OSError(errno.EACCES, "Permission denied")
+            with mock.patch.object(runstate.msvcrt, "locking", side_effect=[refused]):
+                with self.assertRaises(OSError):
+                    runstate._lock(f)
 
     def test_answers_are_logged_with_lf_line_endings(self):
         self.init()

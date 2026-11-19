@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+import errno
 import json
 import os
 from pathlib import Path
@@ -194,15 +195,17 @@ def _lock(f: IO) -> None:
     if os.name != "nt":
         fcntl.flock(f, fcntl.LOCK_EX)
         return
-    # msvcrt locks a byte range from the file position. LK_LOCK retries for about 10 s and then raises, so
-    # retry until the lock is free: a wait must outlast any other holder, as flock's does.
+    # msvcrt locks a byte range from the file position. LK_LOCK retries for about 10 s and then raises
+    # EDEADLOCK while another process holds the lock, so retry that until the lock is free: a wait must outlast
+    # any other holder, as flock's does. Any other error is not contention and is raised.
     f.seek(0)
     while True:
         try:
             msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
             return
-        except OSError:
-            continue
+        except OSError as exc:
+            if exc.errno != errno.EDEADLOCK:
+                raise
 
 
 def _unlock(f: IO) -> None:
