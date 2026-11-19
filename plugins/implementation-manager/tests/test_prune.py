@@ -11,6 +11,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 import helpers
 import prune
@@ -22,7 +23,13 @@ RUN_PY = helpers.SCRIPTS_DIR / "run.py"
 def age(path: Path, days: float, now: float) -> None:
     """Set the mtime of `path` (not a symlink's target) to `days` before `now`."""
     when = now - days * DAY
-    os.utime(path, (when, when), follow_symlinks=False)
+    if os.utime in os.supports_follow_symlinks:
+        os.utime(path, (when, when), follow_symlinks=False)
+    elif path.is_symlink():
+        # Windows: utime would follow the link and age its target instead.
+        raise AssertionError(f"cannot set a symlink's own mtime on this platform: {path}")
+    else:
+        os.utime(path, (when, when))
 
 
 class PruneRunsTest(unittest.TestCase):
@@ -89,28 +96,39 @@ class PruneRunsTest(unittest.TestCase):
                 prune.prune_runs(keep, 30, self.now)
         self.assertTrue(old.exists())
 
+    @helpers.requires_symlinks
     def test_prune_skips_symlinked_run(self):
         elsewhere = self.tmp / "elsewhere"
         elsewhere.mkdir()
         (elsewhere / "run.json").write_text("{}", encoding="utf-8")
         age(elsewhere / "run.json", 90, self.now)
         link = self.repo_dir / "linked"
-        link.symlink_to(elsewhere)
-        age(link, 90, self.now)
+        link.symlink_to(elsewhere)  # skipped whatever its age
         result = self.prune()
         self.assertEqual(result, {"removed": [], "skipped": [str(link)], "errors": []})
         self.assertTrue((elsewhere / "run.json").exists())
 
+    @helpers.requires_symlinks
     def test_prune_age_ignores_symlink_targets(self):
+        # Windows cannot set a symlink's own mtime, so move the clock on instead: at `later` the run and the
+        # link are 40 days old, and only the link's target is fresh.
+        later = self.now + 40 * DAY
         fresh = self.tmp / "fresh.txt"
         fresh.write_text("new", encoding="utf-8")
-        run = self.make_run("old", 40)
-        link = run / "pointer"
-        link.symlink_to(fresh)
-        age(link, 40, self.now)
-        age(run, 40, self.now)
-        self.assertEqual(self.prune()["removed"], [str(run)])
+        run = self.make_run("old", 0)
+        (run / "pointer").symlink_to(fresh)
+        age(run, 0, self.now)  # adding the link touched the folder
+        os.utime(fresh, (later, later))
+        self.assertEqual(prune.prune_runs(self.keep, 30, later)["removed"], [str(run)])
         self.assertTrue(fresh.exists())
+
+    @helpers.requires_symlinks
+    def test_age_refuses_a_symlink_where_its_mtime_cannot_be_set(self):
+        link = self.tmp / "link"
+        link.symlink_to(self.tmp)
+        with mock.patch.object(os, "supports_follow_symlinks", set()):
+            with self.assertRaises(AssertionError):
+                age(link, 1, self.now)
 
     def test_prune_skips_non_run_folder(self):
         other = self.repo_dir / "notes"
@@ -121,6 +139,8 @@ class PruneRunsTest(unittest.TestCase):
         self.assertTrue(other.exists())
 
     def unreadable(self, path: Path) -> None:
+        if os.name == "nt":
+            self.skipTest("Windows ignores POSIX permissions")
         if os.geteuid() == 0:
             self.skipTest("root ignores file permissions")
         path.chmod(0)
@@ -159,7 +179,9 @@ class PruneCliTest(unittest.TestCase):
         self.repo_dir.mkdir()
 
     def run_cli(self, *args):
-        return subprocess.run([sys.executable, str(RUN_PY), *args], capture_output=True, text=True, timeout=60)
+        return subprocess.run(
+            [sys.executable, str(RUN_PY), *args], capture_output=True, text=True, encoding="utf-8", timeout=60
+        )
 
     def test_cli_prune(self):
         old = self.repo_dir / "old"
@@ -182,6 +204,7 @@ class PruneCliTest(unittest.TestCase):
             [sys.executable, str(RUN_PY), "prune", "new-run", "--days", "30"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=60,
             cwd=self.repo_dir,
         )
@@ -190,6 +213,8 @@ class PruneCliTest(unittest.TestCase):
         self.assertTrue(old.exists())
 
     def unreadable(self, path: Path) -> None:
+        if os.name == "nt":
+            self.skipTest("Windows ignores POSIX permissions")
         if os.geteuid() == 0:
             self.skipTest("root ignores file permissions")
         path.chmod(0)

@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from helpers import git, make_repo, run, sandbox_cwd
+from helpers import git, make_repo, requires_symlinks, run, sandbox_cwd
 import review_state
 from test_ledger import finding, output, report
 
@@ -380,6 +380,7 @@ class CleanupTest(unittest.TestCase):
         self.assertEqual(result["removed"], [str(branch_like)])
         self.assertTrue(sha_like.exists())
 
+    @requires_symlinks
     def test_symlinked_repo_key_dir_is_skipped(self):
         outside = self.tmp / "outside-repo-dir"
         for name, branch in (("feature__gone", "feature/gone"), ("feature__x", "feature/x")):
@@ -443,6 +444,7 @@ class CleanupTest(unittest.TestCase):
         self.assertEqual(self.cli("prune")["errors"], [])
         self.assertEqual(self.cli("cleanup", "--scope", "repo")["errors"], [])
 
+    @requires_symlinks
     def test_symlinked_children_are_skipped_not_followed(self):
         self.begin()
         outside = self.tmp / "outside"

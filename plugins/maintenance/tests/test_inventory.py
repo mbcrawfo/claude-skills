@@ -1,8 +1,12 @@
+import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 
-from helpers import PLANS, RESEARCH, SPECS, by_path, docs_inventory, make_repo, run, write
+from helpers import PLANS, RESEARCH, SCRIPTS_DIR, SPECS, by_path, docs_inventory, make_repo, run, write
 
 SPEC_A = f"{SPECS}/2026-10-22-a-design.md"
 
@@ -15,6 +19,21 @@ class InventoryFilesTest(unittest.TestCase):
 
     def inventory(self, *extra):
         return run("inventory", "--repo", str(self.repo), *extra)
+
+    def test_non_cp1252_path_prints_utf8(self):
+        # Windows pipes stdout in cp1252 unless the script says otherwise; cp1252 has no CJK.
+        name = f"{SPECS}/2026-01-01-\u65e5\u672c-design.md"
+        write(self.repo, name, "# Spec\n")
+        env = {k: v for k, v in os.environ.items() if k not in ("PYTHONIOENCODING", "PYTHONUTF8")}
+        result = subprocess.run(
+            [sys.executable, str(SCRIPTS_DIR / "docs_inventory.py"), "inventory", "--repo", str(self.repo)],
+            capture_output=True,
+            env=env,
+            timeout=60,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr.decode("utf-8", "replace"))
+        self.assertIn(name, result.stdout.decode("utf-8"))
+        json.loads(result.stdout.decode("utf-8"))
 
     def test_pairs_plan_with_spec_from_header(self):
         write(self.repo, SPEC_A, "# A design\n")

@@ -23,9 +23,15 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 DEFAULT_STATE_DIR = "~/.claude/plugins/data/branch-review"
 STATE_FILE = "review.json"
+# Windows refuses to replace or open a file while another process is opening or replacing it, which POSIX allows.
+# A state write or read that meets that retries for up to SHARING_TRIES x SHARING_DELAY (2 s) before it gives up.
+_RETRY_SHARING = os.name == "nt"
+SHARING_TRIES = 40
+SHARING_DELAY = 0.05
 OPEN_STATUSES = ("open", "fixed", "still-open")
 MAX_FILES = 150
 MAX_LINES = 10000
@@ -81,6 +87,7 @@ def _git(repo: Path, *args: str, env: dict | None = None) -> str:
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     return result.stdout.strip()
 
@@ -160,13 +167,29 @@ def _locate_keys(state_dir: Path, repo: Path) -> tuple[str, str, Path]:
     return rkey, branch, Path(state_dir) / rkey / bkey
 
 
+def _sharing_retry(action):
+    """Run `action`, retrying a PermissionError on Windows while another process holds the file."""
+    for attempt in range(SHARING_TRIES):
+        try:
+            return action()
+        except PermissionError:
+            if not _RETRY_SHARING or attempt == SHARING_TRIES - 1:
+                raise
+            time.sleep(SHARING_DELAY)
+    raise AssertionError("unreachable")
+
+
+def _read_json(path: Path):
+    with open(path, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
 def load_state(dir: Path) -> dict | None:
     path = Path(dir) / STATE_FILE
     if not path.exists():
         return None
     try:
-        with open(path, encoding="utf-8") as fh:
-            state = json.load(fh)
+        state = _sharing_retry(lambda: _read_json(path))
     except ValueError as exc:  # JSONDecodeError and UnicodeDecodeError
         raise StateError(f"corrupt state file {path}: {exc}") from exc
     if not isinstance(state, dict):
@@ -200,7 +223,7 @@ def save_state(dir: Path, state: dict) -> None:
     dir.mkdir(parents=True, exist_ok=True)
     path = dir / STATE_FILE
     with tempfile.NamedTemporaryFile(
-        "w", encoding="utf-8", dir=str(dir), prefix=f".{STATE_FILE}.", suffix=".tmp", delete=False
+        "w", encoding="utf-8", newline="", dir=str(dir), prefix=f".{STATE_FILE}.", suffix=".tmp", delete=False
     ) as fh:
         tmp = fh.name
         try:
@@ -211,7 +234,7 @@ def save_state(dir: Path, state: dict) -> None:
             os.unlink(tmp)
             raise
     try:
-        os.replace(tmp, str(path))
+        _sharing_retry(lambda: os.replace(tmp, str(path)))
     except BaseException:
         os.unlink(tmp)
         raise
@@ -254,6 +277,7 @@ def make_snapshot(repo: Path) -> tuple[str, bool]:
                 check=True,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
             )
             return result.stdout.strip()
 
@@ -1955,10 +1979,16 @@ def _write_summary(directory: Path, state: dict) -> None:
     if not rounds or "added" not in rounds[-1]:
         return
     try:
-        (directory / "summary.md").write_text(render_summary(state), encoding="utf-8")
-        (directory / "review-notes.md").write_text(render_review_notes(state), encoding="utf-8")
+        _write_text(directory / "summary.md", render_summary(state))
+        _write_text(directory / "review-notes.md", render_review_notes(state))
     except OSError:
         pass
+
+
+def _write_text(path: Path, text: str) -> None:
+    """Write `text` as UTF-8 with LF line endings on every platform."""
+    with open(path, "w", encoding="utf-8", newline="") as fh:
+        fh.write(text)
 
 
 def cmd_summary(args: argparse.Namespace) -> dict:
@@ -1968,8 +1998,8 @@ def cmd_summary(args: argparse.Namespace) -> dict:
     notes = render_review_notes(state)
     path = directory / "summary.md"
     notes_path = directory / "review-notes.md"
-    path.write_text(text, encoding="utf-8")
-    notes_path.write_text(notes, encoding="utf-8")
+    _write_text(path, text)
+    _write_text(notes_path, notes)
     return {"path": str(path), "text": text, "review_notes": notes, "review_notes_path": str(notes_path)}
 
 
@@ -2061,6 +2091,7 @@ def _ref_exists(repo: Path, ref: str) -> bool:
         cwd=str(repo),
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     if result.returncode in (0, 1):
         return result.returncode == 0
@@ -2500,4 +2531,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    # A piped stdout is in the locale's code page on Windows (cp1252); paths and notes need UTF-8.
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
     sys.exit(main())

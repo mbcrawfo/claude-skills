@@ -162,7 +162,8 @@ def add_item(
     items["seq"] += 1
     item_id = f"{prefix}-{items['counters'][prefix]}"
     (run_dir / ITEMS_DIR).mkdir(parents=True, exist_ok=True)
-    (run_dir / ITEMS_DIR / f"{item_id}.md").write_text(body, encoding="utf-8")
+    with open(run_dir / ITEMS_DIR / f"{item_id}.md", "w", encoding="utf-8", newline="") as f:
+        f.write(body)
     record = {
         "id": item_id,
         "unit": unit,
@@ -325,7 +326,8 @@ def done_item(run_dir: Path, state: dict, item_id: str, answer: str | None) -> s
     items = state["items"]
     if answer is not None:
         (run_dir / ITEMS_DIR).mkdir(parents=True, exist_ok=True)
-        (run_dir / ITEMS_DIR / f"{item_id}.answer.md").write_text(answer, encoding="utf-8")
+        with open(run_dir / ITEMS_DIR / f"{item_id}.answer.md", "w", encoding="utf-8", newline="") as f:
+            f.write(answer)
     item["status"] = "forwarded" if item["kind"] == "decision" else "answered"
     if items["current"] == item_id:
         items["current"] = None

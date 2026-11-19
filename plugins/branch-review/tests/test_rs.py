@@ -24,6 +24,7 @@ def run_rs(shell, *argv, cwd, plugin_data=None):
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
 
 

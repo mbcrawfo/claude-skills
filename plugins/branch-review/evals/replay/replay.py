@@ -286,7 +286,7 @@ class Runner:
         self.plugin = plugin
 
     def _run(self, cmd: list[str], cwd: str | Path | None = None, stdin: str | None = None) -> str:
-        done = subprocess.run(cmd, cwd=cwd, input=stdin, capture_output=True, text=True)
+        done = subprocess.run(cmd, cwd=cwd, input=stdin, capture_output=True, text=True, encoding="utf-8")
         if done.returncode != 0:
             raise RuntimeError(f"{cmd[0]} failed: {(done.stderr or done.stdout).strip()[:300]}")
         return done.stdout
@@ -298,7 +298,8 @@ class Runner:
         self._run(["git", "worktree", "remove", "--force", str(path)], cwd=repo)
 
     def rs(self, args: list[str]) -> dict:
-        return json.loads(self._run([str(self.plugin / "scripts" / "rs"), *args]))
+        # Through sh: Windows cannot execute a shell script directly.
+        return json.loads(self._run(["sh", str(self.plugin / "scripts" / "rs"), *args]))
 
     def line_count(self, cwd: Path, rev: str, file: str) -> int | None:
         done = subprocess.run(["git", "show", f"{rev}:{file}"], cwd=cwd, capture_output=True)
@@ -316,7 +317,7 @@ class Runner:
             f"{budget:.2f}",
         ]
         # A run that hits its budget exits nonzero; its stream is still the record.
-        done = subprocess.run(cmd, cwd=cwd, input=prompt, capture_output=True, text=True)
+        done = subprocess.run(cmd, cwd=cwd, input=prompt, capture_output=True, text=True, encoding="utf-8")
         return done.stdout
 
     def reviewer(self, prompt: str, cwd: Path, budget: float) -> str:
@@ -487,7 +488,7 @@ def _replay_in_tree(entry: dict, plugin: Path, work: Path, tree: Path, budget: f
             "CHECKLIST_PATH": str(skill / "reviewer-checklist.md"),
             "SCHEMA_PATH": str(skill / SCHEMA_NAME),
             "CHECK_COMMAND": (
-                f"\"{rs_path}\" check-report --state-dir '{state_dir}' --repo '{tree}' --file '{report}'"
+                f"\"{rs_path.as_posix()}\" check-report --state-dir '{state_dir}' --repo '{tree}' --file '{report}'"
             ),
             "CHANGED_FILES": entry.get("changed_files") or [],
             "INTENT": entry.get("intent") or "",

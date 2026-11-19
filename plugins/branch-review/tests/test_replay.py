@@ -4,6 +4,7 @@ import contextlib
 from datetime import date
 import io
 import json
+import os
 from pathlib import Path
 import re
 import shlex
@@ -92,7 +93,7 @@ class PickTest(unittest.TestCase):
         self.assertEqual(e["round"], 1)
         self.assertEqual(e["second_opinion_round"], 2)
         self.assertAlmostEqual(e["old_cost"], 3.5)
-        self.assertEqual(e["old_transcript"], "/t/agent-1.jsonl")
+        self.assertEqual(e["old_transcript"], str(Path("/t/agent-1.jsonl")))
         self.assertEqual(e["repo"], "/r")
         self.assertEqual((e["diff_from"], e["diff_to"], e["base_ref"]), ("aaa", "bbb", "main"))
         json.dumps(picked)
@@ -360,7 +361,8 @@ class ContextCheckTest(unittest.TestCase):
     def test_check_context(self):
         self.assertIsNone(self.check(init_event()))
         self.assertIn("unexpected tools", self.check(init_event(tools=("Read", "mcp__srv__t"))))
-        self.assertIn("not /plugin", self.check(init_event(plugin="/installed/x")))
+        want = os.path.realpath(Path("/plugin"))  # D:\plugin on Windows
+        self.assertIn(f"not {want}", self.check(init_event(plugin="/installed/x")))
         self.assertIn("MCP", self.check(init_event(mcp=("srv",))))
         self.assertIn("reviewer agent not loaded", self.check(init_event(agents=("Explore",))))
         self.assertIn("no init", replay.check_context("", Path("/plugin")))
@@ -601,7 +603,7 @@ class RunTest(unittest.TestCase):
         self.out = self.tmp / "my out"
         runner = FakeRunner()
         self.go(runner)
-        line = re.search(r"^\"?/plugin.*check-report.*$", runner.prompt, re.M).group(0)
+        line = re.search(r"^\"[^\"]*/scripts/rs\" check-report.*$", runner.prompt, re.M).group(0)
         parts = shlex.split(line)
         self.assertEqual(parts[parts.index("--state-dir") + 1], str(self.out / "2" / "state"))
 

@@ -727,7 +727,8 @@ def _run(args: argparse.Namespace) -> str | None:
         path = run_dir.absolute() / "briefs" / f"{args.unit}.md"
         path.parent.mkdir(exist_ok=True)
         partial = path.with_name(f".{path.name}.tmp")
-        partial.write_text(text, encoding="utf-8")
+        with open(partial, "w", encoding="utf-8", newline="") as f:
+            f.write(text)
         os.replace(partial, path)  # a child never reads a half-written brief
         return str(path)
     if command == "check":
@@ -844,4 +845,7 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    # A piped stdout is in the locale's code page on Windows (cp1252); titles and paths need UTF-8.
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
     sys.exit(main(sys.argv[1:]))

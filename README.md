@@ -17,6 +17,10 @@ Run `/plugin` to see the available plugins. To get updates, run `/plugin marketp
 
 The plugins run Python scripts. You must have `python3` 3.9 or later. The scripts use only the standard library, so you do not install other packages.
 
+On Windows, the plugins need Git Bash as the shell for Claude Code. The `python3` command must be on the Git Bash `PATH`. The Microsoft Store Python supplies `python3`. Some other Python installs supply only `python` and `py`. To check, run `command -v python3` in Git Bash.
+
+pyenv-win also supplies `python3`, but its shim sends each argument through `cmd.exe`. Then an argument with `&`, `|`, `<`, `>`, `^`, `(` or `)` breaks, for example a branch name. If you use pyenv-win, put the version folder before the pyenv-win shims folder on the Git Bash `PATH`. The version folder is `~/.pyenv/pyenv-win/versions/<version>`, and it holds a real `python3.exe`.
+
 ## Available plugins
 
 ### [`branch-review`](plugins/branch-review/README.md)

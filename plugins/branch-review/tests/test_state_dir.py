@@ -68,7 +68,8 @@ class StateDirTest(unittest.TestCase):
     def test_root_and_home_state_dirs_are_rejected(self):
         with sandbox_cwd(), tempfile.TemporaryDirectory(prefix="br-home-") as home:
             home = str(Path(home).resolve())
-            with mock.patch.dict(os.environ, {"HOME": home}):
+            # Path.home() reads USERPROFILE on Windows and HOME elsewhere.
+            with mock.patch.dict(os.environ, {"HOME": home, "USERPROFILE": home}):
                 for value in ("/", "/..", "//", "~", "~/", home, home + "/", home + "/sub/.."):
                     # cleanup only against the fake home: a regression must never
                     # run it on the real filesystem root.

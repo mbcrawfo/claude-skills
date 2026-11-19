@@ -137,6 +137,17 @@ class GeneratedFilesTest(LedgerHarness, unittest.TestCase):
         self.assertEqual(result["counted_files"], 1)
         self.assertIn("plain é.py", result["changed_files"])
 
+    def test_generated_path_outside_cp1252(self):
+        # Windows decodes a pipe in cp1252 unless told otherwise, and cp1252 has no CJK.
+        commit_file(self.repo, ".gitattributes", "fixtures/** linguist-generated\n", "mark fixtures")
+        self.deep_round()
+        name = "fixtures/日本.json"
+        path = self.repo / name
+        path.parent.mkdir(parents=True)
+        path.write_text("{}\n", encoding="utf-8")
+        result = self.followup()
+        self.assertEqual(result["generated"], [name])
+
     def test_glob_matches_path_with_spaces_and_unicode(self):
         (self.repo / "out dir").mkdir()
         (self.repo / "out dir" / "ü b.txt").write_text("x\n")

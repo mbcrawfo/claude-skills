@@ -12,8 +12,11 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
+import tempfile
+import unittest
 
 SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "skills" / "superpowers-cleanup" / "scripts"
 if str(SCRIPTS_DIR) not in sys.path:
@@ -63,9 +66,30 @@ def git(repo: Path, *args: str, env: dict | None = None) -> str:
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         env={**os.environ, **(env or {})},
     )
     return result.stdout.strip()
+
+
+# The bash on PATH (Git Bash on Windows). Windows looks in System32 before PATH, so a bare "bash" there runs
+# WSL's bash.exe where WSL is installed, as on GitHub's Windows runners.
+BASH = shutil.which("bash") or "bash"
+
+
+def can_symlink() -> bool:
+    """Whether this process can create a symlink: Windows refuses without admin rights or Developer Mode."""
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            (Path(tmp) / "link").symlink_to(Path(tmp) / "target")
+        except OSError:
+            return False
+    return True
+
+
+requires_symlinks = unittest.skipUnless(
+    can_symlink(), "creating symlinks needs admin rights or Developer Mode on Windows"
+)
 
 
 def write(repo: Path, rel: str, content: str | bytes) -> Path:
@@ -74,7 +98,8 @@ def write(repo: Path, rel: str, content: str | bytes) -> Path:
     if isinstance(content, bytes):
         path.write_bytes(content)
     else:
-        path.write_text(content, encoding="utf-8")
+        with open(path, "w", encoding="utf-8", newline="") as fh:
+            fh.write(content)
     return path
 
 

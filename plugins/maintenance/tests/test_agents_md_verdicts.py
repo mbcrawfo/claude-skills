@@ -1,10 +1,12 @@
 import json
+import os
 from pathlib import Path
 import shutil
 import tempfile
 import unittest
 
 from agents_helpers import call, commit_all, git, make_repo, write
+from helpers import requires_symlinks
 
 AGENTS = "- one\n\n- two\n\n- three\n\n- four\n"
 RULINGS = ".claude/agents-md-cleanup.md"
@@ -467,11 +469,12 @@ class FullRoleTest(VerdictsTestCase):
                 payload = {"file": "AGENTS.md", "verdicts": verdicts, key: []}
                 self.assertRejected(self.check(None, payload=payload), key)
 
+    @requires_symlinks
     def test_move_target_git_parts_in_any_case_or_through_symlinks(self):
         # On a case-insensitive filesystem `.GIT` is `.git`; a symlink can lead into `.git` under another name.
         (self.repo / "gitlink").symlink_to(".git", target_is_directory=True)
         (self.repo / "caselink").symlink_to(".GIT", target_is_directory=True)
-        (self.repo / "src" / "cfg").symlink_to("../.git/config")
+        (self.repo / "src" / "cfg").symlink_to(Path("../.git/config"))
         outside = self.tmp / "outside"
         (outside / ".git").mkdir(parents=True)
         (outside / ".git" / "config").write_text("x\n", encoding="utf-8")
@@ -501,13 +504,14 @@ class FullRoleTest(VerdictsTestCase):
                 }
                 self.assertRejected(self.check(self.keep_rest(verdict)), "is inside .git")
 
+    @requires_symlinks
     def test_move_target_that_is_the_same_file_is_rejected(self):
         # A link to the reviewed file, or the file a link points to, is the file itself.
         (self.repo / "docs").mkdir()
-        (self.repo / "docs" / "AGENTS.md").symlink_to("../AGENTS.md")
+        (self.repo / "docs" / "AGENTS.md").symlink_to(Path("../AGENTS.md"))
         write(self.repo, "CLAUDE.md", "- c\n")
         (self.repo / "web").mkdir()
-        (self.repo / "web" / "AGENTS.md").symlink_to("../CLAUDE.md")
+        (self.repo / "web" / "AGENTS.md").symlink_to(Path("../CLAUDE.md"))
         commit_all(self.repo, "links")
         for file, target, kind in [
             ("AGENTS.md", "docs/AGENTS.md", "agents_md"),
@@ -528,6 +532,7 @@ class FullRoleTest(VerdictsTestCase):
                 payload = {"file": file, "verdicts": verdicts}
                 self.assertRejected(self.check(None, file=file, payload=payload), "the file itself")
 
+    @requires_symlinks
     def test_symlink_loop_file_is_rejected(self):
         (self.repo / "loop").mkdir()
         (self.repo / "loop" / "AGENTS.md").symlink_to("AGENTS.md")
@@ -536,6 +541,7 @@ class FullRoleTest(VerdictsTestCase):
         self.assertEqual((code, stdout), (1, ""))
         self.assertEqual(err, "error: no such file in the repo: loop/AGENTS.md\n")
 
+    @requires_symlinks
     def test_agents_md_target_must_stay_in_the_repo_as_a_file(self):
         outside = self.tmp / "outside"
         outside.mkdir()
@@ -580,6 +586,7 @@ class FullRoleTest(VerdictsTestCase):
         code, _, err = self.check(self.keep_rest(verdict))
         self.assertEqual(code, 0, err)
 
+    @requires_symlinks
     def test_comment_target_symlink_out_of_repo(self):
         outside = self.tmp / "outside.py"
         outside.write_text("x\n", encoding="utf-8")
@@ -641,9 +648,12 @@ class UnstageableTargetTest(VerdictsTestCase):
             (":build/AGENTS.md", "agents_md"),  # nor as pathspec magic
         ]:
             with self.subTest(target=target):
+                if os.name == "nt" and any(c in target for c in ":*"):
+                    self.skipTest("Windows file names cannot hold : or *")
                 code, _, err = self.move(target, kind)
                 self.assertEqual(code, 0, err)
 
+    @unittest.skipIf(os.name == "nt", "Windows file names cannot hold :")
     def test_a_leading_colon_is_not_pathspec_magic(self):
         # Read as magic, `:gen/AGENTS.md` would be checked as `gen/AGENTS.md`, which no rule ignores.
         self.assertRejected(self.move(":gen/AGENTS.md"), "verdict 1: target :gen/AGENTS.md is ignored by git")
@@ -697,6 +707,7 @@ class UnstageableTargetTest(VerdictsTestCase):
                     self.move(target, kind), f"verdict 1: target {target} is inside another git repository: wt"
                 )
 
+    @requires_symlinks
     def test_a_dangling_git_symlink_is_not_a_repo(self):
         # git stages paths there, so the target stays valid.
         (self.repo / "odd").mkdir()
@@ -704,6 +715,7 @@ class UnstageableTargetTest(VerdictsTestCase):
         code, _, err = self.move("odd/AGENTS.md")
         self.assertEqual(code, 0, err)
 
+    @requires_symlinks
     def test_targets_beyond_a_symlinked_directory_are_rejected(self):
         # git stages neither path, though both lead to src/ inside the repo.
         (self.repo / "alias").symlink_to("src", target_is_directory=True)
@@ -761,14 +773,16 @@ class GuidelinesSectionTest(VerdictsTestCase):
                 payload = {"file": name, "verdicts": verdicts}
                 self.assertRejected(self.check(None, file=name, payload=payload, repo=repo), "guidelines")
 
+    @requires_symlinks
     def test_a_link_to_the_root_file_is_the_root(self):
         # The skill may pass any path of a merged entry; the root's guidelines stay protected through each.
         (self.repo / "docs").mkdir()
-        (self.repo / "docs" / "AGENTS.md").symlink_to("../AGENTS.md")
+        (self.repo / "docs" / "AGENTS.md").symlink_to(Path("../AGENTS.md"))
         commit_all(self.repo, "link")
         payload = {"file": "docs/AGENTS.md", "verdicts": self.keep_rest(self.verdict("trim"))}
         self.assertRejected(self.check(None, file="docs/AGENTS.md", payload=payload), "guidelines")
 
+    @requires_symlinks
     def test_nested_file_is_not_the_root(self):
         payload = {"file": "src/AGENTS.md", "verdicts": self.keep_rest(self.verdict("trim"))}
         code, _, err = self.check(None, file="src/AGENTS.md", payload=payload)
@@ -776,7 +790,7 @@ class GuidelinesSectionTest(VerdictsTestCase):
         # A nested link to a root file that isn't an AGENTS.md is not the root either.
         write(self.repo, "CLAUDE.md", GUIDED)
         (self.repo / "web").mkdir()
-        (self.repo / "web" / "AGENTS.md").symlink_to("../CLAUDE.md")
+        (self.repo / "web" / "AGENTS.md").symlink_to(Path("../CLAUDE.md"))
         commit_all(self.repo, "link")
         payload = {"file": "web/AGENTS.md", "verdicts": self.keep_rest(self.verdict("trim"))}
         code, _, err = self.check(None, file="web/AGENTS.md", payload=payload)
@@ -1309,6 +1323,7 @@ class WordLimitGuardTest(VerdictsTestCase):
             with self.subTest(name):
                 self.assertEqual(self.keep_verdict(ruling), action)
 
+    @requires_symlinks
     def test_whole_ruling_ignores_a_rulings_file_reached_through_a_symlink(self):
         write(self.repo, "AGENTS.md", self.LONG + "\n\n- two\n\n- three\n\n- four\n")
         line = "- AGENTS.md: Long rule (whole) Paid for.\n"

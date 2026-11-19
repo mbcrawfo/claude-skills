@@ -4,7 +4,7 @@ import subprocess
 import tempfile
 import unittest
 
-from helpers import by_path, by_suffix, git, run
+from helpers import BASH, by_path, by_suffix, git, run
 
 SCAFFOLD = Path(__file__).resolve().parent.parent / "evals" / "superpowers-cleanup-run" / "scaffold.sh"
 
@@ -18,7 +18,7 @@ class EvalFixtureTest(unittest.TestCase):
     def scaffold(self):
         # The eval runs the scaffold with only these variables set.
         env = {"PATH": os.environ["PATH"], "HOME": str(self.ws), "TERM": "dumb"}
-        return subprocess.run(["bash", str(SCAFFOLD)], cwd=str(self.ws), env=env, capture_output=True, text=True)
+        return subprocess.run([BASH, str(SCAFFOLD)], cwd=str(self.ws), env=env, capture_output=True, text=True)
 
     def test_fixture_builds_and_inventory_reads_it(self):
         result = self.scaffold()

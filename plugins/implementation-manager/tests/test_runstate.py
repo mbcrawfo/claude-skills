@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import errno
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
+import time
 import unittest
+from unittest import mock
 
-import helpers  # noqa: F401  (puts the scripts dir on sys.path)
+import helpers  # puts the scripts dir on sys.path
+import runstate
 from runstate import (
     RunError,
     add_unit,
@@ -157,7 +164,142 @@ class InitTests(RunStateTestCase):
             init_run(self.dir, repo="o/r", base="main", method="merge", wip=0, queue_mode="serial", now=NOW)
 
 
+CHILD_HOLDS_LOCK = """
+import sys, time
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from runstate import add_unit, locked
+with locked(Path(sys.argv[2])) as state:
+    add_unit(state, "child", prereqs=[], branch=None, worktree=None, specs=False)
+    print("held", flush=True)
+    time.sleep(float(sys.argv[3]))
+"""
+
+
+CHILD_HOLDS_FILE = """
+import sys, time
+f = open(sys.argv[1], encoding="utf-8")
+print("open", flush=True)
+time.sleep(float(sys.argv[2]))
+"""
+
+
+class WindowsSharingTests(RunStateTestCase):
+    """Windows refuses to replace or open a file another process is reading or replacing; retry for a while."""
+
+    def test_write_waits_out_a_reader_holding_run_json(self):
+        self.init()
+        reader = subprocess.Popen(
+            [sys.executable, "-c", CHILD_HOLDS_FILE, str(self.dir / "run.json"), "0.5"],
+            stdout=subprocess.PIPE,
+            encoding="utf-8",
+        )
+        self.addCleanup(reader.wait)
+        self.assertEqual(reader.stdout.readline().strip(), "open")
+        with locked(self.dir) as state:
+            add(state, "a")
+        reader.stdout.close()
+        self.assertIn("a", load(self.dir)["units"])
+
+    def flaky(self, real, failures):
+        calls = []
+
+        def call(*args, **kwargs):
+            calls.append(args)
+            if len(calls) <= failures:
+                raise PermissionError(13, "Access is denied")
+            return real(*args, **kwargs)
+
+        return call, calls
+
+    def test_replace_and_open_retry_a_permission_error(self):
+        self.init()
+        replace, replaced = self.flaky(os.replace, 2)
+        with mock.patch.object(runstate, "_RETRY_SHARING", True), mock.patch.object(runstate.time, "sleep"):
+            with mock.patch.object(runstate.os, "replace", replace), locked(self.dir) as state:
+                add(state, "a")
+            self.assertEqual(len(replaced), 3)
+            opener, opened = self.flaky(open, 2)
+            with mock.patch("runstate.open", opener, create=True):
+                self.assertIn("a", load(self.dir)["units"])
+            self.assertEqual(len(opened), 3)
+
+    def test_retry_gives_up_after_its_window(self):
+        self.init()
+        replace, replaced = self.flaky(os.replace, 10_000)
+        with mock.patch.object(runstate, "_RETRY_SHARING", True), mock.patch.object(runstate.time, "sleep"):
+            with mock.patch.object(runstate.os, "replace", replace), self.assertRaises(PermissionError):
+                with locked(self.dir) as state:
+                    add(state, "a")
+        self.assertEqual(len(replaced), runstate.SHARING_TRIES)
+
+    def test_no_retry_off_windows(self):
+        self.init()
+        replace, replaced = self.flaky(os.replace, 1)
+        with mock.patch.object(runstate, "_RETRY_SHARING", False):
+            with mock.patch.object(runstate.os, "replace", replace), self.assertRaises(PermissionError):
+                with locked(self.dir) as state:
+                    add(state, "a")
+        self.assertEqual(len(replaced), 1)
+
+
 class LockedTests(RunStateTestCase):
+    def test_second_process_waits_for_the_lock(self):
+        # 12 s is past the ~10 s that msvcrt.LK_LOCK retries before it raises on Windows.
+        self.init()
+        child = subprocess.Popen(
+            [sys.executable, "-c", CHILD_HOLDS_LOCK, str(helpers.SCRIPTS_DIR), str(self.dir), "12"],
+            stdout=subprocess.PIPE,
+            encoding="utf-8",
+        )
+        self.addCleanup(child.wait)
+        self.assertEqual(child.stdout.readline().strip(), "held")
+        started = time.monotonic()
+        with locked(self.dir) as state:
+            waited = time.monotonic() - started
+            self.assertIn("child", state["units"])  # the child's write landed before this entry
+        child.stdout.close()
+        self.assertEqual(child.wait(), 0)
+        self.assertGreater(waited, 10)
+
+    def test_locked_releases_the_lock_before_the_file_closes(self):
+        self.init()
+        open_at_release = []
+        real_unlock = runstate._unlock
+
+        def unlock(f):
+            open_at_release.append(not f.closed)
+            real_unlock(f)
+
+        with mock.patch.object(runstate, "_unlock", unlock):
+            with locked(self.dir) as state:
+                add(state, "a")
+            with self.assertRaises(ValueError):
+                with locked(self.dir):
+                    raise ValueError("boom")
+        self.assertEqual(open_at_release, [True, True])
+
+    @unittest.skipUnless(os.name == "nt", "msvcrt locking exists only on Windows")
+    def test_lock_retries_only_while_another_process_holds_it(self):
+        held = OSError(errno.EDEADLOCK, "Resource deadlock avoided")
+        with tempfile.TemporaryFile() as f:
+            with mock.patch.object(runstate.msvcrt, "locking", side_effect=[held, held, None]) as locking:
+                runstate._lock(f)
+            self.assertEqual(locking.call_count, 3)
+            refused = OSError(errno.EACCES, "Permission denied")
+            with mock.patch.object(runstate.msvcrt, "locking", side_effect=[refused]):
+                with self.assertRaises(OSError):
+                    runstate._lock(f)
+
+    def test_answers_are_logged_with_lf_line_endings(self):
+        self.init()
+        with locked(self.dir) as state:
+            add(state, "a")
+            go(self.dir, state, "a", SHA1, NOW)
+            redo(self.dir, state, "a", SHA1, "fix the test")
+        data = (self.dir / "pushes.log").read_bytes()
+        self.assertEqual(data, f"a go {SHA1}\na redo {SHA1} fix the test\n".encode())
+
     def test_locked_writes_on_normal_exit(self):
         self.init()
         with locked(self.dir) as state:

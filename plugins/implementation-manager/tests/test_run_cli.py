@@ -18,8 +18,9 @@ SHA1 = "1" * 40
 SHA2 = "2" * 40
 SHA3 = "3" * 40
 
-FAKE_GH = """#!{python}
-import json, os, sys
+# Stands in for gh. It is not put on PATH: Windows runs only .exe files from there, and a .cmd shim would cut
+# the multi-line GraphQL query at its first newline. GH_BOOT runs run.py with gh calls sent here instead.
+FAKE_GH = """import json, os, sys
 with open(os.environ["FAKE_GH_DATA"]) as f:
     data = json.load(f)
 if sys.argv[1:3] == ["pr", "list"]:
@@ -29,6 +30,20 @@ elif sys.argv[1:3] == ["api", "graphql"]:
 else:
     print("unexpected: " + " ".join(sys.argv[1:]), file=sys.stderr)
     sys.exit(1)
+"""
+
+# Runs run.py as __main__ with every gh subprocess sent to the fake at $FAKE_GH.
+GH_BOOT = f"""
+import os, runpy, subprocess, sys
+sys.path.insert(0, {str(helpers.SCRIPTS_DIR)!r})
+real_run = subprocess.run
+def run(cmd, *args, **kwargs):
+    if cmd and cmd[0] == "gh":
+        cmd = [sys.executable, os.environ["FAKE_GH"], *cmd[1:]]
+    return real_run(cmd, *args, **kwargs)
+subprocess.run = run
+sys.argv = [{str(RUN_PY)!r}, *sys.argv[1:]]
+runpy.run_path({str(RUN_PY)!r}, run_name="__main__")
 """
 
 
@@ -43,8 +58,9 @@ class CliTestCase(unittest.TestCase):
         self.env["CLAUDE_CONFIG_DIR"] = str(self.tmp / "claude")
 
     def run_cli(self, *args):
+        command = [sys.executable, "-c", GH_BOOT] if "FAKE_GH" in self.env else [sys.executable, str(RUN_PY)]
         return subprocess.run(
-            [sys.executable, str(RUN_PY), *args], capture_output=True, text=True, env=self.env, timeout=60
+            [*command, *args], capture_output=True, text=True, encoding="utf-8", env=self.env, timeout=60
         )
 
     def ok(self, *args):
@@ -63,18 +79,15 @@ class CliTestCase(unittest.TestCase):
         return json.loads(self.read("run.json"))
 
     def append_request(self, text):
-        with open(self.dir / "requests.log", "a", encoding="utf-8") as f:
+        with open(self.dir / "requests.log", "a", encoding="utf-8", newline="") as f:
             f.write(text)
 
     def fake_gh(self, data):
-        bin_dir = self.tmp / "bin"
-        bin_dir.mkdir()
-        gh = bin_dir / "gh"
-        gh.write_text(FAKE_GH.format(python=sys.executable))
-        gh.chmod(0o755)
+        gh = self.tmp / "fake_gh.py"
+        gh.write_text(FAKE_GH, encoding="utf-8")
         data_file = self.tmp / "gh.json"
-        data_file.write_text(json.dumps(data))
-        self.env["PATH"] = f"{bin_dir}{os.pathsep}{self.env['PATH']}"
+        data_file.write_text(json.dumps(data), encoding="utf-8")
+        self.env["FAKE_GH"] = str(gh)
         self.env["FAKE_GH_DATA"] = str(data_file)
 
 

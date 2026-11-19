@@ -4,13 +4,25 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
-import fcntl
+import errno
 import json
 import os
 from pathlib import Path
 import re
+import time
+from typing import IO, Callable, TypeVar
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 STATE_FILE = "run.json"
+# Windows refuses to replace or open a file while another process is opening or replacing it, which POSIX allows.
+# A write or read that meets that retries for up to SHARING_TRIES x SHARING_DELAY (2 s) before it gives up.
+_RETRY_SHARING = os.name == "nt"
+SHARING_TRIES = 40
+SHARING_DELAY = 0.05
 LOCK_FILE = "run.lock"
 REQUESTS = "requests.log"
 PUSHES = "pushes.log"
@@ -45,14 +57,34 @@ def _check_wip(wip: int | None) -> None:
         raise RunError(f"wip must be at least 1 or none, got {wip}")
 
 
+_T = TypeVar("_T")
+
+
+def _sharing_retry(action: Callable[[], _T]) -> _T:
+    """Run `action`, retrying a PermissionError on Windows while another process holds the file."""
+    for attempt in range(SHARING_TRIES):
+        try:
+            return action()
+        except PermissionError:
+            if not _RETRY_SHARING or attempt == SHARING_TRIES - 1:
+                raise
+            time.sleep(SHARING_DELAY)
+    raise AssertionError("unreachable")
+
+
+def _read_json(path: Path) -> object:
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
 def _write_state(run_dir: Path, state: dict) -> None:
     tmp = run_dir / (STATE_FILE + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
+    with open(tmp, "w", encoding="utf-8", newline="") as f:
         json.dump(state, f, indent=2)
         f.write("\n")
         f.flush()
         os.fsync(f.fileno())
-    os.replace(tmp, run_dir / STATE_FILE)
+    _sharing_retry(lambda: os.replace(tmp, run_dir / STATE_FILE))
 
 
 def empty_items() -> dict:
@@ -160,8 +192,7 @@ def load(run_dir: Path) -> dict:
     """
     path = run_dir / STATE_FILE
     try:
-        with open(path, encoding="utf-8") as f:
-            state = json.load(f)
+        state = _sharing_retry(lambda: _read_json(path))
     except FileNotFoundError:
         raise RunError(f"no run in {run_dir}") from None
     if not isinstance(state, dict) or state.get("version") != 1:
@@ -184,6 +215,33 @@ def load(run_dir: Path) -> dict:
     return state
 
 
+def _lock(f: IO) -> None:
+    """Take an exclusive lock on the open lock file, waiting as long as another process holds it."""
+    if os.name != "nt":
+        fcntl.flock(f, fcntl.LOCK_EX)
+        return
+    # msvcrt locks a byte range from the file position. LK_LOCK retries for about 10 s and then raises
+    # EDEADLOCK while another process holds the lock, so retry that until the lock is free: a wait must outlast
+    # any other holder, as flock's does. Any other error is not contention and is raised.
+    f.seek(0)
+    while True:
+        try:
+            msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
+            return
+        except OSError as exc:
+            if exc.errno != errno.EDEADLOCK:
+                raise
+
+
+def _unlock(f: IO) -> None:
+    """Release the lock `_lock` took."""
+    if os.name != "nt":
+        fcntl.flock(f, fcntl.LOCK_UN)
+        return
+    f.seek(0)
+    msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+
+
 @contextmanager
 def locked(run_dir: Path) -> Iterator[dict]:
     """Hold the run lock, yield the state, and write it back atomically unless the block raises."""
@@ -192,10 +250,13 @@ def locked(run_dir: Path) -> Iterator[dict]:
     except FileNotFoundError:
         raise RunError(f"no run in {run_dir}") from None
     with lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        state = load(run_dir)
-        yield state
-        _write_state(run_dir, state)
+        _lock(lock)
+        try:
+            state = load(run_dir)
+            yield state
+            _write_state(run_dir, state)
+        finally:
+            _unlock(lock)
 
 
 def _block(state: dict) -> dict | None:
@@ -487,7 +548,7 @@ def openable(state: dict) -> list[str]:
 
 
 def _append(run_dir: Path, filename: str, line: str) -> None:
-    with open(run_dir / filename, "a", encoding="utf-8") as f:
+    with open(run_dir / filename, "a", encoding="utf-8", newline="") as f:
         f.write(line)
 
 

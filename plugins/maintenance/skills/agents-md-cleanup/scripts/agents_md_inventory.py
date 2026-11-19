@@ -651,8 +651,11 @@ def _rulings_text(root: Path) -> str | None:
     """The rulings file's text, or None when it does not exist.
 
     Like every other file the script reads, the rulings count only when they resolve to a file inside the repo.
+    CRLF reads as LF, as in a checkout with `core.autocrlf=true`.
     """
-    return _decode(_read_bytes(root, RULINGS_PATH)) if _is_inside(root, root / RULINGS_PATH) else None
+    if not _is_inside(root, root / RULINGS_PATH):
+        return None
+    return _decode(_read_bytes(root, RULINGS_PATH)).replace("\r\n", "\n")
 
 
 def _rulings(root: Path) -> dict:
@@ -1272,4 +1275,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    # A piped stdout is in the locale's code page on Windows (cp1252); paths and text need UTF-8.
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
     sys.exit(main())
