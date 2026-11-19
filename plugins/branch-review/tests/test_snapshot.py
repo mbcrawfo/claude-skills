@@ -482,7 +482,9 @@ class SnapshotTest(unittest.TestCase):
         (self.repo / path).write_text("main\n")
         commit_file(self.repo, "upstream.txt", "u\n", "main adds the file")
         git(self.repo, "checkout", "feature/x")
-        merge = subprocess.run(["git", "merge", "main"], cwd=str(self.repo), capture_output=True, text=True)
+        merge = subprocess.run(
+            ["git", "merge", "main"], cwd=str(self.repo), capture_output=True, text=True, encoding="utf-8"
+        )
         self.assertNotEqual(merge.returncode, 0)
         (self.repo / path).write_text("resolved\n")
         git(self.repo, "add", "-A")
@@ -575,7 +577,9 @@ class SnapshotTest(unittest.TestCase):
         git(self.repo, "checkout", "main")
         commit_file(self.repo, "b.txt", "main edit\n", "main modifies b")
         git(self.repo, "checkout", "feature/x")
-        merge = subprocess.run(["git", "merge", "main"], cwd=str(self.repo), capture_output=True, text=True)
+        merge = subprocess.run(
+            ["git", "merge", "main"], cwd=str(self.repo), capture_output=True, text=True, encoding="utf-8"
+        )
         self.assertNotEqual(merge.returncode, 0)
         git(self.repo, "rm", "-q", "b.txt")
         git(self.repo, "commit", "--no-edit")
@@ -588,6 +592,14 @@ class SnapshotTest(unittest.TestCase):
 
     def test_conflict_path_with_space_and_unicode(self):
         path = "dir a/\u00e9.txt"
+        self.conflicting_base_update(path=path)
+        self.assertEqual(self.locate()["conflicts"], [path])
+        result = self.begin(mode="merge-check")
+        self.assertEqual(result["conflicts"], [path])
+        self.assertEqual(result["changed_files"], [path])
+
+    def test_conflict_path_outside_cp1252(self):
+        path = "dir a/日本.txt"
         self.conflicting_base_update(path=path)
         self.assertEqual(self.locate()["conflicts"], [path])
         result = self.begin(mode="merge-check")

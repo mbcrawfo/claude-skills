@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 from typing import Optional
+import unittest
 
 SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
 if str(SCRIPTS_DIR) not in sys.path:
@@ -58,6 +59,7 @@ def git(repo: Path, *args: str) -> str:
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     return result.stdout.strip()
 
@@ -65,7 +67,8 @@ def git(repo: Path, *args: str) -> str:
 def commit_file(repo: Path, name: str, content: str, message: str) -> None:
     path = Path(repo) / name
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content)
+    with open(path, "w", encoding="utf-8", newline="") as fh:
+        fh.write(content)
     git(repo, "add", "-A")
     git(repo, "commit", "-m", message)
 
@@ -101,6 +104,21 @@ def run(repo: Path, *argv: str, state_dir: Path) -> dict:
         code = review_state.main([*argv, "--state-dir", str(state_dir), "--repo", str(repo)])
     assert code in (0, None), f"main exited with {code!r}"
     return json.loads(buf.getvalue())
+
+
+def can_symlink() -> bool:
+    """Whether this process can create a symlink: Windows refuses without admin rights or Developer Mode."""
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            (Path(tmp) / "link").symlink_to(Path(tmp) / "target")
+        except OSError:
+            return False
+    return True
+
+
+requires_symlinks = unittest.skipUnless(
+    can_symlink(), "creating symlinks needs admin rights or Developer Mode on Windows"
+)
 
 
 CANARY = Path("canary") / "a" / "b" / "keep.txt"

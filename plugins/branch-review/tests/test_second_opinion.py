@@ -185,7 +185,9 @@ class SecondOpinionTest(LedgerHarness, unittest.TestCase):
         git(self.repo, "checkout", "main")
         commit_file(self.repo, "b.txt", "main\n", "main adds b")
         git(self.repo, "checkout", "feature/x")
-        merge = subprocess.run(["git", "merge", "main"], cwd=str(self.repo), capture_output=True, text=True)
+        merge = subprocess.run(
+            ["git", "merge", "main"], cwd=str(self.repo), capture_output=True, text=True, encoding="utf-8"
+        )
         self.assertNotEqual(merge.returncode, 0)
         (self.repo / "b.txt").write_text("resolved\n")
         git(self.repo, "add", "-A")
