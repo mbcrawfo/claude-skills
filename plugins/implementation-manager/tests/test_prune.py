@@ -11,6 +11,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 import helpers
 import prune
@@ -24,7 +25,10 @@ def age(path: Path, days: float, now: float) -> None:
     when = now - days * DAY
     if os.utime in os.supports_follow_symlinks:
         os.utime(path, (when, when), follow_symlinks=False)
-    else:  # Windows: no symlinks reach here, since the symlink tests skip where they can't be made
+    elif path.is_symlink():
+        # Windows: utime would follow the link and age its target instead.
+        raise AssertionError(f"cannot set a symlink's own mtime on this platform: {path}")
+    else:
         os.utime(path, (when, when))
 
 
@@ -99,23 +103,32 @@ class PruneRunsTest(unittest.TestCase):
         (elsewhere / "run.json").write_text("{}", encoding="utf-8")
         age(elsewhere / "run.json", 90, self.now)
         link = self.repo_dir / "linked"
-        link.symlink_to(elsewhere)
-        age(link, 90, self.now)
+        link.symlink_to(elsewhere)  # skipped whatever its age
         result = self.prune()
         self.assertEqual(result, {"removed": [], "skipped": [str(link)], "errors": []})
         self.assertTrue((elsewhere / "run.json").exists())
 
     @helpers.requires_symlinks
     def test_prune_age_ignores_symlink_targets(self):
+        # Windows cannot set a symlink's own mtime, so move the clock on instead: at `later` the run and the
+        # link are 40 days old, and only the link's target is fresh.
+        later = self.now + 40 * DAY
         fresh = self.tmp / "fresh.txt"
         fresh.write_text("new", encoding="utf-8")
-        run = self.make_run("old", 40)
-        link = run / "pointer"
-        link.symlink_to(fresh)
-        age(link, 40, self.now)
-        age(run, 40, self.now)
-        self.assertEqual(self.prune()["removed"], [str(run)])
+        run = self.make_run("old", 0)
+        (run / "pointer").symlink_to(fresh)
+        age(run, 0, self.now)  # adding the link touched the folder
+        os.utime(fresh, (later, later))
+        self.assertEqual(prune.prune_runs(self.keep, 30, later)["removed"], [str(run)])
         self.assertTrue(fresh.exists())
+
+    @helpers.requires_symlinks
+    def test_age_refuses_a_symlink_where_its_mtime_cannot_be_set(self):
+        link = self.tmp / "link"
+        link.symlink_to(self.tmp)
+        with mock.patch.object(os, "supports_follow_symlinks", set()):
+            with self.assertRaises(AssertionError):
+                age(link, 1, self.now)
 
     def test_prune_skips_non_run_folder(self):
         other = self.repo_dir / "notes"

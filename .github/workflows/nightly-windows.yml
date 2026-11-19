@@ -32,9 +32,8 @@ jobs:
           python-version: ${{ matrix.python-version }}
           python-version-file: ${{ matrix.python-version-file }}
       - name: Run plugin tests
-        # setup-python on Windows puts `python` on PATH, not `python3`.
         run: |
           for dir in plugins/*/tests; do
             [ -d "$dir" ] || continue
-            python -m unittest discover -s "$dir" -v
+            python3 -m unittest discover -s "$dir" -v
           done
