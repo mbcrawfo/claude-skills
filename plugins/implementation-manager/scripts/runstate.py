@@ -4,11 +4,16 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
-import fcntl
 import json
 import os
 from pathlib import Path
 import re
+from typing import IO
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 STATE_FILE = "run.json"
 LOCK_FILE = "run.lock"
@@ -47,7 +52,7 @@ def _check_wip(wip: int | None) -> None:
 
 def _write_state(run_dir: Path, state: dict) -> None:
     tmp = run_dir / (STATE_FILE + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
+    with open(tmp, "w", encoding="utf-8", newline="") as f:
         json.dump(state, f, indent=2)
         f.write("\n")
         f.flush()
@@ -184,6 +189,31 @@ def load(run_dir: Path) -> dict:
     return state
 
 
+def _lock(f: IO) -> None:
+    """Take an exclusive lock on the open lock file, waiting as long as another process holds it."""
+    if os.name != "nt":
+        fcntl.flock(f, fcntl.LOCK_EX)
+        return
+    # msvcrt locks a byte range from the file position. LK_LOCK retries for about 10 s and then raises, so
+    # retry until the lock is free: a wait must outlast any other holder, as flock's does.
+    f.seek(0)
+    while True:
+        try:
+            msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
+            return
+        except OSError:
+            continue
+
+
+def _unlock(f: IO) -> None:
+    """Release the lock `_lock` took."""
+    if os.name != "nt":
+        fcntl.flock(f, fcntl.LOCK_UN)
+        return
+    f.seek(0)
+    msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+
+
 @contextmanager
 def locked(run_dir: Path) -> Iterator[dict]:
     """Hold the run lock, yield the state, and write it back atomically unless the block raises."""
@@ -192,10 +222,13 @@ def locked(run_dir: Path) -> Iterator[dict]:
     except FileNotFoundError:
         raise RunError(f"no run in {run_dir}") from None
     with lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        state = load(run_dir)
-        yield state
-        _write_state(run_dir, state)
+        _lock(lock)
+        try:
+            state = load(run_dir)
+            yield state
+            _write_state(run_dir, state)
+        finally:
+            _unlock(lock)
 
 
 def _block(state: dict) -> dict | None:
@@ -487,7 +520,7 @@ def openable(state: dict) -> list[str]:
 
 
 def _append(run_dir: Path, filename: str, line: str) -> None:
-    with open(run_dir / filename, "a", encoding="utf-8") as f:
+    with open(run_dir / filename, "a", encoding="utf-8", newline="") as f:
         f.write(line)
 
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import fcntl
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -61,7 +61,7 @@ class StopClock(FakeClock):
 
 
 def append(run_dir: Path, text: str) -> None:
-    with open(run_dir / "requests.log", "a", encoding="utf-8") as f:
+    with open(run_dir / "requests.log", "a", encoding="utf-8", newline="") as f:
         f.write(text)
 
 
@@ -73,6 +73,18 @@ def append_bytes(run_dir: Path, data: bytes) -> None:
 def assert_unlocked(run_dir: Path) -> None:
     """Fail at once, rather than deadlock, if the run lock is held while the watcher sleeps."""
     with open(run_dir / LOCK_FILE, "a") as f:
+        if os.name == "nt":
+            import msvcrt
+
+            f.seek(0)
+            try:
+                msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+            except OSError:
+                raise AssertionError("wait held the run lock across a sleep") from None
+            msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+            return
+        import fcntl
+
         try:
             fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
@@ -154,6 +166,13 @@ class RequestTests(WatcherTestCase):
         append(self.dir, f"a push {SHA1} feat/\x00x\na push {SHA2} feat/\x7fy\nb push {SHA2} feat/b\n")
         self.assertEqual(run_wait(self.dir), f"REQUEST b {SHA2} feat/b")
         self.assertEqual(load(self.dir)["bad_requests"], [f"a push {SHA1} feat/\x00x", f"a push {SHA2} feat/\x7fy"])
+
+    def test_crlf_request_line_is_one_request(self):
+        append_bytes(self.dir, f"a push {SHA1} feat/a\r\n".encode())
+        self.assertEqual(run_wait(self.dir), f"REQUEST a {SHA1} feat/a")
+        state = load(self.dir)
+        self.assertEqual(state["bad_requests"], [])
+        self.assertEqual(state["requests_offset"], (self.dir / "requests.log").stat().st_size)
 
     def test_carriage_return_inside_a_line_does_not_stall(self):
         append(self.dir, f"a push {SHA1}\rfeat/a\nb push {SHA2} feat/b\n")

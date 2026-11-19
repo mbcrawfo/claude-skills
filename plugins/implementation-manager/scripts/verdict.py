@@ -48,7 +48,7 @@ def verdict_line(state: dict, unit: str, sha: str, *, run: Callable = subprocess
         return _unavailable(sha, f"unit {unit} has no worktree")
     command = ["sh", rs, "covered", "--repo", worktree, "--commit", sha, "--state-dir", check["state_dir"]]
     try:
-        result = run(command, capture_output=True, text=True, timeout=TIMEOUT_SECONDS)
+        result = run(command, capture_output=True, text=True, encoding="utf-8", timeout=TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
         return _unavailable(sha, "check timed out")
     except OSError as exc:

@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
+import time
 import unittest
 
 import helpers  # noqa: F401  (puts the scripts dir on sys.path)
@@ -157,7 +160,46 @@ class InitTests(RunStateTestCase):
             init_run(self.dir, repo="o/r", base="main", method="merge", wip=0, queue_mode="serial", now=NOW)
 
 
+CHILD_HOLDS_LOCK = """
+import sys, time
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from runstate import add_unit, locked
+with locked(Path(sys.argv[2])) as state:
+    add_unit(state, "child", prereqs=[], branch=None, worktree=None, specs=False)
+    print("held", flush=True)
+    time.sleep(float(sys.argv[3]))
+"""
+
+
 class LockedTests(RunStateTestCase):
+    def test_second_process_waits_for_the_lock(self):
+        # 12 s is past the ~10 s that msvcrt.LK_LOCK retries before it raises on Windows.
+        self.init()
+        child = subprocess.Popen(
+            [sys.executable, "-c", CHILD_HOLDS_LOCK, str(helpers.SCRIPTS_DIR), str(self.dir), "12"],
+            stdout=subprocess.PIPE,
+            encoding="utf-8",
+        )
+        self.addCleanup(child.wait)
+        self.assertEqual(child.stdout.readline().strip(), "held")
+        started = time.monotonic()
+        with locked(self.dir) as state:
+            waited = time.monotonic() - started
+            self.assertIn("child", state["units"])  # the child's write landed before this entry
+        child.stdout.close()
+        self.assertEqual(child.wait(), 0)
+        self.assertGreater(waited, 10)
+
+    def test_answers_are_logged_with_lf_line_endings(self):
+        self.init()
+        with locked(self.dir) as state:
+            add(state, "a")
+            go(self.dir, state, "a", SHA1, NOW)
+            redo(self.dir, state, "a", SHA1, "fix the test")
+        data = (self.dir / "pushes.log").read_bytes()
+        self.assertEqual(data, f"a go {SHA1}\na redo {SHA1} fix the test\n".encode())
+
     def test_locked_writes_on_normal_exit(self):
         self.init()
         with locked(self.dir) as state:

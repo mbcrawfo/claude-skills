@@ -86,6 +86,8 @@ def take_request(run_dir: Path, state: dict, now: float) -> str | None:
     for raw in data.split(b"\n")[:-1]:
         offset += len(raw) + 1
         state["requests_offset"] = offset
+        if raw.endswith(b"\r"):
+            raw = raw[:-1]  # a CRLF line, as a Windows tool writes it
         try:
             line = raw.decode("utf-8")
         except UnicodeDecodeError:

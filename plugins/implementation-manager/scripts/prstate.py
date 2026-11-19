@@ -28,7 +28,7 @@ class GhError(Exception):
 
 def run_gh(args: list[str]) -> str:
     try:
-        result = subprocess.run(["gh", *args], capture_output=True, text=True)
+        result = subprocess.run(["gh", *args], capture_output=True, text=True, encoding="utf-8")
     except OSError as exc:
         raise GhError(str(exc)) from exc
     if result.returncode != 0:
