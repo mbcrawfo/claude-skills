@@ -262,6 +262,23 @@ class LockedTests(RunStateTestCase):
         self.assertEqual(child.wait(), 0)
         self.assertGreater(waited, 10)
 
+    def test_locked_releases_the_lock_before_the_file_closes(self):
+        self.init()
+        open_at_release = []
+        real_unlock = runstate._unlock
+
+        def unlock(f):
+            open_at_release.append(not f.closed)
+            real_unlock(f)
+
+        with mock.patch.object(runstate, "_unlock", unlock):
+            with locked(self.dir) as state:
+                add(state, "a")
+            with self.assertRaises(ValueError):
+                with locked(self.dir):
+                    raise ValueError("boom")
+        self.assertEqual(open_at_release, [True, True])
+
     @unittest.skipUnless(os.name == "nt", "msvcrt locking exists only on Windows")
     def test_lock_retries_only_while_another_process_holds_it(self):
         held = OSError(errno.EDEADLOCK, "Resource deadlock avoided")
