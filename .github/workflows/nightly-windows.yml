@@ -1,0 +1,40 @@
+name: Nightly Windows
+
+# Runs the plugin test suites on Windows under Git Bash, the shell Claude Code uses there. It lives outside
+# ci.yml on purpose: a Windows-only break must not block PRs, and GitHub emails on a failed scheduled run.
+
+on:
+  schedule:
+    - cron: "17 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (windows, ${{ matrix.python-version || matrix.python-version-file }})
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The oldest supported Python, and the pinned version, which is also the newest.
+          - python-version: "3.9"
+          - python-version-file: .python-version
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python-version }}
+          python-version-file: ${{ matrix.python-version-file }}
+      - name: Run plugin tests
+        # setup-python on Windows puts `python` on PATH, not `python3`.
+        run: |
+          for dir in plugins/*/tests; do
+            [ -d "$dir" ] || continue
+            python -m unittest discover -s "$dir" -v
+          done

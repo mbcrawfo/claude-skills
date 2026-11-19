@@ -17,6 +17,8 @@ Run `/plugin` to see the available plugins. To get updates, run `/plugin marketp
 
 The plugins run Python scripts. You must have `python3` 3.9 or later. The scripts use only the standard library, so you do not install other packages.
 
+On Windows, the plugins need Git Bash as the shell for Claude Code. The `python3` command must be on the Git Bash `PATH`. pyenv-win and the Microsoft Store Python supply `python3`. The python.org installer supplies only `python` and `py`, so it does not work.
+
 ## Available plugins
 
 ### [`branch-review`](plugins/branch-review/README.md)
