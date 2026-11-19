@@ -9,7 +9,8 @@ import json
 import os
 from pathlib import Path
 import re
-from typing import IO
+import time
+from typing import IO, Callable, TypeVar
 
 if os.name == "nt":
     import msvcrt
@@ -17,6 +18,11 @@ else:
     import fcntl
 
 STATE_FILE = "run.json"
+# Windows refuses to replace or open a file while another process is opening or replacing it, which POSIX allows.
+# A write or read that meets that retries for up to SHARING_TRIES x SHARING_DELAY (2 s) before it gives up.
+_RETRY_SHARING = os.name == "nt"
+SHARING_TRIES = 40
+SHARING_DELAY = 0.05
 LOCK_FILE = "run.lock"
 REQUESTS = "requests.log"
 PUSHES = "pushes.log"
@@ -51,6 +57,26 @@ def _check_wip(wip: int | None) -> None:
         raise RunError(f"wip must be at least 1 or none, got {wip}")
 
 
+_T = TypeVar("_T")
+
+
+def _sharing_retry(action: Callable[[], _T]) -> _T:
+    """Run `action`, retrying a PermissionError on Windows while another process holds the file."""
+    for attempt in range(SHARING_TRIES):
+        try:
+            return action()
+        except PermissionError:
+            if not _RETRY_SHARING or attempt == SHARING_TRIES - 1:
+                raise
+            time.sleep(SHARING_DELAY)
+    raise AssertionError("unreachable")
+
+
+def _read_json(path: Path) -> object:
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
 def _write_state(run_dir: Path, state: dict) -> None:
     tmp = run_dir / (STATE_FILE + ".tmp")
     with open(tmp, "w", encoding="utf-8", newline="") as f:
@@ -58,7 +84,7 @@ def _write_state(run_dir: Path, state: dict) -> None:
         f.write("\n")
         f.flush()
         os.fsync(f.fileno())
-    os.replace(tmp, run_dir / STATE_FILE)
+    _sharing_retry(lambda: os.replace(tmp, run_dir / STATE_FILE))
 
 
 def empty_items() -> dict:
@@ -166,8 +192,7 @@ def load(run_dir: Path) -> dict:
     """
     path = run_dir / STATE_FILE
     try:
-        with open(path, encoding="utf-8") as f:
-            state = json.load(f)
+        state = _sharing_retry(lambda: _read_json(path))
     except FileNotFoundError:
         raise RunError(f"no run in {run_dir}") from None
     if not isinstance(state, dict) or state.get("version") != 1:

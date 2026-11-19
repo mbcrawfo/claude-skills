@@ -176,6 +176,73 @@ with locked(Path(sys.argv[2])) as state:
 """
 
 
+CHILD_HOLDS_FILE = """
+import sys, time
+f = open(sys.argv[1], encoding="utf-8")
+print("open", flush=True)
+time.sleep(float(sys.argv[2]))
+"""
+
+
+class WindowsSharingTests(RunStateTestCase):
+    """Windows refuses to replace or open a file another process is reading or replacing; retry for a while."""
+
+    def test_write_waits_out_a_reader_holding_run_json(self):
+        self.init()
+        reader = subprocess.Popen(
+            [sys.executable, "-c", CHILD_HOLDS_FILE, str(self.dir / "run.json"), "0.5"],
+            stdout=subprocess.PIPE,
+            encoding="utf-8",
+        )
+        self.addCleanup(reader.wait)
+        self.assertEqual(reader.stdout.readline().strip(), "open")
+        with locked(self.dir) as state:
+            add(state, "a")
+        reader.stdout.close()
+        self.assertIn("a", load(self.dir)["units"])
+
+    def flaky(self, real, failures):
+        calls = []
+
+        def call(*args, **kwargs):
+            calls.append(args)
+            if len(calls) <= failures:
+                raise PermissionError(13, "Access is denied")
+            return real(*args, **kwargs)
+
+        return call, calls
+
+    def test_replace_and_open_retry_a_permission_error(self):
+        self.init()
+        replace, replaced = self.flaky(os.replace, 2)
+        with mock.patch.object(runstate, "_RETRY_SHARING", True), mock.patch.object(runstate.time, "sleep"):
+            with mock.patch.object(runstate.os, "replace", replace), locked(self.dir) as state:
+                add(state, "a")
+            self.assertEqual(len(replaced), 3)
+            opener, opened = self.flaky(open, 2)
+            with mock.patch("runstate.open", opener, create=True):
+                self.assertIn("a", load(self.dir)["units"])
+            self.assertEqual(len(opened), 3)
+
+    def test_retry_gives_up_after_its_window(self):
+        self.init()
+        replace, replaced = self.flaky(os.replace, 10_000)
+        with mock.patch.object(runstate, "_RETRY_SHARING", True), mock.patch.object(runstate.time, "sleep"):
+            with mock.patch.object(runstate.os, "replace", replace), self.assertRaises(PermissionError):
+                with locked(self.dir) as state:
+                    add(state, "a")
+        self.assertEqual(len(replaced), runstate.SHARING_TRIES)
+
+    def test_no_retry_off_windows(self):
+        self.init()
+        replace, replaced = self.flaky(os.replace, 1)
+        with mock.patch.object(runstate, "_RETRY_SHARING", False):
+            with mock.patch.object(runstate.os, "replace", replace), self.assertRaises(PermissionError):
+                with locked(self.dir) as state:
+                    add(state, "a")
+        self.assertEqual(len(replaced), 1)
+
+
 class LockedTests(RunStateTestCase):
     def test_second_process_waits_for_the_lock(self):
         # 12 s is past the ~10 s that msvcrt.LK_LOCK retries before it raises on Windows.

@@ -23,9 +23,15 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 DEFAULT_STATE_DIR = "~/.claude/plugins/data/branch-review"
 STATE_FILE = "review.json"
+# Windows refuses to replace or open a file while another process is opening or replacing it, which POSIX allows.
+# A state write or read that meets that retries for up to SHARING_TRIES x SHARING_DELAY (2 s) before it gives up.
+_RETRY_SHARING = os.name == "nt"
+SHARING_TRIES = 40
+SHARING_DELAY = 0.05
 OPEN_STATUSES = ("open", "fixed", "still-open")
 MAX_FILES = 150
 MAX_LINES = 10000
@@ -161,13 +167,29 @@ def _locate_keys(state_dir: Path, repo: Path) -> tuple[str, str, Path]:
     return rkey, branch, Path(state_dir) / rkey / bkey
 
 
+def _sharing_retry(action):
+    """Run `action`, retrying a PermissionError on Windows while another process holds the file."""
+    for attempt in range(SHARING_TRIES):
+        try:
+            return action()
+        except PermissionError:
+            if not _RETRY_SHARING or attempt == SHARING_TRIES - 1:
+                raise
+            time.sleep(SHARING_DELAY)
+    raise AssertionError("unreachable")
+
+
+def _read_json(path: Path):
+    with open(path, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
 def load_state(dir: Path) -> dict | None:
     path = Path(dir) / STATE_FILE
     if not path.exists():
         return None
     try:
-        with open(path, encoding="utf-8") as fh:
-            state = json.load(fh)
+        state = _sharing_retry(lambda: _read_json(path))
     except ValueError as exc:  # JSONDecodeError and UnicodeDecodeError
         raise StateError(f"corrupt state file {path}: {exc}") from exc
     if not isinstance(state, dict):
@@ -212,7 +234,7 @@ def save_state(dir: Path, state: dict) -> None:
             os.unlink(tmp)
             raise
     try:
-        os.replace(tmp, str(path))
+        _sharing_retry(lambda: os.replace(tmp, str(path)))
     except BaseException:
         os.unlink(tmp)
         raise
