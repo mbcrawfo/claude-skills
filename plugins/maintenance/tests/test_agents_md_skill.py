@@ -9,6 +9,7 @@ import unittest
 
 from agents_helpers import agents_md_inventory as inv
 from agents_helpers import agents_md_limits, call, commit_all, make_repo, write
+from helpers import BASH
 
 PLUGIN = Path(__file__).resolve().parent.parent
 AGENT = PLUGIN / "agents" / "agents-md-reviewer.md"
@@ -585,7 +586,7 @@ class QuotedPathsTest(unittest.TestCase):
 
     def bash(self, command: str) -> dict:
         env = {**os.environ, "CLAUDE_SKILL_DIR": str(self.skill_dir)}
-        result = subprocess.run(["bash", "-c", command], capture_output=True, text=True, env=env, cwd=str(self.tmp))
+        result = subprocess.run([BASH, "-c", command], capture_output=True, text=True, env=env, cwd=str(self.tmp))
         self.assertEqual(result.returncode, 0, f"{command}\n{result.stderr}")
         return json.loads(result.stdout)
 

@@ -366,7 +366,7 @@ class InventoryTest(RepoTestCase):
     def test_rulings_through_a_symlink_in_the_repo_are_read(self):
         write(self.repo, "docs/rulings.md", "- keep uv\n")
         (self.repo / ".claude").mkdir()
-        (self.repo / ".claude" / "agents-md-cleanup.md").symlink_to("../docs/rulings.md")
+        (self.repo / ".claude" / "agents-md-cleanup.md").symlink_to(Path("../docs/rulings.md"))
         rulings = self.inventory()["rulings"]
         self.assertEqual((rulings["exists"], rulings["text"]), (True, "- keep uv\n"))
 
@@ -637,9 +637,9 @@ class LinkedFileTest(RepoTestCase):
     def test_links_to_one_file_merge_into_one_entry(self):
         write(self.repo, "AGENTS.md", "- shared\n- rule\n")
         (self.repo / "docs").mkdir()
-        (self.repo / "docs" / "AGENTS.md").symlink_to("../AGENTS.md")
+        (self.repo / "docs" / "AGENTS.md").symlink_to(Path("../AGENTS.md"))
         (self.repo / "web").mkdir()
-        (self.repo / "web" / "AGENTS.md").symlink_to("../AGENTS.md")
+        (self.repo / "web" / "AGENTS.md").symlink_to(Path("../AGENTS.md"))
         write(self.repo, "src/AGENTS.md", "- own\n")
         commit_all(self.repo, "add")
         out = self.inventory()
@@ -667,7 +667,7 @@ class LinkedFileTest(RepoTestCase):
         write(self.repo, "CLAUDE.md", "- shared\n")
         (self.repo / "AGENTS.md").symlink_to("CLAUDE.md")
         (self.repo / "docs").mkdir()
-        (self.repo / "docs" / "AGENTS.md").symlink_to("../CLAUDE.md")
+        (self.repo / "docs" / "AGENTS.md").symlink_to(Path("../CLAUDE.md"))
         commit_all(self.repo, "add")
         self.assertEqual(self.entries(), [("AGENTS.md", "CLAUDE.md", ["docs/AGENTS.md"], "full")])
 
@@ -676,8 +676,8 @@ class LinkedFileTest(RepoTestCase):
         # Agents load the content at every path; the shallowest covers the most, and keeps the root's guidelines.
         # `0lib` sorts before `AGENTS.md`, so the lead is chosen by depth, not by name.
         write(self.repo, "0lib/deep/AGENTS.md", "- shared\n")
-        (self.repo / "AGENTS.md").symlink_to("0lib/deep/AGENTS.md")
-        (self.repo / "0lib" / "AGENTS.md").symlink_to("deep/AGENTS.md")
+        (self.repo / "AGENTS.md").symlink_to(Path("0lib/deep/AGENTS.md"))
+        (self.repo / "0lib" / "AGENTS.md").symlink_to(Path("deep/AGENTS.md"))
         commit_all(self.repo, "add")
         self.assertEqual(
             self.entries(), [("AGENTS.md", "0lib/deep/AGENTS.md", ["0lib/AGENTS.md", "0lib/deep/AGENTS.md"], "full")]
@@ -687,7 +687,7 @@ class LinkedFileTest(RepoTestCase):
     def test_merged_entry_is_full_when_any_path_is_in_scope(self):
         write(self.repo, "AGENTS.md", "- shared\n")
         (self.repo / "docs").mkdir()
-        (self.repo / "docs" / "AGENTS.md").symlink_to("../AGENTS.md")
+        (self.repo / "docs" / "AGENTS.md").symlink_to(Path("../AGENTS.md"))
         write(self.repo, "src/AGENTS.md", "- own\n")
         commit_all(self.repo, "add")
         self.assertEqual(self.entries("--scope", "docs"), [("AGENTS.md", "AGENTS.md", ["docs/AGENTS.md"], "full")])
@@ -704,7 +704,7 @@ class LinkedFileTest(RepoTestCase):
         # docs/AGENTS.md is outside --scope src, but it is the same file, so the skill must know it links there.
         write(self.repo, "src/AGENTS.md", "- shared\n")
         (self.repo / "docs").mkdir()
-        (self.repo / "docs" / "AGENTS.md").symlink_to("../src/AGENTS.md")
+        (self.repo / "docs" / "AGENTS.md").symlink_to(Path("../src/AGENTS.md"))
         commit_all(self.repo, "add")
         self.assertEqual(
             self.entries("--scope", "src"), [("src/AGENTS.md", "src/AGENTS.md", ["docs/AGENTS.md"], "full")]
@@ -714,7 +714,7 @@ class LinkedFileTest(RepoTestCase):
     def test_blocks_reports_the_resolved_path(self):
         write(self.repo, "CLAUDE.md", "- shared\n")
         (self.repo / "docs").mkdir()
-        (self.repo / "docs" / "AGENTS.md").symlink_to("../CLAUDE.md")
+        (self.repo / "docs" / "AGENTS.md").symlink_to(Path("../CLAUDE.md"))
         commit_all(self.repo, "add")
         out = run("blocks", "--repo", str(self.repo), "docs/AGENTS.md")
         self.assertEqual((out["path"], out["resolved"]), ("docs/AGENTS.md", "CLAUDE.md"))
@@ -726,7 +726,7 @@ class LinkedFileTest(RepoTestCase):
             self.skipTest("needs a case-insensitive filesystem")
         write(self.repo, "AGENTS.md", "- shared\n")
         (self.repo / "docs").mkdir()
-        (self.repo / "docs" / "AGENTS.md").symlink_to("../agents.MD")
+        (self.repo / "docs" / "AGENTS.md").symlink_to(Path("../agents.MD"))
         commit_all(self.repo, "add")
         self.assertEqual(self.entries(), [("AGENTS.md", "AGENTS.md", ["docs/AGENTS.md"], "full")])
         self.assertEqual(run("blocks", "--repo", str(self.repo), "docs/AGENTS.md")["resolved"], "AGENTS.md")
@@ -955,7 +955,7 @@ class DocsAndReferencesTest(RepoTestCase):
     def test_references_include_aliases(self):
         write(self.repo, "AGENTS.md", "- a\n")
         (self.repo / "docs").mkdir()
-        (self.repo / "docs" / "AGENTS.md").symlink_to("../AGENTS.md")
+        (self.repo / "docs" / "AGENTS.md").symlink_to(Path("../AGENTS.md"))
         write(self.repo, "notes.txt", "read docs/AGENTS.md\n")
         commit_all(self.repo, "add")
         entry = by_path(self.inventory(), "AGENTS.md")

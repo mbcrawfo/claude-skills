@@ -12,6 +12,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -69,6 +70,11 @@ def git(repo: Path, *args: str, env: dict | None = None) -> str:
         env={**os.environ, **(env or {})},
     )
     return result.stdout.strip()
+
+
+# The bash on PATH (Git Bash on Windows). Windows looks in System32 before PATH, so a bare "bash" there runs
+# WSL's bash.exe where WSL is installed, as on GitHub's Windows runners.
+BASH = shutil.which("bash") or "bash"
 
 
 def can_symlink() -> bool:

@@ -7,6 +7,7 @@ import tempfile
 import unittest
 
 from agents_helpers import git, run
+from helpers import BASH
 
 EVALS = Path(__file__).resolve().parent.parent / "evals"
 FIRST = EVALS / "agents-md-cleanup-first-run"
@@ -36,7 +37,7 @@ class FixtureTestCase(unittest.TestCase):
         ws = ws or self.ws
         # The eval runs the scaffold with only these variables set.
         env = {"PATH": os.environ["PATH"], "HOME": str(ws), "TERM": "dumb"}
-        return subprocess.run(["bash", str(case / "scaffold.sh")], cwd=str(ws), env=env, capture_output=True, text=True)
+        return subprocess.run([BASH, str(case / "scaffold.sh")], cwd=str(ws), env=env, capture_output=True, text=True)
 
     def scaffold_ok(self, case, name):
         ws = self.tmp / name
